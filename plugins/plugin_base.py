@@ -16,3 +16,10 @@ class PluginBase(ABC):
     @abstractmethod
     def get_default_sleep(self) -> int:
         pass
+
+    @abstractmethod
+    def get_plugin_id(self) -> str:
+        """
+        Liefert eine eindeutige Plugin-ID als String.
+        """
+        pass
