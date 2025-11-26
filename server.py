@@ -1,4 +1,5 @@
 import os
+import toml
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
@@ -21,17 +22,27 @@ def status():
 
 @app.route("/plugins", methods=["GET"])
 def plugins():
-    plugins_folder = "plugins"
+    agentid = request.headers.get("agentid", None)
+
+    # Lade Konfiguration aus config.toml
     try:
-        files = os.listdir(plugins_folder)
+        config = toml.load("config.toml")
     except Exception as e:
-        return jsonify({"error": f"Fehler beim Zugriff auf den Plugins-Ordner: {str(e)}"}), 500
+        return jsonify({"error": f"Fehler beim Laden der Konfiguration: {str(e)}"}), 500
 
-    # Filtere nach Python-Dateien und entferne __init__.py, falls vorhanden
-    available_plugins = [os.path.splitext(f)[0] for f in files 
-                         if f.endswith(".py") and f != "__init__.py"]
+    # Ermittle die Gruppen des Agenten (falls definiert)
+    agent_groups = config.get("agents", {}).get(agentid, [])
 
-    return jsonify(available_plugins), 200
+    # Sammle alle Plugins, die den Gruppen des Agenten zugeordnet sind
+    assigned_plugins = set()
+    groups_config = config.get("groups", {})
+    for group in agent_groups:
+        plugins_for_group = groups_config.get(group, [])
+        assigned_plugins.update(plugins_for_group)
+
+    # Falls keine Gruppen/Plugins definiert sind, kann ein leerer Satz oder z. B. alle Plugins zurückgegeben werden.
+    # Hier: Rückgabe der gefilterten Plugins gemäß der Konfiguration
+    return jsonify(list(assigned_plugins)), 200
 
 
 @app.route("/plugin/<name>", methods=["GET"])
