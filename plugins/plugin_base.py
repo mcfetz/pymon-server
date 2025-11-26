@@ -1,12 +1,9 @@
 from abc import ABC, abstractmethod
-from typing import Union
-
-MetricType = Union[bool, int, float, str]
 
 
 class PluginBase(ABC):
     @abstractmethod
-    def get_metric(self) -> MetricType:
+    def get_metrics(self) -> dict:
         pass
 
     @abstractmethod
@@ -15,10 +12,7 @@ class PluginBase(ABC):
 
     @abstractmethod
     def get_default_sleep(self) -> int:
-        pass
+        return 300
 
     def get_plugin_id(self) -> str:
-        """
-        Liefert die Plugin-ID zurück. Standardmäßig wird der Klassenname zurückgegeben.
-        """
         return self.__class__.__name__
