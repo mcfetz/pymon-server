@@ -21,7 +21,16 @@ def status():
 
 @app.route("/plugins", methods=["GET"])
 def plugins():
-    available_plugins = ["plugin_base", "cpu", "ram"]
+    plugins_folder = "plugins"
+    try:
+        files = os.listdir(plugins_folder)
+    except Exception as e:
+        return jsonify({"error": f"Fehler beim Zugriff auf den Plugins-Ordner: {str(e)}"}), 500
+
+    # Filtere nach Python-Dateien und entferne __init__.py, falls vorhanden
+    available_plugins = [os.path.splitext(f)[0] for f in files 
+                         if f.endswith(".py") and f != "__init__.py"]
+
     return jsonify(available_plugins), 200
 
 
