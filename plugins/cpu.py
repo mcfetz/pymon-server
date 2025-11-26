@@ -1,4 +1,3 @@
-cpu
 from .plugin_base import PluginBase
 import psutil
 
