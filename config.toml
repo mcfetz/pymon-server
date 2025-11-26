@@ -1,9 +1,5 @@
 [agents]
-# Jedem Agenten (agentid als Schlüssel) können mehrere Gruppen zugewiesen werden.
-agent1 = ["group1", "group2"]
-agent2 = ["group2"]
+agent1 = ["default"]
 
 [groups]
-# Jedem Gruppen-Namen können mehrere Plugins (Dateinamen ohne .py) zugewiesen werden.
-group1 = ["cpu", "ram"]
-group2 = ["disk_usage", "cpu"]
+default = ["plugin_base", "cpu", "ram", "disk_usage"]

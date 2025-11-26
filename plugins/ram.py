@@ -3,9 +3,8 @@ import psutil
 
 
 class RAMPlugin(PluginBase):
-    def get_metrics(self) -> float:
-        # Ermittelt die RAM-Auslastung in Prozent
-        return psutil.virtual_memory().percent
+    def get_metrics(self) -> dict:
+        return {"virtual_pct": psutil.virtual_memory().percent}
 
     def get_default_sleep(self) -> int:
         return 30
