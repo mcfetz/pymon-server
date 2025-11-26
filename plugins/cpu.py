@@ -3,7 +3,7 @@ import psutil
 
 
 class CpuPlugin(PluginBase):
-    def get_metric(self):
+    def get_metrics(self):
         """
         Gibt die aktuelle CPU-Auslastung in Prozent zurück.
         """

@@ -3,7 +3,7 @@ from plugins.plugin_base import PluginBase
 
 
 class DiskUsagePlugin(PluginBase):
-    def get_metric(self) -> dict:
+    def get_metrics(self) -> dict:
         partitions = psutil.disk_partitions()
         usage = {}
         for partition in partitions:
