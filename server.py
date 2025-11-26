@@ -1,4 +1,4 @@
-from flask import Flask, request
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
@@ -15,6 +15,11 @@ def status():
     
     print(f"AgentID: {agentid}, Status: {status}")
     return f"AgentID: {agentid}, Status: {status}", 200
+
+@app.route("/plugins", methods=["GET"])
+def plugins():
+    available_plugins = ["cpu", "ram"]
+    return jsonify(available_plugins), 200
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=5000)
