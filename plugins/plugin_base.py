@@ -17,9 +17,8 @@ class PluginBase(ABC):
     def get_default_sleep(self) -> int:
         pass
 
-    @abstractmethod
     def get_plugin_id(self) -> str:
         """
-        Liefert eine eindeutige Plugin-ID als String.
+        Liefert die Plugin-ID zurück. Standardmäßig wird der Klassenname zurückgegeben.
         """
-        pass
+        return self.__class__.__name__
