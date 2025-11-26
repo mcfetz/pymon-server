@@ -1,4 +1,3 @@
-ram
 import psutil
 from plugin_base import PluginBase  # Bei Bedarf: from .plugin_base import PluginBase
 
