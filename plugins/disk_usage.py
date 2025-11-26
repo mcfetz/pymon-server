@@ -1,5 +1,6 @@
 import psutil
-from plugin_base import PluginBase
+from plugins.plugin_base import PluginBase
+
 
 class DiskUsagePlugin(PluginBase):
     def get_metric(self) -> dict:
