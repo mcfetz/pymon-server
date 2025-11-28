@@ -102,10 +102,19 @@ def collect_metrics():
     pluginid = payload.get("pluginid")
     # Bevorzugt den agentid-Wert aus Header, ansonsten aus der Payload
     agentid_payload = payload.get("agentid", agentid)
+
     timestamp = payload.get("timestamp")
     # Umwandeln des Timestamps, falls er ein String ist (ISO 8601 Format erwartet)
     if isinstance(timestamp, str):
-        timestamp = datetime.fromisoformat(timestamp)
+        try:
+            timestamp = datetime.fromisoformat(timestamp)
+        except ValueError as e:
+            logger.error("Ungültiges Timestamp-Format: %s", e)
+            timestamp = datetime.utcnow()
+    elif not isinstance(timestamp, datetime):
+        # Falls kein gültiger Timestamp übermittelt wurde, verwende den aktuellen Zeitpunkt
+        timestamp = datetime.utcnow()
+
     metrics_list = payload.get("metrics", [])
 
     for metric_dict in metrics_list:
