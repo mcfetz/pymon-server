@@ -1,8 +1,9 @@
 import os
 import toml
 import logging
-from sqlalchemy import create_engine, Column, Integer, String, Float, Text, REAL
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from db_models import Base, Metrics
 from flask import Flask, request, jsonify
 
 logging.basicConfig(
@@ -14,23 +15,9 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # SQLAlchemy ORM Setup
-Base = declarative_base()
-
 DATABASE_URL = "sqlite:///metrics.db"
 engine = create_engine(DATABASE_URL, echo=False, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
-
-class Metrics(Base):
-    __tablename__ = "metrics"
-
-    id = Column(Integer, primary_key=True, index=True)
-    agentid = Column(String, nullable=False)
-    pluginid = Column(String, nullable=False)
-    timestamp = Column(REAL, nullable=False)
-    metric = Column(String, nullable=False)
-    value_float = Column(Float, nullable=True)
-    value_int = Column(Integer, nullable=True)
-    value_str = Column(Text, nullable=True)
 
 # Erstelle alle Tabellen, falls sie noch nicht existieren
 Base.metadata.create_all(bind=engine)
