@@ -3,8 +3,6 @@ from typing import Any
 
 import toml
 
-from rules import Rule
-
 
 def load_executor_config(path: str = "conf/executors.toml") -> dict[str, Any]:
     try:
@@ -18,7 +16,7 @@ EXECUTOR_CONFIG: dict[str, Any] = load_executor_config()
 
 
 def run_executors(
-    rule: Rule,
+    rule: rule.Rule,
     agentid: str,
     metric: str,
     value: float,

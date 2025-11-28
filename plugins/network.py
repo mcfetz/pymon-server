@@ -60,7 +60,7 @@ class NetworkPlugin(PluginBase):
         # Anzahl offener TCP-Verbindungen erfassen
         try:
             tcp_conns = psutil.net_connections(kind="tcp")
-            metrics["tcp_open_connections"] = float(len(tcp_conns))
+            metrics["tcp_open_connections"] = len(tcp_conns)
         except Exception:
             # bei Fehlern keine Metrik setzen
             pass
@@ -69,10 +69,6 @@ class NetworkPlugin(PluginBase):
 
     def get_default_sleep(self) -> int:
         return self._sleep
-
-    def get_metric_type(self) -> type:
-        # Bytes als float
-        return float
 
     def get_plugin_id(self) -> str:
         return "network"

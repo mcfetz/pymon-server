@@ -1,9 +1,6 @@
-import time
-from typing import Any
-
 import requests
 
-from .plugin_base import PluginBase
+from plugins.plugin_base import PluginBase
 
 
 class HttpPlugin(PluginBase):
@@ -32,7 +29,7 @@ class HttpPlugin(PluginBase):
         # ]
         self._sleep = int(config.get("sleep", 30))
         self._timeout = int(config.get("timeout", 5))
-        self._urls: list[dict[str, Any]] = config.get("urls", [])
+        self._urls: list[dict[str, str]] = config.get("urls", [])
 
     def get_metrics(self) -> dict | list:
         metrics: dict[str, float] = {}
@@ -52,23 +49,17 @@ class HttpPlugin(PluginBase):
             try:
                 resp = requests.get(url, timeout=self._timeout)
                 status_code = resp.status_code
-                if 200 <= resp.status_code < 300:
-                    ok = 1.0
-                else:
-                    ok = 0.0
 
                 if expected is not None:
                     # einfache Contains-Prüfung auf dem Text-Body
-                    content_ok = 1.0 if expected in resp.text else 0.0
+                    content_ok = 1 if expected in resp.text else 0
             except Exception:
                 # Bei Fehlern: status_code bleibt None, ok = 0, content_ok = 0 falls erwartet
-                ok = 0.0
                 if expected is not None:
                     content_ok = 0.0
 
             if status_code is not None:
-                metrics[f"{name}:status_code"] = float(status_code)
-            metrics[f"{name}:ok"] = ok
+                metrics[f"{name}:status_code"] = int(status_code)
             if content_ok is not None:
                 metrics[f"{name}:content_ok"] = content_ok
 

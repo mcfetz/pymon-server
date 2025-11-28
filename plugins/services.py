@@ -1,7 +1,7 @@
 import subprocess
 import sys
 
-from .plugin_base import PluginBase
+from plugins.plugin_base import PluginBase
 
 
 class ServicesPlugin(PluginBase):

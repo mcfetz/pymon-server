@@ -1,6 +1,6 @@
 import psutil
 
-from .plugin_base import PluginBase
+from plugins.plugin_base import PluginBase
 
 
 class TemperaturePlugin(PluginBase):
@@ -29,10 +29,7 @@ class TemperaturePlugin(PluginBase):
         for name, entries in temps.items():
             for entry in entries:
                 label = entry.label or ""
-                if label:
-                    key = f"{name}:{label}"
-                else:
-                    key = name
+                key = f"{name}:{label}" if label else name
                 if entry.current is not None:
                     metrics[key] = float(entry.current)
 
