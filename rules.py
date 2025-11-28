@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from db_models import Alarm, Metrics
 from notifications import notify_targets
 from cache import timed_cache
+from executors import run_executors
 
 Condition = Literal["gt", "lt", "ge", "le", "eq", "ne"]
 Scope = Literal["single", "moving_avg", "count_ratio"]
@@ -29,6 +30,7 @@ class Rule:
     severity: str = "warning"
     notifications: list[str] | None = None
     fire: FireMode = "single"
+    executors: list[str] | None = None
 
 
 @timed_cache(ttl_seconds=5)
@@ -51,6 +53,7 @@ def load_rules(path: str = "conf/rules.toml") -> list[Rule]:
                 severity=r.get("severity", "warning"),
                 notifications=r.get("notifications", []),
                 fire=r.get("fire", "single"),
+                executors=r.get("executors", []),
             )
         )
     return rules
@@ -112,6 +115,12 @@ def create_alarm(
     # Notifications auslösen (Fehler hier sollen die DB-Transaktion nicht verhindern)
     try:
         notify_targets(rule, agentid, metric, value, message, alarm.id)
+    except Exception:
+        pass
+
+    # Executor ausführen (Fehler hier sollen die DB-Transaktion ebenfalls nicht verhindern)
+    try:
+        run_executors(rule, agentid, metric, value, message)
     except Exception:
         pass
 
