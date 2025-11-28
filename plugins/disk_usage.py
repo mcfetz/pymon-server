@@ -1,4 +1,5 @@
 import psutil
+import re
 from plugins.plugin_base import PluginBase
 
 
@@ -27,8 +28,7 @@ class DiskUsagePlugin(PluginBase):
             if excludes:
                 for exclude in excludes:
                     print(f"{exclude} {partition.mountpoint}")
-                    # ai! exclude contains a regex string. check this against the partition mountpoint.
-                    if exclude in partition.mountpoint:
+                    if re.search(exclude, partition.mountpoint):
                         continue
             try:
                 du = psutil.disk_usage(partition.mountpoint)
