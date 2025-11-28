@@ -13,6 +13,15 @@ from abc import ABC, abstractmethod
 
 
 class PluginBase(ABC):
+    def __init__(self, config: dict):
+        """
+        Initialisiert das Plugin mit der Konfiguration.
+
+        Parameter:
+            config (dict): Ein Dictionary, das die Plugin-Konfiguration enthält.
+        """
+        self.config = config
+
     @abstractmethod
     def get_metrics(self) -> dict | list:
         pass
