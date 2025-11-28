@@ -1,7 +1,8 @@
 import os
 import toml
 import logging
-import sqlite3
+from sqlalchemy import create_engine, Column, Integer, String, Float, Text, REAL
+from sqlalchemy.orm import declarative_base, sessionmaker
 from flask import Flask, request, jsonify
 
 logging.basicConfig(
@@ -12,23 +13,27 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
-def init_db(db_path="metrics.db"):
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS metrics (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        agentid TEXT,
-        pluginid TEXT,
-        timestamp REAL,
-        metric TEXT,
-        value_float REAL,
-        value_int INTEGER,
-        value_str TEXT
-    )
-    """)
-    conn.commit()
-    return conn
+# SQLAlchemy ORM Setup
+Base = declarative_base()
+
+DATABASE_URL = "sqlite:///metrics.db"
+engine = create_engine(DATABASE_URL, echo=False, future=True)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+
+class Metrics(Base):
+    __tablename__ = "metrics"
+
+    id = Column(Integer, primary_key=True, index=True)
+    agentid = Column(String, nullable=False)
+    pluginid = Column(String, nullable=False)
+    timestamp = Column(REAL, nullable=False)
+    metric = Column(String, nullable=False)
+    value_float = Column(Float, nullable=True)
+    value_int = Column(Integer, nullable=True)
+    value_str = Column(Text, nullable=True)
+
+# Erstelle alle Tabellen, falls sie noch nicht existieren
+Base.metadata.create_all(bind=engine)
 
 
 @app.route("/status", methods=["GET"])
@@ -99,13 +104,12 @@ def collect_metrics():
     logger.info(f"AgentID: {agentid}")
     logger.info("Received payload: %s", payload)
 
-    # Initialisiere DB-Verbindung und lege Tabelle an, falls nicht vorhanden
-    conn = init_db()
-    cursor = conn.cursor()
+    # Öffne eine SQLAlchemy-Session
+    session = SessionLocal()
 
     # Erwarte Payload-Struktur: pluginid, agentid, timestamp, metrics (als Liste)
     pluginid = payload.get("pluginid")
-    # agentid aus Payload oder Header (Header hat Vorrang, sofern gewünscht)
+    # Bevorzugt den agentid-Wert aus Header, ansonsten aus der Payload
     agentid_payload = payload.get("agentid", agentid)
     timestamp = payload.get("timestamp")
     metrics_list = payload.get("metrics", [])
@@ -123,13 +127,19 @@ def collect_metrics():
                 else:
                     value_str = str(value)
 
-                cursor.execute("""
-                    INSERT INTO metrics (agentid, pluginid, timestamp, metric, value_float, value_int, value_str)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (agentid_payload, pluginid, timestamp, metric_name, value_float, value_int, value_str))
+                metric_entry = Metrics(
+                    agentid=agentid_payload,
+                    pluginid=pluginid,
+                    timestamp=timestamp,
+                    metric=metric_name,
+                    value_float=value_float,
+                    value_int=value_int,
+                    value_str=value_str,
+                )
+                session.add(metric_entry)
 
-    conn.commit()
-    conn.close()
+    session.commit()
+    session.close()
 
     return jsonify({"status": "Metrics stored"}), 200
 
