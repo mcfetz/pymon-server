@@ -2,7 +2,7 @@ import socket
 import ssl
 from datetime import datetime, timezone
 
-from .plugin_base import PluginBase
+from plugins.plugin_base import PluginBase
 
 
 class CertValidPlugin(PluginBase):
