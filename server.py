@@ -111,6 +111,115 @@ def get_plugin_config(name):
     return jsonify(plugin_config), 200
 
 
+def _parse_time_param(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _query_metrics(
+    session,
+    agentid: str | None = None,
+    pluginid: str | None = None,
+    time_from: datetime | None = None,
+    time_to: datetime | None = None,
+) -> list[dict]:
+    from sqlalchemy import and_
+
+    q = session.query(Metrics)
+
+    filters = []
+    if agentid is not None:
+        filters.append(Metrics.agentid == agentid)
+    if pluginid is not None:
+        filters.append(Metrics.pluginid == pluginid)
+    if time_from is not None:
+        filters.append(Metrics.timestamp >= time_from)
+    if time_to is not None:
+        filters.append(Metrics.timestamp <= time_to)
+
+    if filters:
+        q = q.filter(and_(*filters))
+
+    rows = q.order_by(Metrics.timestamp.asc()).all()
+
+    result: list[dict] = []
+    for row in rows:
+        # Wert aus value_float / value_int bestimmen
+        value = row.value_float if row.value_float is not None else row.value_int
+        result.append(
+            {
+                "agentid": row.agentid,
+                "pluginid": row.pluginid,
+                "metric": row.metric,
+                "timestamp": row.timestamp.isoformat(),
+                "value": value,
+            }
+        )
+    return result
+
+
+@app.route("/metrics", methods=["GET"])
+def get_metrics_all():
+    # optionale Query-Parameter: time-from, time-to (ISO 8601)
+    time_from_param = request.args.get("time-from")
+    time_to_param = request.args.get("time-to")
+
+    time_from = _parse_time_param(time_from_param)
+    time_to = _parse_time_param(time_to_param)
+
+    if (time_from_param and time_from is None) or (time_to_param and time_to is None):
+        return jsonify({"error": "invalid time-from or time-to format, expected ISO 8601"}), 400
+
+    session = SessionLocal()
+    try:
+        data = _query_metrics(session, agentid=None, pluginid=None, time_from=time_from, time_to=time_to)
+        return jsonify(data), 200
+    finally:
+        session.close()
+
+
+@app.route("/metrics/<agentid>", methods=["GET"])
+def get_metrics_for_agent(agentid: str):
+    time_from_param = request.args.get("time-from")
+    time_to_param = request.args.get("time-to")
+
+    time_from = _parse_time_param(time_from_param)
+    time_to = _parse_time_param(time_to_param)
+
+    if (time_from_param and time_from is None) or (time_to_param and time_to is None):
+        return jsonify({"error": "invalid time-from or time-to format, expected ISO 8601"}), 400
+
+    session = SessionLocal()
+    try:
+        data = _query_metrics(session, agentid=agentid, pluginid=None, time_from=time_from, time_to=time_to)
+        return jsonify(data), 200
+    finally:
+        session.close()
+
+
+@app.route("/metrics/<agentid>/<pluginid>", methods=["GET"])
+def get_metrics_for_agent_plugin(agentid: str, pluginid: str):
+    time_from_param = request.args.get("time-from")
+    time_to_param = request.args.get("time-to")
+
+    time_from = _parse_time_param(time_from_param)
+    time_to = _parse_time_param(time_to_param)
+
+    if (time_from_param and time_from is None) or (time_to_param and time_to is None):
+        return jsonify({"error": "invalid time-from or time-to format, expected ISO 8601"}), 400
+
+    session = SessionLocal()
+    try:
+        data = _query_metrics(session, agentid=agentid, pluginid=pluginid, time_from=time_from, time_to=time_to)
+        return jsonify(data), 200
+    finally:
+        session.close()
+
+
 @app.route("/metric", methods=["POST"])
 def collect_metrics():
     # Neuer /metric Endpoint: Payload und agentid-Header ausgeben
