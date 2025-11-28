@@ -82,6 +82,31 @@ def get_plugin(name):
     return content, 200, {"Content-Type": "text/plain"}
 
 
+@app.route("/plugin/<name>/config", methods=["GET"])
+def get_plugin_config(name):
+    # Hole die agentid aus dem HTTP-Header
+    agentid = request.headers.get("agentid", None)
+    if not agentid:
+        return jsonify({"error": "agentid header missing"}), 400
+
+    try:
+        # Lade den Inhalt der agents.toml Datei
+        import toml
+        config = toml.load("agents.toml")
+    except Exception as e:
+        logger.error("Fehler beim Laden der agents.toml: %s", e)
+        return jsonify({"error": "Fehler beim Laden der Konfiguration"}), 500
+
+    # Suche in der TOML-Datei nach der Agentensektion
+    agent_config = config.get(agentid, {})
+
+    # Innerhalb der Agentensektion: Hole die Konfiguration für das Plugin (plugin name entspricht <name>)
+    plugin_config = agent_config.get(name, {})
+
+    # Retourniere die Konfiguration als Dictionary
+    return jsonify(plugin_config), 200
+
+
 @app.route("/metric", methods=["POST"])
 def collect_metrics():
     # Neuer /metric Endpoint: Payload und agentid-Header ausgeben
