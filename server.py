@@ -1,7 +1,5 @@
 import os
 import toml
-import importlib
-import sys
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
@@ -30,7 +28,7 @@ def plugins():
     try:
         config = toml.load("config.toml")
     except Exception as e:
-        return jsonify({"error": f"Fehler beim Laden der Konfiguration: {str(e)}"}), 500
+        return jsonify({"error": f"Fehler beim Laden der Konfiguration: {e!s}"}), 500
 
     # Ermittle die Gruppen des Agenten (falls definiert)
     agent_groups = config.get("agents", {}).get(agentid, [])
@@ -57,10 +55,10 @@ def get_plugin(name):
         return jsonify({"error": f"Plugin '{name}' nicht gefunden."}), 404
 
     try:
-        with open(plugin_path, "r", encoding="utf-8") as f:
+        with open(plugin_path, encoding="utf-8") as f:
             content = f.read()
     except Exception as e:
-        return jsonify({"error": f"Fehler beim Lesen des Plugins: {str(e)}"}), 500
+        return jsonify({"error": f"Fehler beim Lesen des Plugins: {e!s}"}), 500
 
     # Rückgabe des Inhalts als reinen Text
     return content, 200, {"Content-Type": "text/plain"}
@@ -77,6 +75,7 @@ def collect_metrics():
     print(payload)
 
     return jsonify({"status": "Payload received"}), 200
+
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=5000)
