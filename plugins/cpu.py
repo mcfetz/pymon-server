@@ -3,19 +3,9 @@ import psutil
 
 
 class CpuPlugin(PluginBase):
-    """
-    CpuPlugin erfasst die CPU-Auslastung.
-
-    Gemessene Metriken:
-    
-    - percent (float): Die aktuelle CPU-Auslastung in Prozent.
-    """
     def get_metrics(self) -> dict | list:
         """
-        Ermittelt die aktuelle CPU-Auslastung in Prozent.
-
-        Rückgabewert:
-            dict: {"percent": float}
+        Gibt die aktuelle CPU-Auslastung in Prozent zurück.
         """
         return {"percent": psutil.cpu_percent(interval=1)}
 
@@ -24,3 +14,6 @@ class CpuPlugin(PluginBase):
 
     def get_metric_type(self) -> type:
         return float
+
+    def get_plugin_id(self) -> str:
+        return "cpu"

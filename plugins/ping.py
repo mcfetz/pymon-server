@@ -51,7 +51,8 @@ class PingPlugin(PluginBase):
             except subprocess.CalledProcessError:
                 success = False
                 avg_time = None
-            results[host] = {"success": success, "avg_time": avg_time}
+            results[f"{host} success"] = success
+            results[f"{host} avg-time"] = avg_time
         return results
 
     def get_default_sleep(self) -> int:

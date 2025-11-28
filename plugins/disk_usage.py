@@ -26,10 +26,13 @@ class DiskUsagePlugin(PluginBase):
         for partition in partitions:
             excludes = self.config.get("excludes")
             if excludes:
+                found_exclude = False
                 for exclude in excludes:
-                    print(f"{exclude} {partition.mountpoint}")
                     if re.search(exclude, partition.mountpoint):
+                        found_exclude = True
                         continue
+                if found_exclude:
+                    continue
             try:
                 du = psutil.disk_usage(partition.mountpoint)
                 usage.append({partition.mountpoint: du.percent})
@@ -37,8 +40,8 @@ class DiskUsagePlugin(PluginBase):
                 usage.append({partition.mountpoint: None})
         return usage
 
-    def get_metric_type(self) -> type:
-        return dict
+    def get_plugin_id(self) -> str:
+        return "disk_usage"
 
     def get_default_sleep(self) -> int:
         return 300

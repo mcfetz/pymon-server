@@ -1,5 +1,5 @@
 """
-Dieses Modul definiert die abstrakte Basisklasse PluginBase, 
+Dieses Modul definiert die abstrakte Basisklasse PluginBase,
 welche von allen Plugin-Klassen implementiert werden muss.
 
 Jedes Plugin sollte folgende Methoden implementieren:
@@ -14,20 +14,10 @@ from abc import ABC, abstractmethod
 
 class PluginBase(ABC):
     def __init__(self, config: dict):
-        """
-        Initialisiert das Plugin mit der Konfiguration.
-
-        Parameter:
-            config (dict): Ein Dictionary, das die Plugin-Konfiguration enthält.
-        """
         self.config = config
 
     @abstractmethod
     def get_metrics(self) -> dict | list:
-        pass
-
-    @abstractmethod
-    def get_metric_type(self) -> type:
         pass
 
     @abstractmethod

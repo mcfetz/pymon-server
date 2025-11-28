@@ -1,0 +1,1 @@
+- primary language is english. use it for commits, comments, docstrings and logging messages

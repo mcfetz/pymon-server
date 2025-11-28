@@ -1,10 +1,13 @@
-import os
-import toml
 import logging
+import os
+from datetime import datetime, UTC
+
+import toml
+from flask import Flask, jsonify, request
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+
 from db_models import Base, Metrics
-from flask import Flask, request, jsonify
 
 logging.basicConfig(
     level=logging.INFO,
@@ -91,7 +94,6 @@ def get_plugin_config(name):
 
     try:
         # Lade den Inhalt der agents.toml Datei
-        import toml
         config = toml.load("agents.toml")
     except Exception as e:
         logger.error("Fehler beim Laden der agents.toml: %s", e)
@@ -119,8 +121,6 @@ def collect_metrics():
     # Öffne eine SQLAlchemy-Session
     session = SessionLocal()
 
-    from datetime import datetime, timezone
-
     if not isinstance(payload, dict):
         raise ValueError("Ungültige Payload: Es wird ein Dictionary erwartet")
     # Erwarte Payload-Struktur: pluginid, agentid, timestamp, metrics (als Liste)
@@ -135,10 +135,10 @@ def collect_metrics():
             timestamp = datetime.fromisoformat(timestamp)
         except ValueError as e:
             logger.error("Ungültiges Timestamp-Format: %s", e)
-            timestamp = datetime.now(timezone.utc)
+            timestamp = datetime.now(UTC)
     elif not isinstance(timestamp, datetime):
         # Falls kein gültiger Timestamp übermittelt wurde, verwende den aktuellen Zeitpunkt
-        timestamp = datetime.now(timezone.utc)
+        timestamp = datetime.now(UTC)
 
     metrics_list = payload.get("metrics", [])
 
@@ -152,7 +152,9 @@ def collect_metrics():
                     value_int = value
                 elif isinstance(value, str):
                     value_str = value
-                else:
+                elif isinstance(value, bool):
+                    value_int = 1 if value else 0
+                elif value:
                     value_str = str(value)
 
                 metric_entry = Metrics(

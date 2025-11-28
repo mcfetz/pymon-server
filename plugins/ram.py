@@ -7,9 +7,10 @@ class RAMPlugin(PluginBase):
     RAMPlugin erfasst die RAM-Auslastung.
 
     Gemessene Metriken:
-    
+
     - virtual_pct (float): Prozentsatz der genutzten virtuellen Arbeitsspeicherressourcen.
     """
+
     def get_metrics(self) -> dict | list:
         """
         Ermittelt die virtuelle RAM-Auslastung.
@@ -22,5 +23,5 @@ class RAMPlugin(PluginBase):
     def get_default_sleep(self) -> int:
         return 30
 
-    def get_metric_type(self) -> type:
-        return float
+    def get_plugin_id(self) -> str:
+        return "ram"
