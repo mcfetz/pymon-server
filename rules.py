@@ -1,4 +1,6 @@
+import time
 from dataclasses import dataclass
+from functools import wraps
 from typing import Literal
 
 import toml
@@ -11,6 +13,25 @@ from notifications import notify_targets
 Condition = Literal["gt", "lt", "ge", "le", "eq", "ne"]
 Scope = Literal["single", "moving_avg", "count_ratio"]
 FireMode = Literal["single", "multi"]
+
+
+def timed_cache(ttl_seconds: int):
+    def decorator(func):
+        cache_data = {"value": None, "timestamp": 0.0}
+
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            now = time.time()
+            if cache_data["value"] is not None and (now - cache_data["timestamp"]) < ttl_seconds:
+                return cache_data["value"]
+            result = func(*args, **kwargs)
+            cache_data["value"] = result
+            cache_data["timestamp"] = now
+            return result
+
+        return wrapper
+
+    return decorator
 
 
 @dataclass
@@ -54,6 +75,7 @@ def load_rules(path: str = "rules.toml") -> list[Rule]:
     return rules
 
 
+@timed_cache(ttl_seconds=5)
 def get_rules() -> list[Rule]:
     rules = load_rules("conf/rules.toml")
     return rules
@@ -169,7 +191,7 @@ def evaluate_rules_for_payload(
     pluginid: str,
     metrics_list: list[dict],
 ) -> None:
-    relevant_rules = [r for r in RULES if r.enabled and r.pluginid == pluginid]
+    relevant_rules = [r for r in get_rules() if r.enabled and r.pluginid == pluginid]
     if not relevant_rules:
         return
 
