@@ -8,6 +8,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from db_models import Base, Metrics
+from rules import evaluate_rules_for_payload
 
 logging.basicConfig(
     level=logging.INFO,
@@ -169,6 +170,15 @@ def collect_metrics():
                 session.add(metric_entry)
 
     session.commit()
+
+    # Evaluate rules for the received metrics
+    try:
+        evaluate_rules_for_payload(session, agentid_payload, pluginid, metrics_list)
+        session.commit()
+    except Exception as e:
+        logger.error("Error while evaluating rules: %s", e)
+        session.rollback()
+
     session.close()
 
     return jsonify({"status": "Metrics stored"}), 200
