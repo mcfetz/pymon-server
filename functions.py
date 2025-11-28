@@ -1,4 +1,14 @@
 from db_models import Metrics
+from datetime import datetime
+
+
+def _parse_time_param(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 def dict_value_to_metric(value, metric: Metrics):

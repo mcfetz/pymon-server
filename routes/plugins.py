@@ -4,6 +4,26 @@ import toml
 import os
 
 
+def get_assigned_plugins_for_agentid(agentid: str) -> list:
+    try:
+        config = toml.load("conf/config.toml")
+    except Exception as e:
+        logger.error(f"error while loading config.toml: {e}")
+        return []
+
+    # Determine the groups of the agent (if defined)
+    agent_groups = config.get("agents", {}).get(agentid, [])
+
+    # Collect all plugins that are assigned to the agent's groups
+    assigned_plugins = set()
+    groups_config = config.get("groups", {})
+    for group in agent_groups:
+        plugins_for_group = groups_config.get(group, [])
+        assigned_plugins.update(plugins_for_group)
+
+    return list(assigned_plugins)
+
+
 @app.route("/plugins", methods=["GET"])
 def plugins():
     """
@@ -32,25 +52,13 @@ def plugins():
     """
     agentid = request.headers.get("agentid", None)
 
-    # Load configuration from config.toml
-    try:
-        config = toml.load("conf/config.toml")
-    except Exception as e:
-        return jsonify({"error": f"Fehler beim Laden der Konfiguration: {e!s}"}), 500
-
-    # Determine the groups of the agent (if defined)
-    agent_groups = config.get("agents", {}).get(agentid, [])
-
-    # Collect all plugins that are assigned to the agent's groups
-    assigned_plugins = set()
-    groups_config = config.get("groups", {})
-    for group in agent_groups:
-        plugins_for_group = groups_config.get(group, [])
-        assigned_plugins.update(plugins_for_group)
+    assigned_plugins = []
+    if agentid:
+        assigned_plugins = get_assigned_plugins_for_agentid(agentid)
 
     # If no groups/plugins are defined, an empty set or e.g. all plugins could be returned.
     # Here: return the filtered plugins according to the configuration
-    return jsonify(list(assigned_plugins)), 200
+    return jsonify(assigned_plugins), 200
 
 
 @app.route("/plugins/<name>", methods=["GET"])
@@ -79,6 +87,15 @@ def get_plugin(name):
       500:
         description: Error while reading plugin file
     """
+    agentid = request.headers.get("agentid", None)
+
+    assigned_plugins = []
+    if agentid:
+        assigned_plugins = get_assigned_plugins_for_agentid(agentid)
+
+    if name not in assigned_plugins:
+        return jsonify({"error": f"Plugin '{name}' not assigned to agent {agentid}"}), 404
+
     # Build the path to the Python script file in the 'plugins' folder
     plugin_path = os.path.join("plugins", f"{name}.py")
 
