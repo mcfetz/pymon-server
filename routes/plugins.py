@@ -135,13 +135,34 @@ def get_plugin_config(name):
 
     try:
         # Load the contents of the agents.toml file
-        config = toml.load("conf/agents.toml")
+        agents_config = toml.load("conf/agents.toml")
     except Exception as e:
         logger.error("Fehler beim Laden der agents.toml: %s", e)
         return jsonify({"error": "Fehler beim Laden der Konfiguration"}), 500
 
-    # Look up the agent section in the TOML file
-    agent_config = config.get(agentid, {})
+    # Load global config to determine which plugins are assigned to the agent
+    try:
+        global_config = toml.load("conf/config.toml")
+    except Exception as e:
+        logger.error("Fehler beim Laden der config.toml: %s", e)
+        return jsonify({"error": "Fehler beim Laden der Konfiguration"}), 500
+
+    # Determine the groups of the agent (if defined)
+    agent_groups = global_config.get("agents", {}).get(agentid, [])
+
+    # Collect all plugins that are assigned to the agent's groups
+    assigned_plugins = set()
+    groups_config = global_config.get("groups", {})
+    for group in agent_groups:
+        plugins_for_group = groups_config.get(group, [])
+        assigned_plugins.update(plugins_for_group)
+
+    # Reject if the requested plugin is not assigned to this agent
+    if name not in assigned_plugins:
+        return jsonify({"error": "plugin not assigned to this agent"}), 403
+
+    # Look up the agent section in the agents.toml file
+    agent_config = agents_config.get(agentid, {})
 
     # Within the agent section: get the configuration for the plugin (plugin name equals <name>)
     plugin_config = agent_config.get(name, {})
