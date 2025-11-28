@@ -12,6 +12,7 @@ threshold = 80.0
 scope = "single"
 severity = "warning"
 notifications = ["email_admin"]
+fire = "single"
 
 [[rule]]
 id = "cpu_high_avg"
@@ -25,6 +26,7 @@ scope = "moving_avg"
 window_size = 20
 severity = "critical"
 notifications = ["email_admin"]
+fire = "single"
 
 [[rule]]
 id = "ram_high_single"
@@ -37,3 +39,4 @@ threshold = 90.0
 scope = "single"
 severity = "warning"
 notifications = ["email_admin"]
+fire = "single"

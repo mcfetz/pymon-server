@@ -12,6 +12,7 @@ from db_models import Metrics, Alarm
 
 Condition = Literal["gt", "lt", "ge", "le", "eq", "ne"]
 Scope = Literal["single", "moving_avg", "count_ratio"]
+FireMode = Literal["single", "multi"]
 
 
 @dataclass
@@ -28,6 +29,7 @@ class Rule:
     min_violations: int | None = None
     severity: str = "warning"
     notifications: list[str] | None = None
+    fire: FireMode = "single"
 
 
 def load_rules(path: str = "rules.toml") -> list[Rule]:
@@ -48,6 +50,7 @@ def load_rules(path: str = "rules.toml") -> list[Rule]:
                 min_violations=r.get("min_violations"),
                 severity=r.get("severity", "warning"),
                 notifications=r.get("notifications", []),
+                fire=r.get("fire", "single"),
             )
         )
     return rules
@@ -136,6 +139,19 @@ def notify_targets(rule: Rule, agentid: str, metric: str, value: float, message:
         # weitere Typen (webhook, slack, ...) können hier später ergänzt werden
 
 
+def has_open_alarm(session: Session, agentid: str, rule: Rule) -> bool:
+    q = (
+        select(Alarm)
+        .where(
+            Alarm.agentid == agentid,
+            Alarm.rule_id == rule.id,
+            Alarm.acknowledged == False,  # noqa: E712
+        )
+        .limit(1)
+    )
+    return session.execute(q).scalars().first() is not None
+
+
 def create_alarm(
     session: Session,
     agentid: str,
@@ -143,6 +159,10 @@ def create_alarm(
     metric: str,
     value: float,
 ) -> None:
+    # fire=single: nur einen offenen Alarm pro (agentid, rule)
+    if rule.fire == "single" and has_open_alarm(session, agentid, rule):
+        return
+
     message = f"Rule '{rule.id}' triggered for agent '{agentid}', plugin '{rule.pluginid}', metric '{metric}': value={value}"
     print(message)
     alarm = Alarm(
