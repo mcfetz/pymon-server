@@ -45,7 +45,14 @@ def send_email_notification(target_conf: dict[str, Any], subject: str, body: str
             smtp.send_message(msg)
 
 
-def notify_targets(rule: rules.Rule, agentid: str, metric: str, value: float, message: str) -> None:
+def notify_targets(
+    rule: rules.Rule,
+    agentid: str,
+    metric: str,
+    value: float,
+    message: str,
+    alarm_id: int | None = None,
+) -> None:
     if not rule.notifications:
         return
 
@@ -67,5 +74,10 @@ def notify_targets(rule: rules.Rule, agentid: str, metric: str, value: float, me
                 f"Severity: {rule.severity}\n\n"
                 f"Message: {message}\n"
             )
+
+            if alarm_id is not None:
+                ack_link = f"http://localhost:5000/alarms/{alarm_id}/ack"
+                body += f"\nAcknowledge this alarm: {ack_link}\n"
+
             send_email_notification(target_conf, subject, body)
         # weitere Typen (webhook, slack, ...) können hier später ergänzt werden

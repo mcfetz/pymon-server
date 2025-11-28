@@ -107,10 +107,11 @@ def create_alarm(
         message=message,
     )
     session.add(alarm)
+    session.flush()  # ensure alarm.id is available before commit
 
     # Notifications auslösen (Fehler hier sollen die DB-Transaktion nicht verhindern)
     try:
-        notify_targets(rule, agentid, metric, value, message)
+        notify_targets(rule, agentid, metric, value, message, alarm.id)
     except Exception:
         pass
 
