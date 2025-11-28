@@ -1,6 +1,14 @@
 import os
 import toml
+import logging
 from flask import Flask, request, jsonify
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
@@ -16,7 +24,7 @@ def status():
     else:
         status = "undefined"
 
-    print(f"AgentID: {agentid}, Status: {status}")
+    logger.info(f"AgentID: {agentid}, Status: {status}")
     return f"AgentID: {agentid}, Status: {status}", 200
 
 
@@ -70,9 +78,8 @@ def collect_metrics():
     agentid = request.headers.get("agentid", "Unknown")
     payload = request.get_json(silent=True)
 
-    print(f"AgentID: {agentid}")
-    print("Received payload:")
-    print(payload)
+    logger.info(f"AgentID: {agentid}")
+    logger.info("Received payload: %s", payload)
 
     return jsonify({"status": "Payload received"}), 200
 
