@@ -54,7 +54,9 @@ def load_rules(path: str = "rules.toml") -> list[Rule]:
     return rules
 
 
-RULES: list[Rule] = load_rules("conf/rules.toml")
+def get_rules() -> list[Rule]:
+    rules = load_rules("conf/rules.toml")
+    return rules
 
 
 def compare(value: float, condition: Condition, threshold: float) -> bool:
