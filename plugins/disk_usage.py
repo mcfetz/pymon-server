@@ -3,15 +3,15 @@ from plugins.plugin_base import PluginBase
 
 
 class DiskUsagePlugin(PluginBase):
-    def get_metrics(self) -> dict:
+    def get_metrics(self) -> dict | list:
         partitions = psutil.disk_partitions()
-        usage = {}
+        usage = []
         for partition in partitions:
             try:
                 du = psutil.disk_usage(partition.mountpoint)
-                usage[partition.mountpoint] = du.percent
+                usage.append({partition.mountpoint: du.percent})
             except Exception:
-                usage[partition.mountpoint] = None
+                usage.append({partition.mountpoint: None})
         return usage
 
     def get_metric_type(self) -> type:

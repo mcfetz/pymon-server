@@ -1,10 +1,9 @@
 from abc import ABC, abstractmethod
-import requests
 
 
 class PluginBase(ABC):
     @abstractmethod
-    def get_metrics(self) -> dict:
+    def get_metrics(self) -> dict | list:
         pass
 
     @abstractmethod

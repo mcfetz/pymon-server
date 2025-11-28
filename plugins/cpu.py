@@ -1,10 +1,9 @@
 from plugins.plugin_base import PluginBase
-import requests
 import psutil
 
 
 class CpuPlugin(PluginBase):
-    def get_metrics(self) -> dict:
+    def get_metrics(self) -> dict | list:
         """
         Gibt die aktuelle CPU-Auslastung in Prozent zurück.
         """
