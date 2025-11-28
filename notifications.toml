@@ -1,0 +1,9 @@
+[targets.email_admin]
+type = "email"
+to = "admin@example.com"
+from = "monitor@example.com"
+server = "smtp.example.com"
+port = 587
+user = "monitor@example.com"
+password = "CHANGE_ME"
+use_tls = true

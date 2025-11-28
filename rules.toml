@@ -11,6 +11,7 @@ condition = "gt"
 threshold = 10.0
 scope = "single"
 severity = "warning"
+notifications = ["email_admin"]
 
 [[rule]]
 id = "cpu_high_avg"
@@ -23,6 +24,7 @@ threshold = 80.0
 scope = "moving_avg"
 window_size = 20
 severity = "critical"
+notifications = ["email_admin"]
 
 [[rule]]
 id = "ram_high_single"
@@ -34,3 +36,4 @@ condition = "gt"
 threshold = 90.0
 scope = "single"
 severity = "warning"
+notifications = ["email_admin"]
