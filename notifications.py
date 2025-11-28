@@ -80,4 +80,4 @@ def notify_targets(
                 body += f"\nAcknowledge this alarm: {ack_link}\n"
 
             send_email_notification(target_conf, subject, body)
-        # weitere Typen (webhook, slack, ...) können hier später ergänzt werden
+        # additional types (webhook, slack, ...) can be added here later

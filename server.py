@@ -24,7 +24,7 @@ DATABASE_URL = "sqlite:///metrics.db"
 engine = create_engine(DATABASE_URL, echo=False, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
-# Erstelle alle Tabellen, falls sie noch nicht existieren
+# Create all tables if they do not exist yet
 Base.metadata.create_all(bind=engine)
 
 
@@ -47,33 +47,33 @@ def status():
 def plugins():
     agentid = request.headers.get("agentid", None)
 
-    # Lade Konfiguration aus config.toml
+    # Load configuration from config.toml
     try:
         config = toml.load("conf/config.toml")
     except Exception as e:
         return jsonify({"error": f"Fehler beim Laden der Konfiguration: {e!s}"}), 500
 
-    # Ermittle die Gruppen des Agenten (falls definiert)
+    # Determine the groups of the agent (if defined)
     agent_groups = config.get("agents", {}).get(agentid, [])
 
-    # Sammle alle Plugins, die den Gruppen des Agenten zugeordnet sind
+    # Collect all plugins that are assigned to the agent's groups
     assigned_plugins = set()
     groups_config = config.get("groups", {})
     for group in agent_groups:
         plugins_for_group = groups_config.get(group, [])
         assigned_plugins.update(plugins_for_group)
 
-    # Falls keine Gruppen/Plugins definiert sind, kann ein leerer Satz oder z. B. alle Plugins zurückgegeben werden.
-    # Hier: Rückgabe der gefilterten Plugins gemäß der Konfiguration
+    # If no groups/plugins are defined, an empty set or e.g. all plugins could be returned.
+    # Here: return the filtered plugins according to the configuration
     return jsonify(list(assigned_plugins)), 200
 
 
 @app.route("/plugin/<name>", methods=["GET"])
 def get_plugin(name):
-    # Erstelle den Pfad zur Python-Skriptdatei im Ordner 'plugins'
+    # Build the path to the Python script file in the 'plugins' folder
     plugin_path = os.path.join("plugins", f"{name}.py")
 
-    # Überprüfe, ob die Datei existiert und lesbar ist
+    # Check if the file exists and is readable
     if not os.path.exists(plugin_path):
         return jsonify({"error": f"Plugin '{name}' nicht gefunden."}), 404
 
@@ -83,31 +83,31 @@ def get_plugin(name):
     except Exception as e:
         return jsonify({"error": f"Fehler beim Lesen des Plugins: {e!s}"}), 500
 
-    # Rückgabe des Inhalts als reinen Text
+    # Return the content as plain text
     return content, 200, {"Content-Type": "text/plain"}
 
 
 @app.route("/plugin/<name>/config", methods=["GET"])
 def get_plugin_config(name):
-    # Hole die agentid aus dem HTTP-Header
+    # Get agentid from HTTP header
     agentid = request.headers.get("agentid", None)
     if not agentid:
         return jsonify({"error": "agentid header missing"}), 400
 
     try:
-        # Lade den Inhalt der agents.toml Datei
+        # Load the contents of the agents.toml file
         config = toml.load("conf/agents.toml")
     except Exception as e:
         logger.error("Fehler beim Laden der agents.toml: %s", e)
         return jsonify({"error": "Fehler beim Laden der Konfiguration"}), 500
 
-    # Suche in der TOML-Datei nach der Agentensektion
+    # Look up the agent section in the TOML file
     agent_config = config.get(agentid, {})
 
-    # Innerhalb der Agentensektion: Hole die Konfiguration für das Plugin (plugin name entspricht <name>)
+    # Within the agent section: get the configuration for the plugin (plugin name equals <name>)
     plugin_config = agent_config.get(name, {})
 
-    # Retourniere die Konfiguration als Dictionary
+    # Return the configuration as a dictionary
     return jsonify(plugin_config), 200
 
 
@@ -142,7 +142,7 @@ def _query_metrics(
     if time_to is not None:
         filters.append(Metrics.timestamp <= time_to)
     if search is not None:
-        # case-insensitive LIKE-Suche auf der Spalte metric
+        # case-insensitive LIKE search on the metric column
         filters.append(Metrics.metric.ilike(f"%{search}%"))
 
     if filters:
@@ -250,27 +250,27 @@ def get_metrics_for_agent_plugin(agentid: str, pluginid: str):
 
 @app.route("/metric", methods=["POST"])
 def collect_metrics():
-    # Neuer /metric Endpoint: Payload und agentid-Header ausgeben
+    # /metric endpoint: store payload and agentid header
     agentid = request.headers.get("agentid", "Unknown")
     payload = request.get_json(silent=True)
 
     logger.info(f"AgentID: {agentid}")
     logger.debug("Received payload: %s", payload)
 
-    # Öffne eine SQLAlchemy-Session
+    # Open a SQLAlchemy session
     session = SessionLocal()
 
     if not isinstance(payload, dict):
         raise ValueError("Ungültige Payload: Es wird ein Dictionary erwartet")
-    # Erwarte Payload-Struktur: pluginid, agentid, timestamp, metrics (als Liste)
+    # Expect payload structure: pluginid, agentid, timestamp, metrics (as list)
     pluginid = payload.get("pluginid")
     if not pluginid:
         raise ValueError("no plugin id found.")
-    # Bevorzugt den agentid-Wert aus Header, ansonsten aus der Payload
+    # Prefer agentid value from header, otherwise from payload
     agentid_payload = payload.get("agentid", agentid)
 
     timestamp = payload.get("timestamp")
-    # Umwandeln des Timestamps, falls er ein String ist (ISO 8601 Format erwartet)
+    # Convert timestamp if it is a string (expects ISO 8601 format)
     if isinstance(timestamp, str):
         try:
             timestamp = datetime.fromisoformat(timestamp)
@@ -278,7 +278,7 @@ def collect_metrics():
             logger.error("Ungültiges Timestamp-Format: %s", e)
             timestamp = datetime.now(UTC)
     elif not isinstance(timestamp, datetime):
-        # Falls kein gültiger Timestamp übermittelt wurde, verwende den aktuellen Zeitpunkt
+        # If no valid timestamp was provided, use the current time
         timestamp = datetime.now(UTC)
 
     metrics_list = payload.get("metrics", [])
