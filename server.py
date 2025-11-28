@@ -4,6 +4,7 @@ from datetime import datetime, UTC
 
 import toml
 from flask import Flask, jsonify, request
+from flasgger import Swagger
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -18,6 +19,7 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 app = Flask(__name__)
+swagger = Swagger(app)
 
 # SQLAlchemy ORM Setup
 DATABASE_URL = "sqlite:///metrics.db"
@@ -30,6 +32,38 @@ Base.metadata.create_all(bind=engine)
 
 @app.route("/status", methods=["GET"])
 def status():
+    """
+    Get agent status.
+    ---
+    tags:
+      - status
+    parameters:
+      - in: header
+        name: agentid
+        required: false
+        schema:
+          type: string
+        description: Agent identifier
+      - in: query
+        name: online
+        required: false
+        schema:
+          type: string
+        description: If present, status will be set to "online"
+      - in: query
+        name: offline
+        required: false
+        schema:
+          type: string
+        description: If present, status will be set to "offline"
+    responses:
+      200:
+        description: Current status of the agent
+        content:
+          text/plain:
+            schema:
+              type: string
+    """
     agentid = request.headers.get("agentid", "Unknown")
     status = None
     if "online" in request.args:
@@ -45,6 +79,30 @@ def status():
 
 @app.route("/plugins", methods=["GET"])
 def plugins():
+    """
+    List plugins assigned to an agent.
+    ---
+    tags:
+      - plugins
+    parameters:
+      - in: header
+        name: agentid
+        required: true
+        schema:
+          type: string
+        description: Agent identifier
+    responses:
+      200:
+        description: List of plugin ids assigned to the agent
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: string
+      500:
+        description: Error while loading configuration
+    """
     agentid = request.headers.get("agentid", None)
 
     # Load configuration from config.toml
@@ -70,6 +128,30 @@ def plugins():
 
 @app.route("/plugin/<name>", methods=["GET"])
 def get_plugin(name):
+    """
+    Get plugin source code.
+    ---
+    tags:
+      - plugins
+    parameters:
+      - in: path
+        name: name
+        required: true
+        schema:
+          type: string
+        description: Plugin id (file name without .py)
+    responses:
+      200:
+        description: Plugin source code
+        content:
+          text/plain:
+            schema:
+              type: string
+      404:
+        description: Plugin not found
+      500:
+        description: Error while reading plugin file
+    """
     # Build the path to the Python script file in the 'plugins' folder
     plugin_path = os.path.join("plugins", f"{name}.py")
 
@@ -89,6 +171,36 @@ def get_plugin(name):
 
 @app.route("/plugin/<name>/config", methods=["GET"])
 def get_plugin_config(name):
+    """
+    Get plugin configuration for an agent.
+    ---
+    tags:
+      - plugins
+    parameters:
+      - in: path
+        name: name
+        required: true
+        schema:
+          type: string
+        description: Plugin id
+      - in: header
+        name: agentid
+        required: true
+        schema:
+          type: string
+        description: Agent identifier
+    responses:
+      200:
+        description: Plugin configuration for the agent
+        content:
+          application/json:
+            schema:
+              type: object
+      400:
+        description: Missing agentid header
+      500:
+        description: Error while loading configuration
+    """
     # Get agentid from HTTP header
     agentid = request.headers.get("agentid", None)
     if not agentid:
@@ -168,6 +280,56 @@ def _query_metrics(
 
 @app.route("/metrics", methods=["GET"])
 def get_metrics_all():
+    """
+    Query metrics for all agents and plugins.
+    ---
+    tags:
+      - metrics
+    parameters:
+      - in: query
+        name: time-from
+        required: false
+        schema:
+          type: string
+          format: date-time
+        description: Start timestamp (ISO 8601)
+      - in: query
+        name: time-to
+        required: false
+        schema:
+          type: string
+          format: date-time
+        description: End timestamp (ISO 8601)
+      - in: query
+        name: search
+        required: false
+        schema:
+          type: string
+        description: Case-insensitive substring filter on metric name
+    responses:
+      200:
+        description: List of metrics
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: object
+                properties:
+                  agentid:
+                    type: string
+                  pluginid:
+                    type: string
+                  metric:
+                    type: string
+                  timestamp:
+                    type: string
+                    format: date-time
+                  value:
+                    type: number
+      400:
+        description: Invalid time-from or time-to format
+    """
     # optionale Query-Parameter: time-from, time-to (ISO 8601)
     time_from_param = request.args.get("time-from")
     time_to_param = request.args.get("time-to")
@@ -196,6 +358,62 @@ def get_metrics_all():
 
 @app.route("/metrics/<agentid>", methods=["GET"])
 def get_metrics_for_agent(agentid: str):
+    """
+    Query metrics for a specific agent.
+    ---
+    tags:
+      - metrics
+    parameters:
+      - in: path
+        name: agentid
+        required: true
+        schema:
+          type: string
+        description: Agent identifier
+      - in: query
+        name: time-from
+        required: false
+        schema:
+          type: string
+          format: date-time
+        description: Start timestamp (ISO 8601)
+      - in: query
+        name: time-to
+        required: false
+        schema:
+          type: string
+          format: date-time
+        description: End timestamp (ISO 8601)
+      - in: query
+        name: search
+        required: false
+        schema:
+          type: string
+        description: Case-insensitive substring filter on metric name
+    responses:
+      200:
+        description: List of metrics for the agent
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: object
+                properties:
+                  agentid:
+                    type: string
+                  pluginid:
+                    type: string
+                  metric:
+                    type: string
+                  timestamp:
+                    type: string
+                    format: date-time
+                  value:
+                    type: number
+      400:
+        description: Invalid time-from or time-to format
+    """
     time_from_param = request.args.get("time-from")
     time_to_param = request.args.get("time-to")
     search = request.args.get("search")
@@ -223,6 +441,68 @@ def get_metrics_for_agent(agentid: str):
 
 @app.route("/metrics/<agentid>/<pluginid>", methods=["GET"])
 def get_metrics_for_agent_plugin(agentid: str, pluginid: str):
+    """
+    Query metrics for a specific agent and plugin.
+    ---
+    tags:
+      - metrics
+    parameters:
+      - in: path
+        name: agentid
+        required: true
+        schema:
+          type: string
+        description: Agent identifier
+      - in: path
+        name: pluginid
+        required: true
+        schema:
+          type: string
+        description: Plugin identifier
+      - in: query
+        name: time-from
+        required: false
+        schema:
+          type: string
+          format: date-time
+        description: Start timestamp (ISO 8601)
+      - in: query
+        name: time-to
+        required: false
+        schema:
+          type: string
+          format: date-time
+        description: End timestamp (ISO 8601)
+      - in: query
+        name: search
+        required: false
+        schema:
+          type: string
+        description: Case-insensitive substring filter on metric name
+    responses:
+      200:
+        description: List of metrics for the agent and plugin
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: object
+                properties:
+                  agentid:
+                    type: string
+                  pluginid:
+                    type: string
+                  metric:
+                    type: string
+                  timestamp:
+                    type: string
+                    format: date-time
+                  value:
+                    type: number
+      400:
+        description: Invalid time-from or time-to format
+    """
     time_from_param = request.args.get("time-from")
     time_to_param = request.args.get("time-to")
     search = request.args.get("search")
@@ -250,6 +530,56 @@ def get_metrics_for_agent_plugin(agentid: str, pluginid: str):
 
 @app.route("/metric", methods=["POST"])
 def collect_metrics():
+    """
+    Ingest metrics from an agent.
+    ---
+    tags:
+      - metrics
+    parameters:
+      - in: header
+        name: agentid
+        required: false
+        schema:
+          type: string
+        description: Agent identifier (overrides payload agentid if present)
+      - in: body
+        name: payload
+        required: true
+        schema:
+          type: object
+          properties:
+            pluginid:
+              type: string
+            agentid:
+              type: string
+            timestamp:
+              type: string
+              format: date-time
+            metrics:
+              type: array
+              items:
+                type: object
+                additionalProperties:
+                  oneOf:
+                    - type: number
+                    - type: integer
+                    - type: boolean
+                    - type: string
+    responses:
+      200:
+        description: Metrics stored successfully
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+      400:
+        description: Invalid payload
+      500:
+        description: Internal error while storing or evaluating metrics
+    """
     # /metric endpoint: store payload and agentid header
     agentid = request.headers.get("agentid", "Unknown")
     payload = request.get_json(silent=True)
@@ -312,6 +642,35 @@ def collect_metrics():
 
 @app.route("/alarms/<int:alarmid>/ack", methods=["GET"])
 def acknowledge_alarm(alarmid: int):
+    """
+    Acknowledge an alarm.
+    ---
+    tags:
+      - alarms
+    parameters:
+      - in: path
+        name: alarmid
+        required: true
+        schema:
+          type: integer
+        description: Alarm id
+    responses:
+      200:
+        description: Alarm acknowledged
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                alarmid:
+                  type: integer
+      404:
+        description: Alarm not found
+      500:
+        description: Internal error while acknowledging alarm
+    """
     session = SessionLocal()
     try:
         alarm = session.get(Alarm, alarmid)
