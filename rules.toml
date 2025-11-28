@@ -8,7 +8,7 @@ description = "CPU > 90% in einer einzelnen Messung"
 pluginid = "cpu"
 metric = "percent"
 condition = "gt"
-threshold = 90.0
+threshold = 10.0
 scope = "single"
 severity = "warning"
 

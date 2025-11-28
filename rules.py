@@ -75,10 +75,8 @@ def create_alarm(
     metric: str,
     value: float,
 ) -> None:
-    message = (
-        f"Rule '{rule.id}' triggered for agent '{agentid}', "
-        f"plugin '{rule.pluginid}', metric '{metric}': value={value}"
-    )
+    message = f"Rule '{rule.id}' triggered for agent '{agentid}', plugin '{rule.pluginid}', metric '{metric}': value={value}"
+    print(message)
     alarm = Alarm(
         agentid=agentid,
         rule_id=rule.id,
@@ -105,12 +103,7 @@ def evaluate_single_rule(
     )
 
     if rule.scope == "single":
-        q = (
-            select(Metrics)
-            .where(*base_filter)
-            .order_by(desc(Metrics.timestamp))
-            .limit(1)
-        )
+        q = select(Metrics).where(*base_filter).order_by(desc(Metrics.timestamp)).limit(1)
         row = session.execute(q).scalars().first()
         if not row:
             return
@@ -122,12 +115,7 @@ def evaluate_single_rule(
 
     elif rule.scope == "moving_avg":
         window = rule.window_size or 10
-        q = (
-            select(func.avg(func.coalesce(Metrics.value_float, Metrics.value_int)))
-            .where(*base_filter)
-            .order_by(desc(Metrics.timestamp))
-            .limit(window)
-        )
+        q = select(func.avg(func.coalesce(Metrics.value_float, Metrics.value_int))).where(*base_filter).order_by(desc(Metrics.timestamp)).limit(window)
         avg_value = session.execute(q).scalar()
         if avg_value is None:
             return
@@ -137,18 +125,11 @@ def evaluate_single_rule(
     elif rule.scope == "count_ratio":
         window = rule.window_size or 10
         min_violations = rule.min_violations or 1
-        q = (
-            select(func.coalesce(Metrics.value_float, Metrics.value_int).label("v"))
-            .where(*base_filter)
-            .order_by(desc(Metrics.timestamp))
-            .limit(window)
-        )
+        q = select(func.coalesce(Metrics.value_float, Metrics.value_int).label("v")).where(*base_filter).order_by(desc(Metrics.timestamp)).limit(window)
         values = [row.v for row in session.execute(q) if row.v is not None]
         if not values:
             return
-        violations = sum(
-            1 for v in values if compare(float(v), rule.condition, rule.threshold)
-        )
+        violations = sum(1 for v in values if compare(float(v), rule.condition, rule.threshold))
         if violations >= min_violations:
             create_alarm(session, agentid, rule, metric, float(violations))
 
