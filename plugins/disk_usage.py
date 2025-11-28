@@ -7,10 +7,11 @@ class DiskUsagePlugin(PluginBase):
     DiskUsagePlugin erfasst Festplattennutzungsdaten.
 
     Gemessene Metriken:
-    
-    - Für jede Partition (mountpoint) wird ein Dictionary zurückgegeben, 
+
+    - Für jede Partition (mountpoint) wird ein Dictionary zurückgegeben,
       wobei der Schlüssel der Mountpoint und der Wert ein float ist, der den prozentualen Festplattennutzungsgrad angibt.
     """
+
     def get_metrics(self) -> dict | list:
         """
         Ermittelt die Festplattennutzung für alle Partitionen.
@@ -22,6 +23,13 @@ class DiskUsagePlugin(PluginBase):
         partitions = psutil.disk_partitions()
         usage = []
         for partition in partitions:
+            excludes = self.config.get("excludes")
+            if excludes:
+                for exclude in excludes:
+                    print(f"{exclude} {partition.mountpoint}")
+                    # ai! exclude contains a regex string. check this against the partition mountpoint.
+                    if exclude in partition.mountpoint:
+                        continue
             try:
                 du = psutil.disk_usage(partition.mountpoint)
                 usage.append({partition.mountpoint: du.percent})
