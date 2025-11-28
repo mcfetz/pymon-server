@@ -94,7 +94,8 @@ def collect_metrics():
     # Öffne eine SQLAlchemy-Session
     session = SessionLocal()
 
-    # ai! prüfe vorab ob die payload wirklich ein dict ist. falls nicht, werfe exception
+    if not isinstance(payload, dict):
+        raise ValueError("Ungültige Payload: Es wird ein Dictionary erwartet")
     # Erwarte Payload-Struktur: pluginid, agentid, timestamp, metrics (als Liste)
     pluginid = payload.get("pluginid")
     # Bevorzugt den agentid-Wert aus Header, ansonsten aus der Payload
