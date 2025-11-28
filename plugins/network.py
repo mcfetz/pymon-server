@@ -13,6 +13,9 @@ class NetworkPlugin(PluginBase):
     - Für jedes Interface wird ein Dictionary-Eintrag erzeugt:
       key: "<ifname>:bytes_sent" und "<ifname>:bytes_recv"
       value: Anzahl Bytes (float)
+    - Zusätzlich:
+      key: "tcp_open_connections"
+      value: Anzahl aktuell offener TCP-Verbindungen (float)
     """
 
     def __init__(self, config: dict):
@@ -53,6 +56,14 @@ class NetworkPlugin(PluginBase):
         # aktuellen Zustand für nächste Messung merken
         self._last_counters = counters
         self._last_time = now
+
+        # Anzahl offener TCP-Verbindungen erfassen
+        try:
+            tcp_conns = psutil.net_connections(kind="tcp")
+            metrics["tcp_open_connections"] = float(len(tcp_conns))
+        except Exception:
+            # bei Fehlern keine Metrik setzen
+            pass
 
         return metrics
 
