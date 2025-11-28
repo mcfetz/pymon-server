@@ -1,6 +1,7 @@
 import os
 import toml
 import logging
+import sqlite3
 from flask import Flask, request, jsonify
 
 logging.basicConfig(
@@ -9,8 +10,25 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-
 app = Flask(__name__)
+
+def init_db(db_path="metrics.db"):
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS metrics (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        agentid TEXT,
+        pluginid TEXT,
+        timestamp REAL,
+        metric TEXT,
+        value_float REAL,
+        value_int INTEGER,
+        value_str TEXT
+    )
+    """)
+    conn.commit()
+    return conn
 
 
 @app.route("/status", methods=["GET"])
@@ -81,7 +99,39 @@ def collect_metrics():
     logger.info(f"AgentID: {agentid}")
     logger.info("Received payload: %s", payload)
 
-    return jsonify({"status": "Payload received"}), 200
+    # Initialisiere DB-Verbindung und lege Tabelle an, falls nicht vorhanden
+    conn = init_db()
+    cursor = conn.cursor()
+
+    # Erwarte Payload-Struktur: pluginid, agentid, timestamp, metrics (als Liste)
+    pluginid = payload.get("pluginid")
+    # agentid aus Payload oder Header (Header hat Vorrang, sofern gewünscht)
+    agentid_payload = payload.get("agentid", agentid)
+    timestamp = payload.get("timestamp")
+    metrics_list = payload.get("metrics", [])
+
+    for metric_dict in metrics_list:
+        if isinstance(metric_dict, dict):
+            for metric_name, value in metric_dict.items():
+                value_float = value_int = value_str = None
+                if isinstance(value, float):
+                    value_float = value
+                elif isinstance(value, int):
+                    value_int = value
+                elif isinstance(value, str):
+                    value_str = value
+                else:
+                    value_str = str(value)
+
+                cursor.execute("""
+                    INSERT INTO metrics (agentid, pluginid, timestamp, metric, value_float, value_int, value_str)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (agentid_payload, pluginid, timestamp, metric_name, value_float, value_int, value_str))
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({"status": "Metrics stored"}), 200
 
 
 if __name__ == "__main__":
