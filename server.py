@@ -94,6 +94,8 @@ def collect_metrics():
     # Öffne eine SQLAlchemy-Session
     session = SessionLocal()
 
+    from datetime import datetime
+
     if not isinstance(payload, dict):
         raise ValueError("Ungültige Payload: Es wird ein Dictionary erwartet")
     # Erwarte Payload-Struktur: pluginid, agentid, timestamp, metrics (als Liste)
@@ -101,6 +103,9 @@ def collect_metrics():
     # Bevorzugt den agentid-Wert aus Header, ansonsten aus der Payload
     agentid_payload = payload.get("agentid", agentid)
     timestamp = payload.get("timestamp")
+    # Umwandeln des Timestamps, falls er ein String ist (ISO 8601 Format erwartet)
+    if isinstance(timestamp, str):
+        timestamp = datetime.fromisoformat(timestamp)
     metrics_list = payload.get("metrics", [])
 
     for metric_dict in metrics_list:
