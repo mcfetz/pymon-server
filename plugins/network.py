@@ -18,7 +18,7 @@ class NetworkPlugin(PluginBase):
     def __init__(self, config: dict):
         super().__init__(config)
         # optional: sleep-Intervall aus Config, sonst Default
-        self._sleep = int(config.get("sleep", 5))
+        self._sleep = int(config.get("sleep", 30))
         # state for throughput calculation
         self._last_counters: dict[str, psutil._common.snetio] | None = None
         self._last_time: float | None = None
