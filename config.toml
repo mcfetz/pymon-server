@@ -1,6 +1,0 @@
-[agents]
-agent1 = ["default", "ping"]
-
-[groups]
-default = ["plugin_base", "host", "cpu", "ram", "disk_usage"]
-ping = ["ping"]

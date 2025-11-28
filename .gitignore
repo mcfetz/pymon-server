@@ -1,3 +1,4 @@
 .aider*
-
 plugins/__pycache__
+.ignore
+__pycache__

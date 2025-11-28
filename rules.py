@@ -1,14 +1,12 @@
 from dataclasses import dataclass
-from datetime import datetime, UTC
-from typing import Literal, Any
-import smtplib
-from email.message import EmailMessage
+from typing import Literal
 
 import toml
-from sqlalchemy import select, desc, func
+from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
-from db_models import Metrics, Alarm
+from db_models import Alarm, Metrics
+from notifications import notify_targets
 
 Condition = Literal["gt", "lt", "ge", "le", "eq", "ne"]
 Scope = Literal["single", "moving_avg", "count_ratio"]
@@ -56,18 +54,7 @@ def load_rules(path: str = "rules.toml") -> list[Rule]:
     return rules
 
 
-RULES: list[Rule] = load_rules()
-
-
-def load_notification_config(path: str = "notifications.toml") -> dict[str, Any]:
-    try:
-        data = toml.load(path)
-    except FileNotFoundError:
-        return {}
-    return data.get("targets", {})
-
-
-NOTIFICATION_TARGETS: dict[str, Any] = load_notification_config()
+RULES: list[Rule] = load_rules("conf/rules.toml")
 
 
 def compare(value: float, condition: Condition, threshold: float) -> bool:
@@ -83,60 +70,6 @@ def compare(value: float, condition: Condition, threshold: float) -> bool:
         return value == threshold
     if condition == "ne":
         return value != threshold
-    raise ValueError(f"Unknown condition: {condition}")
-
-
-def send_email_notification(target_conf: dict[str, Any], subject: str, body: str) -> None:
-    msg = EmailMessage()
-    msg["Subject"] = subject
-    msg["From"] = target_conf["from"]
-    msg["To"] = target_conf["to"]
-    msg.set_content(body)
-
-    server = target_conf["server"]
-    port = int(target_conf.get("port", 587))
-    user = target_conf.get("user")
-    password = target_conf.get("password")
-    use_tls = bool(target_conf.get("use_tls", True))
-
-    if use_tls:
-        with smtplib.SMTP(server, port) as smtp:
-            smtp.starttls()
-            if user and password:
-                smtp.login(user, password)
-            print(f"send msg: {msg}")
-            smtp.send_message(msg)
-    else:
-        with smtplib.SMTP(server, port) as smtp:
-            if user and password:
-                smtp.login(user, password)
-            smtp.send_message(msg)
-
-
-def notify_targets(rule: Rule, agentid: str, metric: str, value: float, message: str) -> None:
-    if not rule.notifications:
-        return
-
-    for target_name in rule.notifications:
-        target_conf = NOTIFICATION_TARGETS.get(target_name)
-        if not target_conf:
-            continue
-
-        target_type = target_conf.get("type")
-        if target_type == "email":
-            subject = f"[skript] Alarm {rule.severity}: {rule.id} on {agentid}"
-            body = (
-                "Alarm triggered\n\n"
-                f"Rule: {rule.id}\n"
-                f"Agent: {agentid}\n"
-                f"Plugin: {rule.pluginid}\n"
-                f"Metric: {metric}\n"
-                f"Value: {value}\n"
-                f"Severity: {rule.severity}\n\n"
-                f"Message: {message}\n"
-            )
-            send_email_notification(target_conf, subject, body)
-        # weitere Typen (webhook, slack, ...) können hier später ergänzt werden
 
 
 def has_open_alarm(session: Session, agentid: str, rule: Rule) -> bool:
@@ -180,7 +113,6 @@ def create_alarm(
     try:
         notify_targets(rule, agentid, metric, value, message)
     except Exception:
-        # Optional: Logging kann hier ergänzt werden
         pass
 
 
@@ -240,8 +172,8 @@ def evaluate_rules_for_payload(
         return
 
     for metric_dict in metrics_list:
-        for metric_name in metric_dict.keys():
+        for metric_name in metric_dict:
             for rule in relevant_rules:
-                if rule.metric != metric_name and rule.metric != "*":
+                if rule.metric not in (metric_name, "*"):
                     continue
                 evaluate_single_rule(session, agentid, pluginid, metric_name, rule)

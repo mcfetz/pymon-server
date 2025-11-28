@@ -9,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 from db_models import Base, Metrics
 from rules import evaluate_rules_for_payload
+from functions import dict_value_to_metric
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,7 +49,7 @@ def plugins():
 
     # Lade Konfiguration aus config.toml
     try:
-        config = toml.load("config.toml")
+        config = toml.load("conf/config.toml")
     except Exception as e:
         return jsonify({"error": f"Fehler beim Laden der Konfiguration: {e!s}"}), 500
 
@@ -95,7 +96,7 @@ def get_plugin_config(name):
 
     try:
         # Lade den Inhalt der agents.toml Datei
-        config = toml.load("agents.toml")
+        config = toml.load("conf/agents.toml")
     except Exception as e:
         logger.error("Fehler beim Laden der agents.toml: %s", e)
         return jsonify({"error": "Fehler beim Laden der Konfiguration"}), 500
@@ -117,7 +118,7 @@ def collect_metrics():
     payload = request.get_json(silent=True)
 
     logger.info(f"AgentID: {agentid}")
-    logger.info("Received payload: %s", payload)
+    logger.debug("Received payload: %s", payload)
 
     # Öffne eine SQLAlchemy-Session
     session = SessionLocal()
@@ -126,6 +127,8 @@ def collect_metrics():
         raise ValueError("Ungültige Payload: Es wird ein Dictionary erwartet")
     # Erwarte Payload-Struktur: pluginid, agentid, timestamp, metrics (als Liste)
     pluginid = payload.get("pluginid")
+    if not pluginid:
+        raise ValueError("no plugin id found.")
     # Bevorzugt den agentid-Wert aus Header, ansonsten aus der Payload
     agentid_payload = payload.get("agentid", agentid)
 
@@ -146,27 +149,13 @@ def collect_metrics():
     for metric_dict in metrics_list:
         if isinstance(metric_dict, dict):
             for metric_name, value in metric_dict.items():
-                value_float = value_int = value_str = None
-                if isinstance(value, float):
-                    value_float = value
-                elif isinstance(value, int):
-                    value_int = value
-                elif isinstance(value, str):
-                    value_str = value
-                elif isinstance(value, bool):
-                    value_int = 1 if value else 0
-                elif value:
-                    value_str = str(value)
-
                 metric_entry = Metrics(
                     agentid=agentid_payload,
                     pluginid=pluginid,
                     timestamp=timestamp,
                     metric=metric_name,
-                    value_float=value_float,
-                    value_int=value_int,
-                    value_str=value_str,
                 )
+                metric_entry = dict_value_to_metric(value, metric_entry)
                 session.add(metric_entry)
 
     session.commit()
