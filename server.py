@@ -94,7 +94,7 @@ def collect_metrics():
     # Öffne eine SQLAlchemy-Session
     session = SessionLocal()
 
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     if not isinstance(payload, dict):
         raise ValueError("Ungültige Payload: Es wird ein Dictionary erwartet")
@@ -110,10 +110,10 @@ def collect_metrics():
             timestamp = datetime.fromisoformat(timestamp)
         except ValueError as e:
             logger.error("Ungültiges Timestamp-Format: %s", e)
-            timestamp = datetime.utcnow()
+            timestamp = datetime.now(timezone.utc)
     elif not isinstance(timestamp, datetime):
         # Falls kein gültiger Timestamp übermittelt wurde, verwende den aktuellen Zeitpunkt
-        timestamp = datetime.utcnow()
+        timestamp = datetime.now(timezone.utc)
 
     metrics_list = payload.get("metrics", [])
 
