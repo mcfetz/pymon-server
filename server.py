@@ -126,6 +126,7 @@ def _query_metrics(
     pluginid: str | None = None,
     time_from: datetime | None = None,
     time_to: datetime | None = None,
+    search: str | None = None,
 ) -> list[dict]:
     from sqlalchemy import and_
 
@@ -140,6 +141,9 @@ def _query_metrics(
         filters.append(Metrics.timestamp >= time_from)
     if time_to is not None:
         filters.append(Metrics.timestamp <= time_to)
+    if search is not None:
+        # case-insensitive LIKE-Suche auf der Spalte metric
+        filters.append(Metrics.metric.ilike(f"%{search}%"))
 
     if filters:
         q = q.filter(and_(*filters))
@@ -167,6 +171,7 @@ def get_metrics_all():
     # optionale Query-Parameter: time-from, time-to (ISO 8601)
     time_from_param = request.args.get("time-from")
     time_to_param = request.args.get("time-to")
+    search = request.args.get("search")
 
     time_from = _parse_time_param(time_from_param)
     time_to = _parse_time_param(time_to_param)
@@ -176,7 +181,14 @@ def get_metrics_all():
 
     session = SessionLocal()
     try:
-        data = _query_metrics(session, agentid=None, pluginid=None, time_from=time_from, time_to=time_to)
+        data = _query_metrics(
+            session,
+            agentid=None,
+            pluginid=None,
+            time_from=time_from,
+            time_to=time_to,
+            search=search,
+        )
         return jsonify(data), 200
     finally:
         session.close()
@@ -186,6 +198,7 @@ def get_metrics_all():
 def get_metrics_for_agent(agentid: str):
     time_from_param = request.args.get("time-from")
     time_to_param = request.args.get("time-to")
+    search = request.args.get("search")
 
     time_from = _parse_time_param(time_from_param)
     time_to = _parse_time_param(time_to_param)
@@ -195,7 +208,14 @@ def get_metrics_for_agent(agentid: str):
 
     session = SessionLocal()
     try:
-        data = _query_metrics(session, agentid=agentid, pluginid=None, time_from=time_from, time_to=time_to)
+        data = _query_metrics(
+            session,
+            agentid=agentid,
+            pluginid=None,
+            time_from=time_from,
+            time_to=time_to,
+            search=search,
+        )
         return jsonify(data), 200
     finally:
         session.close()
@@ -205,6 +225,7 @@ def get_metrics_for_agent(agentid: str):
 def get_metrics_for_agent_plugin(agentid: str, pluginid: str):
     time_from_param = request.args.get("time-from")
     time_to_param = request.args.get("time-to")
+    search = request.args.get("search")
 
     time_from = _parse_time_param(time_from_param)
     time_to = _parse_time_param(time_to_param)
@@ -214,7 +235,14 @@ def get_metrics_for_agent_plugin(agentid: str, pluginid: str):
 
     session = SessionLocal()
     try:
-        data = _query_metrics(session, agentid=agentid, pluginid=pluginid, time_from=time_from, time_to=time_to)
+        data = _query_metrics(
+            session,
+            agentid=agentid,
+            pluginid=pluginid,
+            time_from=time_from,
+            time_to=time_to,
+            search=search,
+        )
         return jsonify(data), 200
     finally:
         session.close()
