@@ -1,6 +1,6 @@
 import psutil
 
-from .plugin_base import PluginBase
+from plugins.plugin_base import PluginBase
 
 
 class NetworkPlugin(PluginBase):
