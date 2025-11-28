@@ -4,7 +4,26 @@ from datetime import datetime
 from plugins.plugin_base import PluginBase
 
 class HostPlugin(PluginBase):
+    """
+    HostPlugin erfasst folgende Metriken:
+    
+    - hostname (str): Der Name des Hosts.
+    - uptime (float): Die Systemlaufzeit in Sekunden.
+    - os (str): Name des Betriebssystems.
+    - os_version (str): Versionsinformation des Betriebssystems.
+    """
     def get_metrics(self) -> dict | list:
+        """
+        Sammelt Metriken des Hosts und liefert diese als Dictionary zurück.
+
+        Rückgabewert:
+            dict: {
+                "hostname": str,
+                "uptime": float,
+                "os": str,
+                "os_version": str
+            }
+        """
         # Determine hostname
         hostname = platform.node()
 

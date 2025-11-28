@@ -1,3 +1,14 @@
+"""
+Dieses Modul definiert die abstrakte Basisklasse PluginBase, 
+welche von allen Plugin-Klassen implementiert werden muss.
+
+Jedes Plugin sollte folgende Methoden implementieren:
+- get_metrics(): Liefert die gesammelten Metriken.
+- get_metric_type(): Gibt den Datentyp (z. B. dict, float) der Metriken zurück.
+- get_default_sleep(): Legt den Standardabfrageintervall in Sekunden fest.
+- get_plugin_id(): Gibt eine eindeutige Plugin-ID zurück.
+"""
+
 from abc import ABC, abstractmethod
 
 
