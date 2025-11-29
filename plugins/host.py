@@ -1,6 +1,9 @@
 import platform
-import psutil
+import socket
 from datetime import datetime
+from typing import Dict
+
+import psutil
 from plugins.plugin_base import PluginBase
 
 
@@ -17,6 +20,7 @@ class HostPlugin(PluginBase):
     - cpu_physical_cores (int): Number of physical CPU cores.
     - cpu_model (str): CPU model name.
     - swap_total (int): Total swap space in bytes.
+    - ip:<interface> (str): IP address of the given network interface (e.g. "ip:eth0").
     """
 
     def get_metrics(self) -> dict | list:
@@ -56,7 +60,7 @@ class HostPlugin(PluginBase):
         cpu_physical_cores = psutil.cpu_count(logical=False) or 0
         cpu_model = platform.processor() or ""
 
-        return {
+        metrics: dict[str, object] = {
             "hostname": hostname,
             "uptime": uptime_seconds,
             "os": os_name,
@@ -67,6 +71,21 @@ class HostPlugin(PluginBase):
             "cpu_model": cpu_model,
             "swap_total": int(psutil.swap_memory().total),
         }
+
+        # Add IP addresses per interface: "ip:<interface-name>" -> IP string
+        try:
+            addrs = psutil.net_if_addrs()
+            for if_name, addr_list in addrs.items():
+                for addr in addr_list:
+                    if addr.family == socket.AF_INET and addr.address:
+                        metrics[f"ip:{if_name}"] = addr.address
+                        # If multiple IPv4 addresses per interface exist, the last one wins.
+                        # If you want only the first, add a "break" here.
+        except Exception:
+            # If anything goes wrong while collecting IPs, ignore and return base metrics
+            pass
+
+        return metrics
 
     def get_default_sleep(self) -> int:
         # Default interval for metric polling in seconds
