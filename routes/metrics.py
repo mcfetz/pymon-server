@@ -358,14 +358,14 @@ def collect_metrics():
     agentid = request.headers.get("agentid", "Unknown")
     payload = request.get_json(silent=True)
 
-    logger.info(f"AgentID: {agentid}")
+    logger.info(f"Received data from agentid: {agentid}")
     logger.debug("Received payload: %s", payload)
 
     # Open a SQLAlchemy session
     session = SessionLocal()
 
     if not isinstance(payload, dict):
-        raise ValueError("Ungültige Payload: Es wird ein Dictionary erwartet")
+        raise ValueError("invalid payload: only dict is allowed.")
     # Expect payload structure: pluginid, agentid, timestamp, metrics (as list)
     pluginid = payload.get("pluginid")
     if not pluginid:
@@ -379,7 +379,7 @@ def collect_metrics():
         try:
             timestamp = datetime.fromisoformat(timestamp)
         except ValueError as e:
-            logger.error("Ungültiges Timestamp-Format: %s", e)
+            logger.error("invalid timestamp format: %s", e)
             timestamp = datetime.now(UTC)
     elif not isinstance(timestamp, datetime):
         # If no valid timestamp was provided, use the current time
