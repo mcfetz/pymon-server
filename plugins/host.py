@@ -78,6 +78,9 @@ class HostPlugin(PluginBase):
             for if_name, addr_list in addrs.items():
                 for addr in addr_list:
                     if addr.family == socket.AF_INET and addr.address:
+                        # Skip loopback interface lo with 127.0.0.1
+                        if if_name == "lo" and addr.address == "127.0.0.1":
+                            continue
                         metrics[f"ip:{if_name}"] = addr.address
                         # If multiple IPv4 addresses per interface exist, the last one wins.
                         # If you want only the first, add a "break" here.
