@@ -3,6 +3,7 @@ import psutil
 from datetime import datetime
 from plugins.plugin_base import PluginBase
 
+
 class HostPlugin(PluginBase):
     """
     HostPlugin collects the following metrics:
@@ -15,8 +16,9 @@ class HostPlugin(PluginBase):
     - cpu_count (int): Number of logical CPUs.
     - cpu_physical_cores (int): Number of physical CPU cores.
     - cpu_model (str): CPU model name.
-    - swap_total (float): Total swap space in bytes.
+    - swap_total (int): Total swap space in bytes.
     """
+
     def get_metrics(self) -> dict | list:
         """
         Sammelt Metriken des Hosts und liefert diese als Dictionary zurück.
@@ -59,11 +61,11 @@ class HostPlugin(PluginBase):
             "uptime": uptime_seconds,
             "os": os_name,
             "os_version": os_version,
-            "total_ram": float(total_ram),
+            "total_ram": int(total_ram),
             "cpu_count": int(cpu_count),
             "cpu_physical_cores": int(cpu_physical_cores),
             "cpu_model": cpu_model,
-            "swap_total": float(psutil.swap_memory().total),
+            "swap_total": int(psutil.swap_memory().total),
         }
 
     def get_default_sleep(self) -> int:
