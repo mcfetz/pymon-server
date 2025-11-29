@@ -29,3 +29,15 @@ def dict_value_to_metric(value, metric: Metrics):
     metric.value_str = value_str
 
     return metric
+
+
+def get_value_from_row(row):
+    value = None
+    if row.value_int:
+        value = row.value_int
+    if row.value_float:
+        value = row.value_float
+    if row.value_str:
+        value = row.value_str
+
+    return value

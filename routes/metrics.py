@@ -4,7 +4,7 @@ from flask import jsonify, request
 from sqlalchemy import and_
 
 from db_models import Metrics
-from functions import _parse_time_param, dict_value_to_metric
+from functions import _parse_time_param, dict_value_to_metric, get_value_from_row
 from rules import evaluate_rules_for_payload
 from core import SessionLocal, app, logger
 
@@ -40,14 +40,13 @@ def _query_metrics(
     result: list[dict] = []
     for row in rows:
         # Wert aus value_float / value_int bestimmen
-        value = row.value_float if row.value_float is not None else row.value_int
         result.append(
             {
                 "agentid": row.agentid,
                 "pluginid": row.pluginid,
                 "metric": row.metric,
                 "timestamp": row.timestamp.isoformat(),
-                "value": value,
+                "value": get_value_from_row(row),
             }
         )
     return result

@@ -1,6 +1,6 @@
 import docker
 
-from .plugin_base import PluginBase
+from plugins.plugin_base import PluginBase
 
 
 class DockerHostPlugin(PluginBase):
@@ -36,10 +36,10 @@ class DockerHostPlugin(PluginBase):
             paused_containers = self.client.containers.list(filters={"status": "paused"})
             stopped_containers = self.client.containers.list(filters={"status": "exited"})
 
-            metrics["containers_total"] = float(len(all_containers))
-            metrics["containers_running"] = float(len(running_containers))
-            metrics["containers_paused"] = float(len(paused_containers))
-            metrics["containers_stopped"] = float(len(stopped_containers))
+            metrics["containers_total"] = len(all_containers)
+            metrics["containers_running"] = len(running_containers)
+            metrics["containers_paused"] = len(paused_containers)
+            metrics["containers_stopped"] = len(stopped_containers)
 
             # Images
             images = self.client.images.list()
