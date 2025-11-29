@@ -15,6 +15,7 @@ class HostPlugin(PluginBase):
     - cpu_count (int): Number of logical CPUs.
     - cpu_physical_cores (int): Number of physical CPU cores.
     - cpu_model (str): CPU model name.
+    - swap_total (float): Total swap space in bytes.
     """
     def get_metrics(self) -> dict | list:
         """
@@ -62,6 +63,7 @@ class HostPlugin(PluginBase):
             "cpu_count": int(cpu_count),
             "cpu_physical_cores": int(cpu_physical_cores),
             "cpu_model": cpu_model,
+            "swap_total": float(psutil.swap_memory().total),
         }
 
     def get_default_sleep(self) -> int:
