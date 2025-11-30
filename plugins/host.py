@@ -90,10 +90,6 @@ class HostPlugin(PluginBase):
 
         return metrics
 
-    def get_default_sleep(self) -> int:
-        # Default interval for metric polling in seconds
-        return 60
-
     def get_metric_type(self) -> type:
         # get_metrics returns a dict
         return dict

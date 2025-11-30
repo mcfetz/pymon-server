@@ -67,8 +67,5 @@ class NetworkPlugin(PluginBase):
 
         return metrics
 
-    def get_default_sleep(self) -> int:
-        return self._sleep
-
     def get_plugin_id(self) -> str:
         return "network"

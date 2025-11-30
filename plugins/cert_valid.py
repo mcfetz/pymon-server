@@ -71,10 +71,6 @@ class CertValidPlugin(PluginBase):
                 metrics[url] = float(days)
         return metrics
 
-    def get_default_sleep(self) -> int:
-        # Standard-Intervall in Sekunden, z.B. einmal pro Tag
-        return int(self.config.get("sleep", 86400))
-
     def get_metric_type(self) -> type:
         # Liefert float-Werte (Tage)
         return float

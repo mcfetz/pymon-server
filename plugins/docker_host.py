@@ -59,12 +59,6 @@ class DockerHostPlugin(PluginBase):
 
         return metrics
 
-    def get_default_sleep(self) -> int:
-        """
-        Default polling interval in seconds.
-        """
-        return int(self.config.get("sleep", 30))
-
     def get_metric_type(self) -> type:
         """
         All metrics are numeric (float).

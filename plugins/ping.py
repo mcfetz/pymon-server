@@ -55,8 +55,5 @@ class PingPlugin(PluginBase):
             results[f"{host} avg-time"] = avg_time
         return results
 
-    def get_default_sleep(self) -> int:
-        return 60
-
     def get_plugin_id(self) -> str:
         return "ping"

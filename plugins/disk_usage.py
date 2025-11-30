@@ -13,7 +13,7 @@ class DiskUsagePlugin(PluginBase):
       wobei der Schlüssel der Mountpoint und der Wert ein float ist, der den prozentualen Festplattennutzungsgrad angibt.
     """
 
-    def get_metrics(self) -> dict | list:
+    def get_metrics(self) -> dict:
         """
         Ermittelt die Festplattennutzung für alle Partitionen.
 
@@ -42,6 +42,3 @@ class DiskUsagePlugin(PluginBase):
 
     def get_plugin_id(self) -> str:
         return "disk_usage"
-
-    def get_default_sleep(self) -> int:
-        return 300

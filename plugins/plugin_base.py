@@ -5,7 +5,7 @@ welche von allen Plugin-Klassen implementiert werden muss.
 Jedes Plugin sollte folgende Methoden implementieren:
 - get_metrics(): Liefert die gesammelten Metriken.
 - get_metric_type(): Gibt den Datentyp (z. B. dict, float) der Metriken zurück.
-- get_default_sleep(): Legt den Standardabfrageintervall in Sekunden fest.
+- get_sleep(): Legt den Standardabfrageintervall in Sekunden fest.
 - get_plugin_id(): Gibt eine eindeutige Plugin-ID zurück.
 """
 
@@ -17,12 +17,11 @@ class PluginBase(ABC):
         self.config = config
 
     @abstractmethod
-    def get_metrics(self) -> dict | list:
+    def get_metrics(self) -> dict:
         pass
 
-    @abstractmethod
-    def get_default_sleep(self) -> int:
-        return 300
+    def get_sleep(self) -> int:
+        return self.config.get("sleep", 300)
 
     def get_plugin_id(self) -> str:
         return self.__class__.__name__

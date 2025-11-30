@@ -65,9 +65,6 @@ class HttpPlugin(PluginBase):
 
         return metrics
 
-    def get_default_sleep(self) -> int:
-        return self._sleep
-
     def get_metric_type(self) -> type:
         # Wir liefern numerische Werte (status_code, 0/1-Flags)
         return float

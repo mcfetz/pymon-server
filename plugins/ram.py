@@ -30,8 +30,5 @@ class RAMPlugin(PluginBase):
             "swap_pct": float(sm.percent),
         }
 
-    def get_default_sleep(self) -> int:
-        return 30
-
     def get_plugin_id(self) -> str:
         return "ram"

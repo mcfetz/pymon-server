@@ -88,9 +88,6 @@ class ServicesPlugin(PluginBase):
 
         return metrics
 
-    def get_default_sleep(self) -> int:
-        return self._sleep
-
     def get_metric_type(self) -> type:
         # Status ist ein String
         return str

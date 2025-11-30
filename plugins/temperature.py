@@ -35,9 +35,6 @@ class TemperaturePlugin(PluginBase):
 
         return metrics
 
-    def get_default_sleep(self) -> int:
-        return self._sleep
-
     def get_metric_type(self) -> type:
         return float
 
