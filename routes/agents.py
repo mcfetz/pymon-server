@@ -101,13 +101,22 @@ def list_groups():
       - agents
     responses:
       200:
-        description: List of group names
+        description: List of groups and their assigned agents
         content:
           application/json:
             schema:
-              type: array
-              items:
-                type: string
+              type: object
+              properties:
+                groups:
+                  type: array
+                  items:
+                    type: string
+                agents:
+                  type: object
+                  additionalProperties:
+                    type: array
+                    items:
+                      type: string
       500:
         description: Error while loading configuration
     """
@@ -119,4 +128,14 @@ def list_groups():
 
     groups_section = config.get("groups", {})
     group_names = list(groups_section.keys())
-    return jsonify(group_names), 200
+
+    # Build mapping: group -> list of agents assigned to that group
+    agents_section = config.get("agents", {})
+    group_to_agents: dict[str, list[str]] = {group: [] for group in group_names}
+
+    for agent_id, agent_groups in agents_section.items():
+        for group in agent_groups:
+            if group in group_to_agents:
+                group_to_agents[group].append(agent_id)
+
+    return jsonify({"groups": group_names, "agents": group_to_agents}), 200
