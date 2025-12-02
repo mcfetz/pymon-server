@@ -88,3 +88,33 @@ def list_agents():
     # Top-level keys in agents.toml are agent ids
     agent_ids = list(agents_config.keys())
     return jsonify(agent_ids), 200
+
+
+@app.route("/groups", methods=["GET"])
+def list_groups():
+    """
+    List all known groups from config.toml.
+    ---
+    tags:
+      - agents
+    responses:
+      200:
+        description: List of group names
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: string
+      500:
+        description: Error while loading configuration
+    """
+    try:
+        config = toml.load("conf/config.toml")
+    except Exception as e:
+        logger.error("Fehler beim Laden der config.toml: %s", e)
+        return jsonify({"error": "Fehler beim Laden der Konfiguration"}), 500
+
+    groups_section = config.get("groups", {})
+    group_names = list(groups_section.keys())
+    return jsonify(group_names), 200
