@@ -1,6 +1,7 @@
 from core import app, logger
-from flask import request
+from flask import request, jsonify
 from auth import require_agent_apikey
+import toml
 
 
 @app.route("/agents/status", methods=["GET"])
@@ -57,3 +58,33 @@ def status():
 
     logger.info(f"AgentID: {agentid}, Status: {status}")
     return f"AgentID: {agentid}, Status: {status}", 200
+
+
+@app.route("/agents", methods=["GET"])
+def list_agents():
+    """
+    List all known agents from agents.toml.
+    ---
+    tags:
+      - agents
+    responses:
+      200:
+        description: List of agent ids
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: string
+      500:
+        description: Error while loading agents configuration
+    """
+    try:
+        agents_config = toml.load("conf/agents.toml")
+    except Exception as e:
+        logger.error("Fehler beim Laden der agents.toml: %s", e)
+        return jsonify({"error": "Fehler beim Laden der Konfiguration"}), 500
+
+    # Top-level keys in agents.toml are agent ids
+    agent_ids = list(agents_config.keys())
+    return jsonify(agent_ids), 200
