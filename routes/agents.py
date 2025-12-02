@@ -61,6 +61,7 @@ def status():
 
 
 @app.route("/agents", methods=["GET"])
+@require_agent_apikey
 def list_agents():
     """
     List all known agents from agents.toml.
@@ -91,6 +92,7 @@ def list_agents():
 
 
 @app.route("/groups", methods=["GET"])
+@require_agent_apikey
 def list_groups():
     """
     List all known groups from config.toml.
