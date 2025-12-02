@@ -138,4 +138,4 @@ def list_groups():
             if group in group_to_agents:
                 group_to_agents[group].append(agent_id)
 
-    return jsonify({"groups": group_names, "agents": group_to_agents}), 200
+    return jsonify(group_to_agents), 200
