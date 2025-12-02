@@ -1,8 +1,10 @@
 from core import app, logger
 from flask import request
+from auth import require_agent_apikey
 
 
 @app.route("/agents/status", methods=["GET"])
+@require_agent_apikey
 def status():
     """
     Get agent status.
@@ -36,7 +38,7 @@ def status():
             schema:
               type: string
     """
-    agentid = request.headers.get("agentid", "Unknown")
+    agentid = request.agentid
     status = None
     if "online" in request.args:
         status = "online"

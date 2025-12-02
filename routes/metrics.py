@@ -7,6 +7,7 @@ from db_models import Metrics
 from functions import _parse_time_param, dict_value_to_metric, get_value_from_row
 from rules import evaluate_rules_for_payload
 from core import SessionLocal, app, logger
+from auth import require_agent_apikey
 
 
 def _query_metrics(
@@ -303,6 +304,7 @@ def get_metrics_for_agent_plugin(agentid: str, pluginid: str):
 
 
 @app.route("/metrics", methods=["POST"])
+@require_agent_apikey
 def collect_metrics():
     """
     Ingest metrics from an agent.
@@ -354,8 +356,8 @@ def collect_metrics():
       500:
         description: Internal error while storing or evaluating metrics
     """
-    # /metric endpoint: store payload and agentid header
-    agentid = request.headers.get("agentid", "Unknown")
+    # /metrics endpoint: store payload and authenticated agentid
+    agentid = request.agentid
     payload = request.get_json(silent=True)
 
     logger.info(f"Received data from agentid: {agentid}")
@@ -370,8 +372,8 @@ def collect_metrics():
     pluginid = payload.get("pluginid")
     if not pluginid:
         raise ValueError("no plugin id found.")
-    # Prefer agentid value from header, otherwise from payload
-    agentid_payload = payload.get("agentid", agentid)
+    # Always use authenticated agentid from header
+    agentid_payload = agentid
 
     timestamp = payload.get("timestamp")
     # Convert timestamp if it is a string (expects ISO 8601 format)

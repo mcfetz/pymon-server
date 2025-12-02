@@ -1,9 +1,11 @@
 from flask import jsonify
 from core import app, logger, SessionLocal
 from db_models import Alarm
+from auth import require_agent_apikey
 
 
 @app.route("/alarms/<int:alarmid>/ack", methods=["GET"])
+@require_agent_apikey
 def acknowledge_alarm(alarmid: int):
     """
     Acknowledge an alarm.

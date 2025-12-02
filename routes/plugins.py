@@ -3,7 +3,7 @@ from flask import request, jsonify
 import toml
 import os
 
-from auth import verify_agent_apikey
+from auth import require_agent_apikey
 
 
 def get_assigned_plugins_for_agentid(agentid: str) -> list:
@@ -27,6 +27,7 @@ def get_assigned_plugins_for_agentid(agentid: str) -> list:
 
 
 @app.route("/plugins", methods=["GET"])
+@require_agent_apikey
 def plugins():
     """
     List plugins assigned to an agent.
@@ -62,16 +63,7 @@ def plugins():
       500:
         description: Error while loading configuration
     """
-    agentid = request.headers.get("agentid", None)
-    apikey = request.headers.get("X-API-Key", None)
-
-    if not agentid:
-        return jsonify({"error": "agentid header missing"}), 400
-
-    if not apikey or not verify_agent_apikey(agentid, apikey):
-        return jsonify({"error": "invalid or missing API key"}), 401
-
-    assigned_plugins = get_assigned_plugins_for_agentid(agentid)
+    assigned_plugins = get_assigned_plugins_for_agentid(request.agentid)
 
     # If no groups/plugins are defined, an empty set or e.g. all plugins could be returned.
     # Here: return the filtered plugins according to the configuration
@@ -79,6 +71,7 @@ def plugins():
 
 
 @app.route("/plugins/<name>", methods=["GET"])
+@require_agent_apikey
 def get_plugin(name):
     """
     Get plugin source code.
@@ -120,19 +113,10 @@ def get_plugin(name):
       500:
         description: Error while reading plugin file
     """
-    agentid = request.headers.get("agentid", None)
-    apikey = request.headers.get("X-API-Key", None)
-
-    if not agentid:
-        return jsonify({"error": "agentid header missing"}), 400
-
-    if not apikey or not verify_agent_apikey(agentid, apikey):
-        return jsonify({"error": "invalid or missing API key"}), 401
-
-    assigned_plugins = get_assigned_plugins_for_agentid(agentid)
+    assigned_plugins = get_assigned_plugins_for_agentid(request.agentid)
 
     if name not in assigned_plugins:
-        return jsonify({"error": f"Plugin '{name}' not assigned to agent {agentid}"}), 404
+        return jsonify({"error": f"Plugin '{name}' not assigned to agent {request.agentid}"}), 404
 
     # Build the path to the Python script file in the 'plugins' folder
     plugin_path = os.path.join("plugins", f"{name}.py")
@@ -152,6 +136,7 @@ def get_plugin(name):
 
 
 @app.route("/plugins/<name>/config", methods=["GET"])
+@require_agent_apikey
 def get_plugin_config(name):
     """
     Get plugin configuration for an agent.
@@ -193,16 +178,6 @@ def get_plugin_config(name):
       500:
         description: Error while loading configuration
     """
-    # Get agentid and API key from HTTP headers
-    agentid = request.headers.get("agentid", None)
-    apikey = request.headers.get("X-API-Key", None)
-
-    if not agentid:
-        return jsonify({"error": "agentid header missing"}), 400
-
-    if not apikey or not verify_agent_apikey(agentid, apikey):
-        return jsonify({"error": "invalid or missing API key"}), 401
-
     try:
         # Load the contents of the agents.toml file
         agents_config = toml.load("conf/agents.toml")
@@ -218,7 +193,7 @@ def get_plugin_config(name):
         return jsonify({"error": "Fehler beim Laden der Konfiguration"}), 500
 
     # Determine the groups of the agent (if defined)
-    agent_groups = global_config.get("agents", {}).get(agentid, [])
+    agent_groups = global_config.get("agents", {}).get(request.agentid, [])
 
     # Collect all plugins that are assigned to the agent's groups
     assigned_plugins = set()
@@ -232,7 +207,7 @@ def get_plugin_config(name):
         return jsonify({"error": "plugin not assigned to this agent"}), 403
 
     # Look up the agent section in the agents.toml file
-    agent_config = agents_config.get(agentid, {})
+    agent_config = agents_config.get(request.agentid, {})
 
     # Within the agent section: get the configuration for the plugin (plugin name equals <name>)
     plugin_config = agent_config.get(name, {})
