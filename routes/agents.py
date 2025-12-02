@@ -14,10 +14,16 @@ def status():
     parameters:
       - in: header
         name: agentid
-        required: false
+        required: true
         schema:
           type: string
-        description: Agent identifier
+        description: Authenticated agent identifier
+      - in: header
+        name: X-API-Key
+        required: true
+        schema:
+          type: string
+        description: API key for the agent
       - in: query
         name: online
         required: false
@@ -37,6 +43,8 @@ def status():
           text/plain:
             schema:
               type: string
+      401:
+        description: Invalid or missing API key
     """
     agentid = request.agentid
     status = None

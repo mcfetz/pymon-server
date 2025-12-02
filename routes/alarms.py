@@ -19,6 +19,18 @@ def acknowledge_alarm(alarmid: int):
         schema:
           type: integer
         description: Alarm id
+      - in: header
+        name: agentid
+        required: true
+        schema:
+          type: string
+        description: Authenticated agent identifier
+      - in: header
+        name: X-API-Key
+        required: true
+        schema:
+          type: string
+        description: API key for the agent
     responses:
       200:
         description: Alarm acknowledged
@@ -31,6 +43,8 @@ def acknowledge_alarm(alarmid: int):
                   type: string
                 alarmid:
                   type: integer
+      401:
+        description: Invalid or missing API key
       404:
         description: Alarm not found
       500:

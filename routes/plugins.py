@@ -40,7 +40,7 @@ def plugins():
         required: true
         schema:
           type: string
-        description: Agent identifier
+        description: Authenticated agent identifier
       - in: header
         name: X-API-Key
         required: true
@@ -90,7 +90,7 @@ def get_plugin(name):
         required: true
         schema:
           type: string
-        description: Agent identifier
+        description: Authenticated agent identifier
       - in: header
         name: X-API-Key
         required: true
@@ -155,7 +155,7 @@ def get_plugin_config(name):
         required: true
         schema:
           type: string
-        description: Agent identifier
+        description: Authenticated agent identifier
       - in: header
         name: X-API-Key
         required: true

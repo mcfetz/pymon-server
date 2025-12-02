@@ -314,10 +314,16 @@ def collect_metrics():
     parameters:
       - in: header
         name: agentid
-        required: false
+        required: true
         schema:
           type: string
-        description: Agent identifier (overrides payload agentid if present)
+        description: Authenticated agent identifier
+      - in: header
+        name: X-API-Key
+        required: true
+        schema:
+          type: string
+        description: API key for the agent
       - in: body
         name: payload
         required: true
@@ -328,6 +334,7 @@ def collect_metrics():
               type: string
             agentid:
               type: string
+              description: Ignored; authenticated agentid from header is used
             timestamp:
               type: string
               format: date-time
@@ -353,6 +360,8 @@ def collect_metrics():
                   type: string
       400:
         description: Invalid payload
+      401:
+        description: Invalid or missing API key
       500:
         description: Internal error while storing or evaluating metrics
     """
