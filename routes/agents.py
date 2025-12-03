@@ -1,8 +1,21 @@
 from core import app, logger, SessionLocal
 from flask import request, jsonify
+from datetime import datetime
+from dateutil import parser as dateutil_parser
 from auth import require_agent_apikey
 from db_models import Metrics
 import toml
+
+
+def _parse_iso_timestamp(value: str | None) -> datetime | None:
+    """
+    Parse an ISO 8601 timestamp string into a datetime object.
+    Returns None if value is None or empty.
+    Raises ValueError if parsing fails.
+    """
+    if not value:
+        return None
+    return dateutil_parser.isoparse(value)
 
 
 @app.route("/agents/status", methods=["GET"])
@@ -250,6 +263,69 @@ def list_agent_plugin_metrics(agentname: str, pluginname: str):
             "Error querying metrics for agent '%s', plugin '%s': %s",
             agentname,
             pluginname,
+            e,
+        )
+        return jsonify({"error": "Error while querying metrics"}), 500
+    finally:
+        session.close()
+
+
+@app.route(
+    "/agents/<agentname>/plugins/<pluginname>/metrics/<metricname>",
+    methods=["GET"],
+)
+@require_agent_apikey
+def list_agent_plugin_metric_data(agentname: str, pluginname: str, metricname: str):
+    """
+    List all metric data points for the given agent, plugin and metric.
+    Supports optional 'from' and 'to' query parameters to filter by timestamp.
+    """
+    from_param = request.args.get("from")
+    to_param = request.args.get("to")
+
+    try:
+        ts_from = _parse_iso_timestamp(from_param)
+        ts_to = _parse_iso_timestamp(to_param)
+    except ValueError as e:
+        logger.warning("Invalid timestamp in query params: %s", e)
+        return jsonify({"error": "Invalid 'from' or 'to' timestamp format"}), 400
+
+    session = SessionLocal()
+    try:
+        query = (
+            session.query(Metrics)
+            .filter(
+                Metrics.agentid == agentname,
+                Metrics.pluginid == pluginname,
+                Metrics.metric == metricname,
+            )
+        )
+
+        if ts_from is not None:
+            query = query.filter(Metrics.timestamp >= ts_from)
+        if ts_to is not None:
+            query = query.filter(Metrics.timestamp <= ts_to)
+
+        query = query.order_by(Metrics.timestamp.asc())
+        rows = query.all()
+
+        result = [
+            {
+                "timestamp": row.timestamp.isoformat(),
+                "value_float": row.value_float,
+                "value_int": row.value_int,
+                "value_str": row.value_str,
+            }
+            for row in rows
+        ]
+
+        return jsonify(result), 200
+    except Exception as e:
+        logger.error(
+            "Error querying metric data for agent '%s', plugin '%s', metric '%s': %s",
+            agentname,
+            pluginname,
+            metricname,
             e,
         )
         return jsonify({"error": "Error while querying metrics"}), 500
