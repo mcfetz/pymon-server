@@ -1,7 +1,7 @@
-from core import app, logger
+from core import app, logger, SessionLocal
 from flask import request, jsonify
-from typing import List, Dict
 from auth import require_agent_apikey
+from db_models import Metrics
 import toml
 
 
@@ -193,3 +193,65 @@ def list_agent_plugins(agentname: str):
             plugins.add(plugin)
 
     return jsonify(sorted(plugins)), 200
+
+
+@app.route("/agents/<agentname>/plugins/<pluginname>/metrics", methods=["GET"])
+@require_agent_apikey
+def list_agent_plugin_metrics(agentname: str, pluginname: str):
+    """
+    List all unique metric names stored in the database for the given agent and plugin.
+    ---
+    tags:
+      - agents
+    parameters:
+      - in: path
+        name: agentname
+        required: true
+        schema:
+          type: string
+        description: Agent identifier
+      - in: path
+        name: pluginname
+        required: true
+        schema:
+          type: string
+        description: Plugin identifier
+    responses:
+      200:
+        description: List of unique metric names for the given agent and plugin
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: string
+      500:
+        description: Error while querying metrics
+    """
+    session = SessionLocal()
+    try:
+        # Query distinct metric names for this agent + plugin
+        rows = (
+            session.query(Metrics.metric)
+            .filter(
+                Metrics.agentid == agentname,
+                Metrics.pluginid == pluginname,
+            )
+            .distinct()
+            .all()
+        )
+
+        # rows is a list of 1-tuples; extract and sort unique metric names
+        metric_names = sorted({row[0] for row in rows if row[0] is not None})
+
+        return jsonify(metric_names), 200
+    except Exception as e:
+        logger.error(
+            "Error querying metrics for agent '%s', plugin '%s': %s",
+            agentname,
+            pluginname,
+            e,
+        )
+        return jsonify({"error": "Error while querying metrics"}), 500
+    finally:
+        session.close()
