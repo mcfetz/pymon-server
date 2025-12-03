@@ -1,5 +1,6 @@
 from core import app, logger
 from flask import request, jsonify
+from typing import List, Dict
 from auth import require_agent_apikey
 import toml
 
@@ -139,3 +140,56 @@ def list_groups():
                 group_to_agents[group].append(agent_id)
 
     return jsonify(group_to_agents), 200
+
+
+@app.route("/agents/<agentname>/plugins", methods=["GET"])
+@require_agent_apikey
+def list_agent_plugins(agentname: str):
+    """
+    List all plugins assigned to a given agent via groups in config.toml.
+    ---
+    tags:
+      - agents
+    parameters:
+      - in: path
+        name: agentname
+        required: true
+        schema:
+          type: string
+        description: Agent identifier
+    responses:
+      200:
+        description: List of plugin names assigned to the agent
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: string
+      404:
+        description: Agent not found in configuration
+      500:
+        description: Error while loading configuration
+    """
+    try:
+        config = toml.load("conf/config.toml")
+    except Exception as e:
+        logger.error("Error loading config.toml: %s", e)
+        return jsonify({"error": "Error loading configuration"}), 500
+
+    agents_section = config.get("agents", {})
+    groups_section = config.get("groups", {})
+
+    # Get groups assigned to this agent
+    agent_groups = agents_section.get(agentname)
+    if agent_groups is None:
+        return jsonify({"error": "Agent not found"}), 404
+
+    # Collect plugins from all groups assigned to the agent
+    plugins: set[str] = set()
+    for group in agent_groups:
+        group_plugins = groups_section.get(group, [])
+        for plugin in group_plugins:
+            plugins.add(plugin)
+
+    return jsonify(sorted(plugins)), 200
