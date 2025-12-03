@@ -1,5 +1,6 @@
 from core import app, logger, SessionLocal
 from flask import request, jsonify
+from urllib.parse import unquote
 from datetime import datetime
 from dateutil import parser as dateutil_parser
 from auth import require_agent_apikey
@@ -280,6 +281,8 @@ def list_agent_plugin_metric_data(agentname: str, pluginname: str, metricname: s
     List all metric data points for the given agent, plugin and metric.
     Supports optional 'from' and 'to' query parameters to filter by timestamp.
     """
+    decoded_metricname = unquote(metricname)
+
     from_param = request.args.get("from")
     to_param = request.args.get("to")
 
@@ -297,7 +300,7 @@ def list_agent_plugin_metric_data(agentname: str, pluginname: str, metricname: s
             .filter(
                 Metrics.agentid == agentname,
                 Metrics.pluginid == pluginname,
-                Metrics.metric == metricname,
+                Metrics.metric == decoded_metricname,
             )
         )
 
@@ -331,7 +334,7 @@ def list_agent_plugin_metric_data(agentname: str, pluginname: str, metricname: s
             "Error querying metric data for agent '%s', plugin '%s', metric '%s': %s",
             agentname,
             pluginname,
-            metricname,
+            decoded_metricname,
             e,
         )
         return jsonify({"error": "Error while querying metrics"}), 500
