@@ -1,11 +1,11 @@
 from core import app, logger, SessionLocal
 from flask import request, jsonify
-from urllib.parse import unquote
 from datetime import datetime
 from dateutil import parser as dateutil_parser
 from auth import require_agent_apikey
 from db_models import Metrics
 import toml
+import base64
 
 
 def _parse_iso_timestamp(value: str | None) -> datetime | None:
@@ -281,7 +281,12 @@ def list_agent_plugin_metric_data(agentname: str, pluginname: str, metricname: s
     List all metric data points for the given agent, plugin and metric.
     Supports optional 'from' and 'to' query parameters to filter by timestamp.
     """
-    decoded_metricname = unquote(metricname)
+    try:
+        # metricname is expected to be base64-encoded UTF-8
+        decoded_metricname = base64.b64decode(metricname).decode("utf-8")
+    except Exception as e:
+        logger.warning("Invalid base64 metricname '%s': %s", metricname, e)
+        return jsonify({"error": "Invalid base64-encoded metricname"}), 400
 
     from_param = request.args.get("from")
     to_param = request.args.get("to")
