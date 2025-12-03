@@ -309,15 +309,21 @@ def list_agent_plugin_metric_data(agentname: str, pluginname: str, metricname: s
         query = query.order_by(Metrics.timestamp.asc())
         rows = query.all()
 
-        result = [
-            {
-                "timestamp": row.timestamp.isoformat(),
-                "value_float": row.value_float,
-                "value_int": row.value_int,
-                "value_str": row.value_str,
-            }
-            for row in rows
-        ]
+        result = []
+        for row in rows:
+            if row.value_float is not None:
+                value = row.value_float
+            elif row.value_int is not None:
+                value = row.value_int
+            else:
+                value = row.value_str
+
+            result.append(
+                {
+                    "timestamp": row.timestamp.isoformat(),
+                    "value": value,
+                }
+            )
 
         return jsonify(result), 200
     except Exception as e:
