@@ -6,6 +6,7 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
 from db_models import Alarm, Metrics
+from functions import get_value_from_row
 from notifications import notify_targets
 from cache import timed_cache
 from executors import run_executors
