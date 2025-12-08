@@ -3,7 +3,7 @@ from flask import request, jsonify
 from datetime import datetime
 from dateutil import parser as dateutil_parser
 from auth import require_agent_apikey
-from db_models import Metrics
+from db_models import Metrics, Alarm
 import toml
 import base64
 
@@ -301,7 +301,8 @@ def list_agent_plugin_metric_data(agentname: str, pluginname: str, metricname: s
     session = SessionLocal()
     try:
         query = (
-            session.query(Metrics)
+            session.query(Metrics, Alarm)
+            .outerjoin(Alarm, Metrics.id == Alarm.metric_id)
             .filter(
                 Metrics.agentid == agentname,
                 Metrics.pluginid == pluginname,
@@ -318,20 +319,24 @@ def list_agent_plugin_metric_data(agentname: str, pluginname: str, metricname: s
         rows = query.all()
 
         result = []
-        for row in rows:
-            if row.value_float is not None:
-                value = row.value_float
-            elif row.value_int is not None:
-                value = row.value_int
+        for metric_row, alarm_row in rows:
+            if metric_row.value_float is not None:
+                value = metric_row.value_float
+            elif metric_row.value_int is not None:
+                value = metric_row.value_int
             else:
-                value = row.value_str
+                value = metric_row.value_str
 
-            result.append(
-                {
-                    "timestamp": row.timestamp.isoformat(),
-                    "value": value,
-                }
-            )
+            data_point = {
+                "timestamp": metric_row.timestamp.isoformat(),
+                "value": value,
+            }
+
+            if alarm_row:
+                data_point["alarm_id"] = alarm_row.id
+                data_point["acknowledged"] = alarm_row.acknowledged is not None
+
+            result.append(data_point)
 
         return jsonify(result), 200
     except Exception as e:
