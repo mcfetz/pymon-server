@@ -302,7 +302,7 @@ def list_agent_plugin_metric_data(agentname: str, pluginname: str, metricname: s
     try:
         query = (
             session.query(Metrics, Alarm)
-            .outerjoin(Alarm, Metrics.id == Alarm.metric_id)
+            .outerjoin(Alarm, Metrics.id == Alarm.metrics_id)
             .filter(
                 Metrics.agentid == agentname,
                 Metrics.pluginid == pluginname,
@@ -334,7 +334,7 @@ def list_agent_plugin_metric_data(agentname: str, pluginname: str, metricname: s
 
             if alarm_row:
                 data_point["alarm_id"] = alarm_row.id
-                data_point["acknowledged"] = alarm_row.acknowledged is not None
+                data_point["acknowledged"] = alarm_row.acknowledged
 
             result.append(data_point)
 
