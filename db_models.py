@@ -1,5 +1,5 @@
 from datetime import datetime, UTC
-from sqlalchemy import Column, Integer, String, Float, Text, DateTime, Index, Boolean
+from sqlalchemy import Column, Integer, String, Float, Text, DateTime, Index, Boolean, ForeignKey
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -40,3 +40,4 @@ class Alarm(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
     message = Column(Text, nullable=True)
     acknowledged = Column(Boolean, default=False)
+    metrics_id = Column(Integer, ForeignKey("metrics.id"), nullable=False, index=True)

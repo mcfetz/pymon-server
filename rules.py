@@ -93,6 +93,7 @@ def create_alarm(
     rule: Rule,
     metric: str,
     value: float,
+    metric_id: int,
 ) -> None:
     # fire=single: nur einen offenen Alarm pro (agentid, rule)
     if rule.fire == "single" and has_open_alarm(session, agentid, rule):
@@ -108,6 +109,7 @@ def create_alarm(
         severity=rule.severity,
         value=value,
         message=message,
+        metrics_id=metric_id,
     )
     session.add(alarm)
     session.flush()  # ensure alarm.id is available before commit
@@ -131,6 +133,7 @@ def evaluate_single_rule(
     pluginid: str,
     metric: str,
     rule: Rule,
+    trigger_metric: Metrics,
 ) -> None:
     base_filter = (
         (Metrics.agentid == agentid),
@@ -139,15 +142,11 @@ def evaluate_single_rule(
     )
 
     if rule.scope == "single":
-        q = select(Metrics).where(*base_filter).order_by(desc(Metrics.timestamp)).limit(1)
-        row = session.execute(q).scalars().first()
-        if not row:
-            return
-        value = row.value_float if row.value_float is not None else row.value_int
+        value = get_value_from_row(trigger_metric)
         if value is None:
             return
         if compare(float(value), rule.condition, rule.threshold):
-            create_alarm(session, agentid, rule, metric, float(value))
+            create_alarm(session, agentid, rule, metric, float(value), trigger_metric.id)
 
     elif rule.scope == "moving_avg":
         window = rule.window_size or 10
@@ -156,7 +155,7 @@ def evaluate_single_rule(
         if avg_value is None:
             return
         if compare(float(avg_value), rule.condition, rule.threshold):
-            create_alarm(session, agentid, rule, metric, float(avg_value))
+            create_alarm(session, agentid, rule, metric, float(avg_value), trigger_metric.id)
 
     elif rule.scope == "count_ratio":
         window = rule.window_size or 10
@@ -167,22 +166,21 @@ def evaluate_single_rule(
             return
         violations = sum(1 for v in values if compare(float(v), rule.condition, rule.threshold))
         if violations >= min_violations:
-            create_alarm(session, agentid, rule, metric, float(violations))
+            create_alarm(session, agentid, rule, metric, float(violations), trigger_metric.id)
 
 
 def evaluate_rules_for_payload(
     session: Session,
     agentid: str,
     pluginid: str,
-    metrics_list: list[dict],
+    saved_metrics: list[Metrics],
 ) -> None:
     relevant_rules = [r for r in load_rules() if r.enabled and r.pluginid == pluginid]
     if not relevant_rules:
         return
 
-    for metric_dict in metrics_list:
-        for metric_name in metric_dict:
-            for rule in relevant_rules:
-                if rule.metric not in (metric_name, "*"):
-                    continue
-                evaluate_single_rule(session, agentid, pluginid, metric_name, rule)
+    for metric_obj in saved_metrics:
+        for rule in relevant_rules:
+            if rule.metric not in (metric_obj.metric, "*"):
+                continue
+            evaluate_single_rule(session, agentid, pluginid, metric_obj.metric, rule, metric_obj)

@@ -374,52 +374,55 @@ def collect_metrics():
 
     # Open a SQLAlchemy session
     session = SessionLocal()
-
-    if not isinstance(payload, dict):
-        raise ValueError("invalid payload: only dict is allowed.")
-    # Expect payload structure: pluginid, agentid, timestamp, metrics (as list)
-    pluginid = payload.get("pluginid")
-    if not pluginid:
-        raise ValueError("no plugin id found.")
-    # Always use authenticated agentid from header
-    agentid_payload = agentid
-
-    timestamp = payload.get("timestamp")
-    # Convert timestamp if it is a string (expects ISO 8601 format)
-    if isinstance(timestamp, str):
-        try:
-            timestamp = datetime.fromisoformat(timestamp)
-        except ValueError as e:
-            logger.error("invalid timestamp format: %s", e)
-            timestamp = datetime.now(UTC)
-    elif not isinstance(timestamp, datetime):
-        # If no valid timestamp was provided, use the current time
-        timestamp = datetime.now(UTC)
-
-    metrics_list = payload.get("metrics", [])
-
-    for metric_dict in metrics_list:
-        if isinstance(metric_dict, dict):
-            for metric_name, value in metric_dict.items():
-                metric_entry = Metrics(
-                    agentid=agentid_payload,
-                    pluginid=pluginid,
-                    timestamp=timestamp,
-                    metric=metric_name,
-                )
-                metric_entry = dict_value_to_metric(value, metric_entry)
-                session.add(metric_entry)
-
-    session.commit()
-
-    # Evaluate rules for the received metrics
     try:
-        evaluate_rules_for_payload(session, agentid_payload, pluginid, metrics_list)
+        if not isinstance(payload, dict):
+            return jsonify({"error": "invalid payload: only dict is allowed."}), 400
+        # Expect payload structure: pluginid, agentid, timestamp, metrics (as list)
+        pluginid = payload.get("pluginid")
+        if not pluginid:
+            return jsonify({"error": "no plugin id found."}), 400
+        # Always use authenticated agentid from header
+        agentid_payload = agentid
+
+        timestamp = payload.get("timestamp")
+        # Convert timestamp if it is a string (expects ISO 8601 format)
+        if isinstance(timestamp, str):
+            try:
+                timestamp = datetime.fromisoformat(timestamp)
+            except ValueError as e:
+                logger.error("invalid timestamp format: %s", e)
+                timestamp = datetime.now(UTC)
+        elif not isinstance(timestamp, datetime):
+            # If no valid timestamp was provided, use the current time
+            timestamp = datetime.now(UTC)
+
+        metrics_list = payload.get("metrics", [])
+        db_metrics = []
+
+        for metric_dict in metrics_list:
+            if isinstance(metric_dict, dict):
+                for metric_name, value in metric_dict.items():
+                    metric_entry = Metrics(
+                        agentid=agentid_payload,
+                        pluginid=pluginid,
+                        timestamp=timestamp,
+                        metric=metric_name,
+                    )
+                    metric_entry = dict_value_to_metric(value, metric_entry)
+                    session.add(metric_entry)
+                    db_metrics.append(metric_entry)
+
+        # Flush to get IDs for new metrics, then evaluate rules.
+        # This is all one transaction.
+        session.flush()
+
+        evaluate_rules_for_payload(session, agentid_payload, pluginid, db_metrics)
         session.commit()
     except Exception as e:
-        logger.error("Error while evaluating rules: %s", e)
+        logger.error("Error while storing metrics or evaluating rules: %s", e)
         session.rollback()
-
-    session.close()
+        return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        session.close()
 
     return jsonify({"status": "Metrics stored"}), 200
