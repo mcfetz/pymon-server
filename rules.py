@@ -1,3 +1,5 @@
+import json
+import os
 from dataclasses import dataclass
 from typing import Literal
 
@@ -36,19 +38,47 @@ class Rule:
 
 
 @timed_cache(ttl_seconds=5)
-def load_rules(path: str = "conf/rules.toml") -> list[Rule]:
-    data = toml.load(path)
+def load_rules(path: str = "conf/rules.json") -> list[Rule]:
+    if not os.path.exists(path):
+        # Fallback to TOML for migration
+        toml_path = path.replace(".json", ".toml")
+        if os.path.exists(toml_path):
+            data = toml.load(toml_path)
+            rules: list[Rule] = []
+            for r in data.get("rule", []):
+                rules.append(
+                    Rule(
+                        id=r["id"],
+                        enabled=r.get("enabled", True),
+                        description=r.get("description", ""),
+                        pluginid=r["pluginid"],
+                        metric=r["metric"],
+                        condition=r["condition"],
+                        threshold=float(r["threshold"]),
+                        scope=r.get("scope", "single"),
+                        window_size=r.get("window_size"),
+                        min_violations=r.get("min_violations"),
+                        severity=r.get("severity", "warning"),
+                        notifications=r.get("notifications", []),
+                        fire=r.get("fire", "single"),
+                        executors=r.get("executors", []),
+                    )
+                )
+            return rules
+        return []
+    with open(path, encoding="utf-8") as f:
+        raw = json.load(f)
     rules: list[Rule] = []
-    for r in data.get("rule", []):
+    for rule_id, r in raw.items():
         rules.append(
             Rule(
-                id=r["id"],
+                id=rule_id,
                 enabled=r.get("enabled", True),
                 description=r.get("description", ""),
-                pluginid=r["pluginid"],
-                metric=r["metric"],
-                condition=r["condition"],
-                threshold=float(r["threshold"]),
+                pluginid=r.get("pluginid", ""),
+                metric=r.get("metric", ""),
+                condition=r.get("condition", "gt"),
+                threshold=float(r.get("threshold", 0)),
                 scope=r.get("scope", "single"),
                 window_size=r.get("window_size"),
                 min_violations=r.get("min_violations"),
@@ -89,6 +119,21 @@ def has_open_alarm(session: Session, agentid: str, rule: Rule) -> bool:
     return session.execute(q).scalars().first() is not None
 
 
+SNOOZE_FILE = os.path.join(os.path.dirname(__file__), "conf", "snoozes.json")
+
+
+def _is_snoozed(rule_id: str, agentid: str, pluginid: str, metric: str) -> bool:
+    try:
+        with open(SNOOZE_FILE, encoding="utf-8") as f:
+            snoozes = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return False
+    for s in snoozes:
+        if s.get("rule_id") == rule_id and s.get("agentid") == agentid and s.get("pluginid") == pluginid and s.get("metric") == metric:
+            return True
+    return False
+
+
 def create_alarm(
     session: Session,
     agentid: str,
@@ -99,6 +144,10 @@ def create_alarm(
 ) -> None:
     # fire=single: nur einen offenen Alarm pro (agentid, rule)
     if rule.fire == "single" and has_open_alarm(session, agentid, rule):
+        return
+
+    # snoozed: skip alarm creation for this combo
+    if _is_snoozed(rule.id, agentid, rule.pluginid, metric):
         return
 
     message = f"Rule '{rule.id}' triggered for agent '{agentid}', plugin '{rule.pluginid}', metric '{metric}': value={value}"

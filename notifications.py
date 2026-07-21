@@ -1,3 +1,4 @@
+import json
 import os
 import smtplib
 from email.message import EmailMessage
@@ -47,6 +48,17 @@ def send_email_notification(target_conf: dict[str, Any], subject: str, body: str
             smtp.send_message(msg)
 
 
+def _is_notify_enabled(target_name: str) -> bool:
+    import json, os
+    notify_json = os.path.join(os.path.dirname(__file__), "conf", "notifications.json")
+    try:
+        with open(notify_json, encoding="utf-8") as f:
+            cfg = json.load(f)
+        return cfg.get(target_name, {}).get("enabled", True)
+    except Exception:
+        return True
+
+
 def notify_targets(
     rule: rules.Rule,
     agentid: str,
@@ -59,6 +71,8 @@ def notify_targets(
         return
 
     for target_name in rule.notifications:
+        if not _is_notify_enabled(target_name):
+            continue
         target_conf = NOTIFICATION_TARGETS.get(target_name)
         if not target_conf:
             continue

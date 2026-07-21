@@ -15,6 +15,7 @@ CONFIG_JSON = os.path.join(CONF_DIR, "agents.json")
 RULES_JSON = os.path.join(CONF_DIR, "rules.json")
 EXECUTORS_JSON = os.path.join(CONF_DIR, "executors.json")
 NOTIFY_JSON = os.path.join(CONF_DIR, "notifications.json")
+PLUGIN_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugins")
 
 
 # ── Plugin Schemas ──
@@ -522,6 +523,8 @@ def admin_delete_executor(exec_id: str):
 NOTIFY_SCHEMA = {
     "fields": [
         {"key": "id", "label": "ID", "type": "string"},
+        {"key": "title", "label": "Titel", "type": "string", "default": ""},
+        {"key": "enabled", "label": "Aktiviert", "type": "boolean", "default": True},
         {"key": "type", "label": "Typ", "type": "select", "options": ["email"]},
         {"key": "to", "label": "Empfänger", "type": "string"},
         {"key": "from", "label": "Absender", "type": "string"},
@@ -596,6 +599,19 @@ def admin_delete_notify(notify_id: str):
 # ── Plugin Management ──
 
 PLUGIN_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugins")
+PLUGIN_META_JSON = os.path.join(CONF_DIR, "plugins.json")
+
+
+def _load_plugin_meta() -> dict:
+    if os.path.exists(PLUGIN_META_JSON):
+        with open(PLUGIN_META_JSON, encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def _save_plugin_meta(meta: dict) -> None:
+    with open(PLUGIN_META_JSON, "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2, ensure_ascii=False)
 
 
 @app.route("/admin/plugins", methods=["GET"])
@@ -625,11 +641,14 @@ def admin_list_plugins():
             elif first_line.startswith('"""') or first_line.startswith("'''"):
                 desc = first_line.strip('"\' ')
             schema = PLUGIN_SCHEMAS.get(name, {})
+            meta = _load_plugin_meta()
+            pm = meta.get(name, {})
             plugins.append({
                 "name": name,
                 "label": schema.get("label", name),
                 "description": schema.get("description", desc),
                 "size": size,
+                "enabled": pm.get("enabled", True),
             })
         except Exception:
             plugins.append({"name": name, "label": name, "description": "", "size": 0})
@@ -669,6 +688,18 @@ def admin_delete_plugin(name: str):
         return jsonify({"error": "not found"}), 404
     os.remove(fpath)
     return jsonify({"status": "deleted"}), 200
+
+
+@app.route("/admin/plugins/<name>/enabled", methods=["PUT"])
+@require_agent_apikey
+def admin_toggle_plugin(name: str):
+    """Toggle plugin enabled state."""
+    data = request.get_json(silent=True) or {}
+    enabled = data.get("enabled", True)
+    meta = _load_plugin_meta()
+    meta[name] = {"enabled": enabled}
+    _save_plugin_meta(meta)
+    return jsonify({"status": "updated", "enabled": enabled})
 
 
 @app.route("/admin/plugins/check", methods=["POST"])
