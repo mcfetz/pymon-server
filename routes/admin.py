@@ -14,6 +14,7 @@ CONF_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "conf")
 CONFIG_JSON = os.path.join(CONF_DIR, "agents.json")
 RULES_JSON = os.path.join(CONF_DIR, "rules.json")
 EXECUTORS_JSON = os.path.join(CONF_DIR, "executors.json")
+NOTIFY_JSON = os.path.join(CONF_DIR, "notifications.json")
 
 
 # ── Plugin Schemas ──
@@ -514,6 +515,159 @@ def admin_delete_executor(exec_id: str):
     del exec_map[exec_id]
     _save_executors(exec_map)
     return jsonify({"status": "deleted"})
+
+
+# ── Notifications CRUD ──
+
+NOTIFY_SCHEMA = {
+    "fields": [
+        {"key": "type", "label": "Typ", "type": "select", "options": ["email"]},
+        {"key": "to", "label": "Empfänger", "type": "string"},
+        {"key": "from", "label": "Absender", "type": "string"},
+        {"key": "server", "label": "SMTP-Server", "type": "string"},
+        {"key": "port", "label": "Port", "type": "number", "default": 587},
+        {"key": "user", "label": "SMTP-Benutzer", "type": "string"},
+        {"key": "password", "label": "Passwort (oder env NOTIFY_EMAIL_PASSWORD)", "type": "string", "optional": True},
+        {"key": "use_tls", "label": "TLS verwenden", "type": "boolean", "default": True},
+    ],
+}
+
+
+def _load_notify() -> dict:
+    if os.path.exists(NOTIFY_JSON):
+        with open(NOTIFY_JSON, encoding="utf-8") as f:
+            return json.load(f)
+    notify_map = {}
+    try:
+        toml_data = toml.load(os.path.join(CONF_DIR, "notifications.toml"))
+        for tid, tconf in toml_data.get("targets", {}).items():
+            clean = {"id": tid}
+            for f in NOTIFY_SCHEMA["fields"]:
+                val = tconf.get(f["key"])
+                if val is not None:
+                    clean[f["key"]] = val
+            notify_map[tid] = clean
+    except Exception:
+        pass
+    _save_notify(notify_map)
+    return notify_map
+
+
+def _save_notify(notify_map: dict) -> None:
+    with open(NOTIFY_JSON, "w", encoding="utf-8") as f:
+        json.dump(notify_map, f, indent=2, ensure_ascii=False)
+
+
+@app.route("/admin/notifications", methods=["GET"])
+@require_agent_apikey
+def admin_list_notify():
+    return jsonify(_load_notify())
+
+
+@app.route("/admin/notifications/schema", methods=["GET"])
+@require_agent_apikey
+def admin_notify_schema():
+    return jsonify(NOTIFY_SCHEMA)
+
+
+@app.route("/admin/notifications/<notify_id>", methods=["PUT"])
+@require_agent_apikey
+def admin_save_notify(notify_id: str):
+    data = request.get_json(silent=True) or {}
+    data["id"] = notify_id
+    notify_map = _load_notify()
+    notify_map[notify_id] = data
+    _save_notify(notify_map)
+    return jsonify({"status": "saved"})
+
+
+@app.route("/admin/notifications/<notify_id>", methods=["DELETE"])
+@require_agent_apikey
+def admin_delete_notify(notify_id: str):
+    notify_map = _load_notify()
+    if notify_id not in notify_map:
+        return jsonify({"error": "not found"}), 404
+    del notify_map[notify_id]
+    _save_notify(notify_map)
+    return jsonify({"status": "deleted"})
+
+
+# ── Plugin Management ──
+
+PLUGIN_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugins")
+
+
+@app.route("/admin/plugins", methods=["GET"])
+@require_agent_apikey
+def admin_list_plugins():
+    """List all available plugins with metadata."""
+    plugins = []
+    if not os.path.exists(PLUGIN_DIR):
+        return jsonify([])
+    for fname in sorted(os.listdir(PLUGIN_DIR)):
+        if not fname.endswith(".py") or fname == "__init__.py":
+            continue
+        name = fname[:-3]
+        fpath = os.path.join(PLUGIN_DIR, fname)
+        try:
+            size = os.path.getsize(fpath)
+            with open(fpath, encoding="utf-8") as f:
+                first_line = f.readline().strip()
+            desc = ""
+            # Extract description from docstring or shebang
+            if first_line.startswith("#!"):
+                with open(fpath, encoding="utf-8") as f:
+                    f.readline()
+                    second = f.readline().strip()
+                    if second.startswith('"""') or second.startswith("'''"):
+                        desc = second.strip('"\' ')
+            elif first_line.startswith('"""') or first_line.startswith("'''"):
+                desc = first_line.strip('"\' ')
+            schema = PLUGIN_SCHEMAS.get(name, {})
+            plugins.append({
+                "name": name,
+                "label": schema.get("label", name),
+                "description": schema.get("description", desc),
+                "size": size,
+            })
+        except Exception:
+            plugins.append({"name": name, "label": name, "description": "", "size": 0})
+    return jsonify(plugins)
+
+
+@app.route("/admin/plugins/<name>/source", methods=["GET"])
+@require_agent_apikey
+def admin_get_plugin_source(name: str):
+    """Get plugin source code."""
+    fpath = os.path.join(PLUGIN_DIR, f"{name}.py")
+    if not os.path.exists(fpath):
+        return jsonify({"error": "not found"}), 404
+    with open(fpath, encoding="utf-8") as f:
+        return f.read(), 200, {"Content-Type": "text/plain"}
+
+
+@app.route("/admin/plugins/<name>/source", methods=["PUT"])
+@require_agent_apikey
+def admin_save_plugin_source(name: str):
+    """Update plugin source code."""
+    data = request.get_data(as_text=True)
+    if not data:
+        return jsonify({"error": "empty source"}), 400
+    fpath = os.path.join(PLUGIN_DIR, f"{name}.py")
+    with open(fpath, "w", encoding="utf-8") as f:
+        f.write(data)
+    return jsonify({"status": "saved"}), 200
+
+
+@app.route("/admin/plugins/<name>", methods=["DELETE"])
+@require_agent_apikey
+def admin_delete_plugin(name: str):
+    """Delete a plugin file."""
+    fpath = os.path.join(PLUGIN_DIR, f"{name}.py")
+    if not os.path.exists(fpath):
+        return jsonify({"error": "not found"}), 404
+    os.remove(fpath)
+    return jsonify({"status": "deleted"}), 200
 
 
 # ── Schema Helpers ──
