@@ -1,71 +1,64 @@
-import time
-import psutil
+#!/usr/bin/env python3
+"""network.py — Network throughput via /proc/net/dev. No external deps."""
+import json, sys, time, os
 
-from plugins.plugin_base import PluginBase
+STATE_FILE = "/tmp/pymon_network_state.json"
 
+if __name__ == "__main__":
+    config = json.load(sys.stdin)
 
-class NetworkPlugin(PluginBase):
-    """
-    NetworkPlugin collects network throughput (bytes sent/received) per interface.
+    counters = {}
+    with open("/proc/net/dev") as f:
+        f.readline()  # header
+        f.readline()
+        for line in f:
+            parts = line.strip().split()
+            if not parts:
+                continue
+            ifname = parts[0].rstrip(":")
+            rx_bytes = int(parts[1])
+            tx_bytes = int(parts[9])
+            counters[ifname] = (rx_bytes, tx_bytes)
 
-    Measured metrics:
+    metrics = {}
+    now = time.time()
 
-    - For each interface a dictionary entry is created:
-      key: "<ifname>:bytes_sent" and "<ifname>:bytes_recv"
-      value: number of bytes (float)
-    - Additionally:
-      key: "tcp_open_connections"
-      value: current number of open TCP connections (float)
-    """
-
-    def __init__(self, config: dict):
-        super().__init__(config)
-        # optional: sleep interval from config, otherwise default
-        self._sleep = int(config.get("sleep", 30))
-        # state for throughput calculation
-        self._last_counters: dict[str, psutil._common.snetio] | None = None
-        self._last_time: float | None = None
-
-    def get_metrics(self) -> dict | list:
-        """
-        Liefert ein Dictionary mit Bytes gesendet/empfangen pro Interface.
-        """
-        counters = psutil.net_io_counters(pernic=True)
-        metrics: dict[str, float] = {}
-
-        now = time.time()
-        last_counters = self._last_counters
-        last_time = self._last_time
-
-        for ifname, stats in counters.items():
-            # cumulative values
-            metrics[f"{ifname}:bytes_sent"] = float(stats.bytes_sent)
-            metrics[f"{ifname}:bytes_recv"] = float(stats.bytes_recv)
-
-            # only calculate throughput if we have a previous measurement
-            if last_counters is not None and last_time is not None:
-                prev = last_counters.get(ifname)
-                if prev is not None:
-                    dt = now - last_time
-                    if dt > 0:
-                        tx_rate = (stats.bytes_sent - prev.bytes_sent) / dt
-                        rx_rate = (stats.bytes_recv - prev.bytes_recv) / dt
-                        metrics[f"{ifname}:tx_bytes_per_sec"] = float(tx_rate)
-                        metrics[f"{ifname}:rx_bytes_per_sec"] = float(rx_rate)
-
-        # store current state for next measurement
-        self._last_counters = counters
-        self._last_time = now
-
-        # collect number of open TCP connections
+    # Load previous state for rate calculation
+    prev_state = {}
+    if os.path.exists(STATE_FILE):
         try:
-            tcp_conns = psutil.net_connections(kind="tcp")
-            metrics["tcp_open_connections"] = len(tcp_conns)
-        except Exception:
-            # do not set metric on error
+            with open(STATE_FILE) as f:
+                prev_state = json.load(f)
+        except (json.JSONDecodeError, OSError):
             pass
 
-        return metrics
+    prev_counters = prev_state.get("counters", {})
+    prev_time = prev_state.get("time", now)
 
-    def get_plugin_id(self) -> str:
-        return "network"
+    for ifname, (rx, tx) in counters.items():
+        metrics[f"{ifname}:bytes_recv"] = rx
+        metrics[f"{ifname}:bytes_sent"] = tx
+
+        if ifname in prev_counters:
+            dt = now - prev_time
+            if dt > 0:
+                prev_rx, prev_tx = prev_counters[ifname]
+                metrics[f"{ifname}:rx_bytes_per_sec"] = round((rx - prev_rx) / dt, 1)
+                metrics[f"{ifname}:tx_bytes_per_sec"] = round((tx - prev_tx) / dt, 1)
+
+    # Save current state
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump({"counters": {k: list(v) for k, v in counters.items()}, "time": now}, f)
+    except OSError:
+        pass
+
+    # TCP connections count
+    try:
+        with open("/proc/net/tcp") as f:
+            tcp_count = sum(1 for line in f if line.strip() and not line.startswith("  sl"))
+        metrics["tcp_open_connections"] = tcp_count
+    except OSError:
+        pass
+
+    print(json.dumps(metrics))

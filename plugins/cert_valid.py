@@ -1,79 +1,35 @@
-import socket
-import ssl
+#!/usr/bin/env python3
+"""cert_valid.py — TLS certificate expiry check. No external deps."""
+import json, socket, ssl, sys
 from datetime import datetime, timezone
 
-from plugins.plugin_base import PluginBase
+if __name__ == "__main__":
+    config = json.load(sys.stdin)
+    urls = config.get("urls", [])
+    timeout = int(config.get("timeout", 5))
 
-
-class CertValidPlugin(PluginBase):
-    """
-    CertValidPlugin prüft die verbleibende Gültigkeit von TLS-Zertifikaten für konfigurierte HTTPS-URLs.
-
-    Gemessene Metriken:
-
-    - Für jede konfigurierte URL wird ein Dictionary-Eintrag erzeugt:
-      key: URL (str)
-      value: verbleibende Gültigkeit in Tagen (float)
-    """
-
-    def __init__(self, config: dict):
-        super().__init__(config)
-        # Erwartete Config-Struktur (aus agents.toml):
-        # [<agentid>.cert_valid]
-        # urls = ["https://example.com", "https://example.org"]
-        # timeout = 5
-        # sleep = 86400
-        self.urls: list[str] = config.get("urls", [])
-        self.timeout: int = int(config.get("timeout", 5))
-
-    def _get_cert_days_valid(self, url: str) -> float | None:
-        """
-        Ermittelt die verbleibenden Gültigkeitstage des Zertifikats für die angegebene HTTPS-URL.
-        Gibt None zurück, wenn kein Wert ermittelt werden kann.
-        """
+    metrics = {}
+    for url in urls:
         if not url.startswith("https://"):
-            return None
-
+            continue
         hostname = url.removeprefix("https://").split("/", 1)[0]
-        port = 443
-
         context = ssl.create_default_context()
         try:
-            with socket.create_connection((hostname, port), timeout=self.timeout) as sock:
+            with socket.create_connection((hostname, 443), timeout=timeout) as sock:
                 with context.wrap_socket(sock, server_hostname=hostname) as ssock:
                     cert = ssock.getpeercert()
         except OSError:
-            return None
+            continue
 
-        not_after_str = cert.get("notAfter")
-        if not not_after_str:
-            return None
-
-        # typisches Format: 'Jun  1 12:00:00 2025 GMT'
+        not_after = cert.get("notAfter")
+        if not not_after:
+            continue
         try:
-            expires = datetime.strptime(not_after_str, "%b %d %H:%M:%S %Y %Z")
-            expires = expires.replace(tzinfo=timezone.utc)
+            expires = datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
         except ValueError:
-            return None
+            continue
 
-        now = datetime.now(timezone.utc)
-        delta = expires - now
-        return delta.total_seconds() / 86400.0
+        days = (expires - datetime.now(timezone.utc)).total_seconds() / 86400.0
+        metrics[url] = round(days, 1)
 
-    def get_metrics(self) -> dict | list:
-        """
-        Liefert für jede konfigurierte HTTPS-URL die verbleibenden Gültigkeitstage des Zertifikats.
-        """
-        metrics: dict[str, float] = {}
-        for url in self.urls:
-            days = self._get_cert_days_valid(url)
-            if days is not None:
-                metrics[url] = float(days)
-        return metrics
-
-    def get_metric_type(self) -> type:
-        # Liefert float-Werte (Tage)
-        return float
-
-    def get_plugin_id(self) -> str:
-        return "cert_valid"
+    print(json.dumps(metrics))

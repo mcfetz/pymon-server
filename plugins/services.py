@@ -1,96 +1,36 @@
-import subprocess
-import sys
+#!/usr/bin/env python3
+"""services.py — systemd service status. No external deps."""
+import json, subprocess, sys
 
-from plugins.plugin_base import PluginBase
+if __name__ == "__main__":
+    config = json.load(sys.stdin)
+    services = config.get("services", [])
 
+    if not sys.platform.startswith("linux"):
+        print(json.dumps({}))
+        sys.exit(0)
 
-class ServicesPlugin(PluginBase):
-    """
-    ServicesPlugin prüft den Status von Systemdiensten.
-
-    Gemessene Metriken:
-
-    - Für jeden bekannten Dienst wird ein Dictionary-Eintrag erzeugt:
-      key: Dienstname (str)
-      value: aktueller Status (str), z.B. "running", "stopped", "failed", "unknown"
-    """
-
-    def __init__(self, config: dict):
-        super().__init__(config)
-        # Liste der zu prüfenden Services; wenn leer, werden alle bekannten Services abgefragt (systemabhängig)
-        # Beispiel in agents.toml:
-        # [agent1.services]
-        # services = ["ssh", "cron"]
-        # sleep = 60
-        self.services: list[str] = config.get("services", [])
-        self._sleep = int(config.get("sleep", 60))
-
-    def _get_service_status_systemd(self, service: str) -> str:
-        """
-        Ermittelt den Status eines systemd-Services via 'systemctl is-active'.
-        """
+    def _is_active(svc):
         try:
-            result = subprocess.run(
-                ["systemctl", "is-active", service],
-                capture_output=True,
-                text=True,
-                check=False,
+            r = subprocess.run(
+                ["systemctl", "is-active", svc],
+                capture_output=True, text=True, timeout=10,
             )
-            status = result.stdout.strip()
-            if not status:
-                status = "unknown"
-            return status
+            return r.stdout.strip() or "unknown"
         except Exception:
             return "unknown"
 
-    def _list_systemd_services(self) -> list[str]:
-        """
-        Liefert eine Liste aller bekannten systemd-Services (vereinfachte Variante).
-        Wird nur verwendet, wenn keine explizite Serviceliste konfiguriert ist.
-        """
+    if not services:
+        # List all systemd services
         try:
-            result = subprocess.run(
+            r = subprocess.run(
                 ["systemctl", "list-units", "--type=service", "--all", "--no-legend", "--no-pager"],
-                capture_output=True,
-                text=True,
-                check=False,
+                capture_output=True, text=True, timeout=15,
             )
-            services: list[str] = []
-            for line in result.stdout.splitlines():
-                parts = line.split()
-                if not parts:
-                    continue
-                unit = parts[0]
-                if unit.endswith(".service"):
-                    services.append(unit)
-            return services
+            services = [line.split()[0] for line in r.stdout.splitlines() if line.strip() and ".service" in line]
         except Exception:
-            return []
+            print(json.dumps({}))
+            sys.exit(0)
 
-    def get_metrics(self) -> dict | list:
-        """
-        Liefert für jeden Dienst den aktuellen Status.
-        """
-        metrics: dict[str, str] = {}
-
-        # Aktuell unterstützen wir primär systemd-basierte Systeme (Linux).
-        # Auf anderen Systemen wird ein leeres Dict zurückgegeben.
-        if not sys.platform.startswith("linux"):
-            return metrics
-
-        services = self.services
-        if not services:
-            services = self._list_systemd_services()
-
-        for svc in services:
-            status = self._get_service_status_systemd(svc)
-            metrics[svc] = status
-
-        return metrics
-
-    def get_metric_type(self) -> type:
-        # Status ist ein String
-        return str
-
-    def get_plugin_id(self) -> str:
-        return "services"
+    metrics = {svc: _is_active(svc) for svc in services}
+    print(json.dumps(metrics))

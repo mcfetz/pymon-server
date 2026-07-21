@@ -2,6 +2,7 @@ from core import app, logger
 from flask import request, jsonify
 import toml
 import os
+import hashlib
 
 from auth import require_agent_apikey
 
@@ -133,6 +134,48 @@ def get_plugin(name):
 
     # Return the content as plain text
     return content, 200, {"Content-Type": "text/plain"}
+
+
+@app.route("/plugins/<name>/version", methods=["GET"])
+@require_agent_apikey
+def get_plugin_version(name):
+    """
+    Get plugin version hash for self-update checks.
+    ---
+    tags:
+      - plugins
+    parameters:
+      - in: path
+        name: name
+        required: true
+        schema:
+          type: string
+        description: Plugin id (file name without .py)
+    responses:
+      200:
+        description: Plugin version info
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                hash:
+                  type: string
+      404:
+        description: Plugin not found
+    """
+    plugin_path = os.path.join("plugins", f"{name}.py")
+    if not os.path.exists(plugin_path):
+        return jsonify({"error": "Plugin not found"}), 404
+    try:
+        with open(plugin_path, "rb") as f:
+            content = f.read()
+        h = hashlib.sha256(content).hexdigest()
+        return jsonify({"name": name, "hash": h}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/plugins/<name>/config", methods=["GET"])

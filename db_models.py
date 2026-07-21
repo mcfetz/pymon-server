@@ -1,8 +1,18 @@
 from datetime import datetime, UTC
 from sqlalchemy import Column, Integer, String, Float, Text, DateTime, Index, Boolean, ForeignKey
-from sqlalchemy.orm import declarative_base
+from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
+
+
+class PushSubscription(Base):
+    __tablename__ = "push_subscriptions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    endpoint = Column(Text, nullable=False, unique=True)
+    p256dh_key = Column(String(255), nullable=False)
+    auth_key = Column(String(255), nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
 
 class Metrics(Base):
     __tablename__ = "metrics"

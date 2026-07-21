@@ -11,7 +11,7 @@ def verify_agent_apikey(agentid: str, apikey: str) -> bool:
     Verify that the given API key is valid for the given agentid.
 
     Returns True if a matching entry exists in conf/apikeys.toml with:
-      - type = "agent"
+      - type = "agent" or "user"
       - table name == agentid
       - key == apikey
     """
@@ -28,7 +28,7 @@ def verify_agent_apikey(agentid: str, apikey: str) -> bool:
     if not entry:
         return False
 
-    if entry.get("type") != "agent":
+    if entry.get("type") not in ("agent", "user"):
         return False
 
     stored_key = entry.get("key")

@@ -1,3 +1,4 @@
+import os
 import smtplib
 from email.message import EmailMessage
 from typing import Any
@@ -5,6 +6,7 @@ from typing import Any
 import toml
 
 import rules
+from core import logger
 
 
 def load_notification_config(path: str = "conf/notifications.toml") -> dict[str, Any]:
@@ -28,7 +30,7 @@ def send_email_notification(target_conf: dict[str, Any], subject: str, body: str
     server = target_conf["server"]
     port = int(target_conf.get("port", 587))
     user = target_conf.get("user")
-    password = target_conf.get("password")
+    password = target_conf.get("password") or os.environ.get("NOTIFY_EMAIL_PASSWORD")
     use_tls = bool(target_conf.get("use_tls", True))
 
     if use_tls:
@@ -36,7 +38,7 @@ def send_email_notification(target_conf: dict[str, Any], subject: str, body: str
             smtp.starttls()
             if user and password:
                 smtp.login(user, password)
-            print(f"send msg: {msg}")
+            logger.info("Sending email notification to %s", target_conf.get("to"))
             smtp.send_message(msg)
     else:
         with smtplib.SMTP(server, port) as smtp:
@@ -63,7 +65,7 @@ def notify_targets(
 
         target_type = target_conf.get("type")
         if target_type == "email":
-            subject = f"[skript] Alarm {rule.severity}: {rule.id} on {agentid}"
+            subject = f"[pymon] Alarm {rule.severity}: {rule.id} on {agentid}"
             body = (
                 "Alarm triggered\n\n"
                 f"Rule: {rule.id}\n"

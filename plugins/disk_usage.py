@@ -1,44 +1,35 @@
-import psutil
-import re
-from plugins.plugin_base import PluginBase
+#!/usr/bin/env python3
+"""disk_usage.py — Disk usage per mountpoint via os.statvfs. No external deps."""
+import json, os, sys
 
+if __name__ == "__main__":
+    config = json.load(sys.stdin)
+    excludes = config.get("excludes", [])
+    import re
 
-class DiskUsagePlugin(PluginBase):
-    """
-    DiskUsagePlugin erfasst Festplattennutzungsdaten.
-
-    Gemessene Metriken:
-
-    - Für jede Partition (mountpoint) wird ein Dictionary zurückgegeben,
-      wobei der Schlüssel der Mountpoint und der Wert ein float ist, der den prozentualen Festplattennutzungsgrad angibt.
-    """
-
-    def get_metrics(self) -> dict:
-        """
-        Ermittelt die Festplattennutzung für alle Partitionen.
-
-        Rückgabewert:
-            list: Eine Liste von Dictionaries, z. B. [{"/": 45.0}, {"/boot": 12.3}]
-            - Jeder Wert ist ein float, der den Nutzungs-Prozentsatz darstellt.
-        """
-        partitions = psutil.disk_partitions()
-        usage = []
-        for partition in partitions:
-            excludes = self.config.get("excludes")
-            if excludes:
-                found_exclude = False
-                for exclude in excludes:
-                    if re.search(exclude, partition.mountpoint):
-                        found_exclude = True
-                        continue
-                if found_exclude:
+    # Read mountpoints from /proc/mounts
+    mountpoints = []
+    with open("/proc/mounts") as f:
+        for line in f:
+            parts = line.split()
+            if len(parts) >= 2:
+                mp = parts[1]
+                # Skip pseudo-filesystems
+                if mp.startswith(("/sys", "/proc", "/dev", "/run", "/var/run")):
                     continue
-            try:
-                du = psutil.disk_usage(partition.mountpoint)
-                usage.append({partition.mountpoint: du.percent})
-            except Exception:
-                usage.append({partition.mountpoint: None})
-        return usage
+                mountpoints.append(mp)
 
-    def get_plugin_id(self) -> str:
-        return "disk_usage"
+    metrics = {}
+    for mp in sorted(set(mountpoints)):
+        if any(re.search(ex, mp) for ex in excludes):
+            continue
+        try:
+            st = os.statvfs(mp)
+            total = st.f_frsize * st.f_blocks
+            free = st.f_frsize * st.f_bfree
+            percent = round(100.0 * (1.0 - free / total), 1) if total else 0.0
+            metrics[mp] = percent
+        except OSError:
+            pass
+
+    print(json.dumps(metrics))

@@ -10,6 +10,7 @@ from functions import get_value_from_row
 from notifications import notify_targets
 from cache import timed_cache
 from executors import run_executors
+from services.web_push import send_push_notification
 
 Condition = Literal["gt", "lt", "ge", "le", "eq", "ne"]
 Scope = Literal["single", "moving_avg", "count_ratio"]
@@ -121,6 +122,14 @@ def create_alarm(
     except Exception:
         pass
 
+    # Web Push Benachrichtigung
+    try:
+        push_title = f"[{rule.severity}] {rule.id}"
+        push_body = f"Agent: {agentid} | {rule.pluginid}/{metric} = {value}"
+        send_push_notification(push_title, push_body, tag=f"pymon-{rule.id}")
+    except Exception:
+        pass
+
     # Executor ausführen (Fehler hier sollen die DB-Transaktion ebenfalls nicht verhindern)
     try:
         run_executors(rule, agentid, metric, value, message)
@@ -142,10 +151,15 @@ def evaluate_single_rule(
         (Metrics.metric == metric),
     )
 
+    value = get_value_from_row(trigger_metric)
+    if value is None:
+        return
+    # String metrics (e.g. service status "running"/"stopped") cannot be evaluated
+    # with numeric conditions like "gt", "lt" — skip silently
+    if isinstance(value, str):
+        return
+
     if rule.scope == "single":
-        value = get_value_from_row(trigger_metric)
-        if value is None:
-            return
         if compare(float(value), rule.condition, rule.threshold):
             create_alarm(session, agentid, rule, metric, float(value), trigger_metric.id)
 

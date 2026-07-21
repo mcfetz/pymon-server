@@ -1,99 +1,84 @@
-import platform
-import socket
-from datetime import datetime
-from typing import Dict
+#!/usr/bin/env python3
+"""host.py — System information. No external deps."""
+import json, platform, socket, sys, os
 
-import psutil
-from plugins.plugin_base import PluginBase
+if __name__ == "__main__":
+    config = json.load(sys.stdin)
 
+    hostname = platform.node()
+    os_name = platform.system()
+    os_version = platform.version()
 
-class HostPlugin(PluginBase):
-    """
-    HostPlugin collects the following metrics:
+    uptime = 0.0
+    try:
+        with open("/proc/uptime") as f:
+            uptime = float(f.readline().split()[0])
+    except OSError:
+        pass
 
-    - hostname (str): Host name.
-    - uptime (float): System uptime in seconds.
-    - os (str): Operating system name.
-    - os_version (str): Operating system version information.
-    - total_ram (float): Total RAM in bytes.
-    - cpu_count (int): Number of logical CPUs.
-    - cpu_physical_cores (int): Number of physical CPU cores.
-    - cpu_model (str): CPU model name.
-    - swap_total (int): Total swap space in bytes.
-    - ip:<interface> (str): IP address of the given network interface (e.g. "ip:eth0").
-    """
+    total_ram = 0
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    total_ram = int(line.split()[1]) * 1024
+                    break
+    except OSError:
+        pass
 
-    def get_metrics(self) -> dict | list:
-        """
-        Sammelt Metriken des Hosts und liefert diese als Dictionary zurück.
+    cpu_count = os.cpu_count() or 0
+    cpu_model = ""
+    try:
+        with open("/proc/cpuinfo") as f:
+            for line in f:
+                if line.startswith("model name"):
+                    cpu_model = line.split(":")[1].strip()
+                    break
+    except OSError:
+        pass
 
-        Rückgabewert:
-            dict: {
-                "hostname": str,
-                "uptime": float,
-                "os": str,
-                "os_version": str,
-                "total_ram": float,
-                "cpu_count": int,
-                "cpu_physical_cores": int,
-                "cpu_model": str,
-            }
-        """
-        # Determine hostname
-        hostname = platform.node()
+    swap_total = 0
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("SwapTotal:"):
+                    swap_total = int(line.split()[1]) * 1024
+                    break
+    except OSError:
+        pass
 
-        # Determine operating system
-        os_name = platform.system()
+    metrics = {
+        "hostname": hostname,
+        "uptime": uptime,
+        "os": os_name,
+        "os_version": os_version,
+        "total_ram": total_ram,
+        "cpu_count": cpu_count,
+        "cpu_model": cpu_model,
+        "swap_total": swap_total,
+    }
 
-        # Determine operating system version
-        os_version = platform.version()
+    # IP addresses per interface
+    try:
+        import fcntl, struct  # linux-specific
+        SIOCGIFADDR = 0x8915
+        with open("/proc/net/dev") as f:
+            f.readline()
+            f.readline()
+            for line in f:
+                ifname = line.strip().split(":")[0].strip()
+                if ifname == "lo":
+                    continue
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    ifr = struct.pack("16sH14s", ifname.encode()[:15], socket.AF_INET, b"\x00" * 14)
+                    addr = fcntl.ioctl(sock.fileno(), SIOCGIFADDR, ifr)
+                    ip = socket.inet_ntoa(addr[20:24])
+                    metrics[f"ip:{ifname}"] = ip
+                    sock.close()
+                except OSError:
+                    pass
+    except Exception:
+        pass
 
-        # Determine system uptime (difference between now and boot time)
-        boot_time = psutil.boot_time()
-        uptime_seconds = (datetime.utcnow() - datetime.fromtimestamp(boot_time)).total_seconds()
-
-        # Determine total RAM size in bytes
-        total_ram = psutil.virtual_memory().total
-
-        # Determine CPU information
-        cpu_count = psutil.cpu_count(logical=True) or 0
-        cpu_physical_cores = psutil.cpu_count(logical=False) or 0
-        cpu_model = platform.processor() or ""
-
-        metrics: dict[str, object] = {
-            "hostname": hostname,
-            "uptime": uptime_seconds,
-            "os": os_name,
-            "os_version": os_version,
-            "total_ram": int(total_ram),
-            "cpu_count": int(cpu_count),
-            "cpu_physical_cores": int(cpu_physical_cores),
-            "cpu_model": cpu_model,
-            "swap_total": int(psutil.swap_memory().total),
-        }
-
-        # Add IP addresses per interface: "ip:<interface-name>" -> IP string
-        try:
-            addrs = psutil.net_if_addrs()
-            for if_name, addr_list in addrs.items():
-                for addr in addr_list:
-                    if addr.family == socket.AF_INET and addr.address:
-                        # Skip loopback interface lo with 127.0.0.1
-                        if if_name == "lo" and addr.address == "127.0.0.1":
-                            continue
-                        metrics[f"ip:{if_name}"] = addr.address
-                        # If multiple IPv4 addresses per interface exist, the last one wins.
-                        # If you want only the first, add a "break" here.
-        except Exception:
-            # If anything goes wrong while collecting IPs, ignore and return base metrics
-            pass
-
-        return metrics
-
-    def get_metric_type(self) -> type:
-        # get_metrics returns a dict
-        return dict
-
-    def get_plugin_id(self) -> str:
-        # Return a unique plugin id
-        return "host"
+    print(json.dumps(metrics))

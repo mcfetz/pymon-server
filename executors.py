@@ -16,7 +16,7 @@ EXECUTOR_CONFIG: dict[str, Any] = load_executor_config()
 
 
 def run_executors(
-    rule: rule.Rule,
+    rule: Any,
     agentid: str,
     metric: str,
     value: float,

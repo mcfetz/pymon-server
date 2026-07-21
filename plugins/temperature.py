@@ -1,42 +1,31 @@
-import psutil
+#!/usr/bin/env python3
+"""temperature.py — Hardware sensor temperatures via /sys/class/thermal. No external deps."""
+import json, os, sys
 
-from plugins.plugin_base import PluginBase
+if __name__ == "__main__":
+    config = json.load(sys.stdin)
 
+    metrics = {}
+    thermal_base = "/sys/class/thermal"
+    if not os.path.exists(thermal_base):
+        print(json.dumps(metrics))
+        sys.exit(0)
 
-class TemperaturePlugin(PluginBase):
-    """
-    TemperaturePlugin erfasst alle verfügbaren Temperatur-Sensoren des Systems.
+    try:
+        for entry in sorted(os.listdir(thermal_base)):
+            if not entry.startswith("thermal_zone"):
+                continue
+            type_path = os.path.join(thermal_base, entry, "type")
+            temp_path = os.path.join(thermal_base, entry, "temp")
+            if os.path.exists(type_path) and os.path.exists(temp_path):
+                with open(type_path) as f:
+                    zone_type = f.read().strip()
+                with open(temp_path) as f:
+                    raw = f.read().strip()
+                celsius = int(raw) / 1000.0
+                key = f"{zone_type}:{entry}" if zone_type else entry
+                metrics[key] = round(celsius, 1)
+    except OSError:
+        pass
 
-    Gemessene Metriken:
-
-    - Für jeden Sensor (bzw. jeden Eintrag in psutil.sensors_temperatures())
-      wird ein Dictionary-Eintrag erzeugt:
-        key: "<sensor_name>[:<label>]" (z.B. "coretemp:Package id 0")
-        value: aktuelle Temperatur in Grad Celsius (float)
-    """
-
-    def __init__(self, config: dict):
-        super().__init__(config)
-        self._sleep = int(config.get("sleep", 30))
-
-    def get_metrics(self) -> dict | list:
-        """
-        Liefert ein Dictionary aller verfügbaren Temperatur-Sensoren.
-        """
-        temps = psutil.sensors_temperatures(fahrenheit=False)
-        metrics: dict[str, float] = {}
-
-        for name, entries in temps.items():
-            for entry in entries:
-                label = entry.label or ""
-                key = f"{name}:{label}" if label else name
-                if entry.current is not None:
-                    metrics[key] = float(entry.current)
-
-        return metrics
-
-    def get_metric_type(self) -> type:
-        return float
-
-    def get_plugin_id(self) -> str:
-        return "temperature"
+    print(json.dumps(metrics))

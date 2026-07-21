@@ -1,9 +1,12 @@
 from datetime import UTC, datetime
 
+import toml
+
 from flask import jsonify, request
 from sqlalchemy import and_
+from sqlalchemy.orm import joinedload
 
-from db_models import Metrics
+from db_models import Alarm, Metrics
 from functions import _parse_time_param, dict_value_to_metric, get_value_from_row
 from rules import evaluate_rules_for_payload
 from core import SessionLocal, app, logger
@@ -54,6 +57,7 @@ def _query_metrics(
 
 
 @app.route("/metrics", methods=["GET"])
+@require_agent_apikey
 def get_metrics_all():
     """
     Query metrics for all agents and plugins.
@@ -132,6 +136,7 @@ def get_metrics_all():
 
 
 @app.route("/metrics/<agentid>", methods=["GET"])
+@require_agent_apikey
 def get_metrics_for_agent(agentid: str):
     """
     Query metrics for a specific agent.
@@ -215,6 +220,7 @@ def get_metrics_for_agent(agentid: str):
 
 
 @app.route("/metrics/<agentid>/<pluginid>", methods=["GET"])
+@require_agent_apikey
 def get_metrics_for_agent_plugin(agentid: str, pluginid: str):
     """
     Query metrics for a specific agent and plugin.
@@ -385,13 +391,16 @@ def collect_metrics():
         agentid_payload = agentid
 
         timestamp = payload.get("timestamp")
-        # Convert timestamp if it is a string (expects ISO 8601 format)
+        # Convert timestamp: accept ISO 8601 string, Unix float, or datetime
         if isinstance(timestamp, str):
             try:
                 timestamp = datetime.fromisoformat(timestamp)
             except ValueError as e:
                 logger.error("invalid timestamp format: %s", e)
                 timestamp = datetime.now(UTC)
+        elif isinstance(timestamp, (int, float)):
+            # Unix timestamp (seconds since epoch) from agent
+            timestamp = datetime.fromtimestamp(timestamp, tz=UTC)
         elif not isinstance(timestamp, datetime):
             # If no valid timestamp was provided, use the current time
             timestamp = datetime.now(UTC)
@@ -426,3 +435,146 @@ def collect_metrics():
         session.close()
 
     return jsonify({"status": "Metrics stored"}), 200
+
+
+def _resolve_group_agents(group_name: str) -> list[str]:
+    """Resolve a group name to agent IDs using config.toml."""
+    try:
+        config = toml.load("conf/config.toml")
+    except Exception:
+        return []
+    agents_section = config.get("agents", {})
+    result = []
+    for agent_id, agent_groups in agents_section.items():
+        if group_name in agent_groups:
+            result.append(agent_id)
+    return result
+
+
+@app.route("/metrics/query", methods=["GET"])
+@require_agent_apikey
+def query_metrics():
+    """
+    Query metrics with filters and joined alarm data.
+    ---
+    tags:
+      - metrics
+    parameters:
+      - in: query
+        name: group
+        required: false
+        schema:
+          type: string
+        description: Filter by group name (resolves to agents)
+      - in: query
+        name: agentid
+        required: false
+        schema:
+          type: string
+        description: Filter by agent
+      - in: query
+        name: pluginid
+        required: false
+        schema:
+          type: string
+        description: Filter by plugin
+      - in: query
+        name: metric
+        required: false
+        schema:
+          type: string
+        description: Filter by metric name (case-insensitive LIKE)
+      - in: query
+        name: from
+        required: false
+        schema:
+          type: string
+          format: date-time
+        description: Start timestamp (ISO 8601)
+      - in: query
+        name: to
+        required: false
+        schema:
+          type: string
+          format: date-time
+        description: End timestamp (ISO 8601)
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+        description: Max results (default 200)
+    responses:
+      200:
+        description: List of metrics with optional alarm info
+    """
+    group_param = request.args.get("group")
+    agentid_param = request.args.get("agentid")
+    pluginid_param = request.args.get("pluginid")
+    metric_param = request.args.get("metric")
+    time_from_param = request.args.get("from")
+    time_to_param = request.args.get("to")
+    limit = request.args.get("limit", 200, type=int)
+    offset = request.args.get("offset", 0, type=int)
+
+    time_from = _parse_time_param(time_from_param)
+    time_to = _parse_time_param(time_to_param)
+
+    # Resolve group → agents
+    agentids: list[str] | None = None
+    if group_param:
+        agentids = _resolve_group_agents(group_param)
+        if not agentids:
+            return jsonify([]), 200
+    elif agentid_param:
+        agentids = [agentid_param]
+
+    session = SessionLocal()
+    try:
+        q = session.query(Metrics)
+
+        if agentids is not None:
+            q = q.filter(Metrics.agentid.in_(agentids))
+        if pluginid_param:
+            q = q.filter(Metrics.pluginid == pluginid_param)
+        if metric_param:
+            q = q.filter(Metrics.metric.ilike(f"%{metric_param}%"))
+        if time_from is not None:
+            q = q.filter(Metrics.timestamp >= time_from)
+        if time_to is not None:
+            q = q.filter(Metrics.timestamp <= time_to)
+
+        rows = q.order_by(Metrics.timestamp.desc()).offset(offset).limit(limit).all()
+
+        # Batch-load alarm info to avoid JOIN duplication (1 metric → N alarms)
+        metric_ids = [m.id for m in rows]
+        alarm_rows = (
+            session.query(Alarm.metrics_id, Alarm.id, Alarm.acknowledged)
+            .filter(Alarm.metrics_id.in_(metric_ids))
+            .all()
+        )
+        alarm_map: dict[int, tuple[int, bool]] = {}
+        for am_id, a_id, a_ack in alarm_rows:
+            # Only keep the first (latest) alarm per metric
+            if am_id not in alarm_map:
+                alarm_map[am_id] = (a_id, a_ack)
+
+        result = []
+        for metric_row in rows:
+            alarm_id, acknowledged = alarm_map.get(metric_row.id, (None, None))
+            result.append({
+                "id": metric_row.id,
+                "timestamp": metric_row.timestamp.isoformat(),
+                "agentid": metric_row.agentid,
+                "pluginid": metric_row.pluginid,
+                "metric": metric_row.metric,
+                "value": get_value_from_row(metric_row),
+                "alarm_id": alarm_id,
+                "acknowledged": acknowledged,
+            })
+        return jsonify(result), 200
+    except Exception as e:
+        logger.error("Error in metrics query: %s", e)
+        return jsonify({"error": "internal error"}), 500
+    finally:
+        session.close()

@@ -1,6 +1,7 @@
 import logging
 
 from flask import Flask
+from flask_cors import CORS
 from flasgger import Swagger
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -15,6 +16,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+CORS(app)
 swagger = Swagger(app)
 
 # SQLAlchemy ORM Setup

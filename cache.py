@@ -1,19 +1,22 @@
 import time
 from functools import wraps
+from typing import Any
 
 
 def timed_cache(ttl_seconds: int):
     def decorator(func):
-        cache_data = {"value": None, "timestamp": 0.0}
+        cache_data: dict[str, tuple[Any, float]] = {}
 
         @wraps(func)
         def wrapper(*args, **kwargs):
+            key = str(args) + str(sorted(kwargs.items()))
             now = time.time()
-            if cache_data["value"] is not None and (now - cache_data["timestamp"]) < ttl_seconds:
-                return cache_data["value"]
+            if key in cache_data:
+                value, timestamp = cache_data[key]
+                if (now - timestamp) < ttl_seconds:
+                    return value
             result = func(*args, **kwargs)
-            cache_data["value"] = result
-            cache_data["timestamp"] = now
+            cache_data[key] = (result, now)
             return result
 
         return wrapper

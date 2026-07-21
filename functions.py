@@ -32,12 +32,9 @@ def dict_value_to_metric(value, metric: Metrics):
 
 
 def get_value_from_row(row):
-    value = None
-    if row.value_int:
-        value = row.value_int
-    if row.value_float:
-        value = row.value_float
-    if row.value_str:
-        value = row.value_str
-
-    return value
+    # Use "is not None" to handle 0, 0.0, and "" as valid values
+    if row.value_int is not None:
+        return row.value_int
+    if row.value_float is not None:
+        return row.value_float
+    return row.value_str

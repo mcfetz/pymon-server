@@ -1,34 +1,25 @@
-from plugins.plugin_base import PluginBase
-import psutil
+#!/usr/bin/env python3
+"""ram.py — RAM and swap usage via /proc/meminfo. No external deps."""
+import json, sys
 
+if __name__ == "__main__":
+    config = json.load(sys.stdin)
 
-class RAMPlugin(PluginBase):
-    """
-    RAMPlugin erfasst die RAM-Auslastung.
+    meminfo = {}
+    with open("/proc/meminfo") as f:
+        for line in f:
+            parts = line.split(":")
+            if len(parts) == 2:
+                key = parts[0].strip()
+                val_str = parts[1].strip().split()[0]
+                meminfo[key] = int(val_str)
 
-    Gemessene Metriken:
+    total = meminfo.get("MemTotal", 1)
+    available = meminfo.get("MemAvailable", 0)
+    virtual_pct = round(100.0 * (1.0 - available / total), 1)
 
-    - virtual_pct (float): Prozentsatz der genutzten virtuellen Arbeitsspeicherressourcen.
-    - swap_pct (float): Prozentsatz der genutzten Swap-Ressourcen.
-    """
+    swap_total = meminfo.get("SwapTotal", 0)
+    swap_free = meminfo.get("SwapFree", 0)
+    swap_pct = round(100.0 * (1.0 - swap_free / swap_total), 1) if swap_total else 0.0
 
-    def get_metrics(self) -> dict | list:
-        """
-        Ermittelt die virtuelle RAM- und Swap-Auslastung.
-
-        Rückgabewert:
-            dict: {
-                "virtual_pct": float,
-                "swap_pct": float,
-            }
-        """
-        vm = psutil.virtual_memory()
-        sm = psutil.swap_memory()
-
-        return {
-            "virtual_pct": float(vm.percent),
-            "swap_pct": float(sm.percent),
-        }
-
-    def get_plugin_id(self) -> str:
-        return "ram"
+    print(json.dumps({"virtual_pct": virtual_pct, "swap_pct": swap_pct}))

@@ -1,72 +1,39 @@
-import docker
+#!/usr/bin/env python3
+"""docker_host.py — Docker host statistics. Requires docker SDK."""
+import json, sys
 
-from plugins.plugin_base import PluginBase
+try:
+    import docker
+except ImportError:
+    print(json.dumps({"error": "docker SDK not installed"}))
+    sys.exit(1)
 
+if __name__ == "__main__":
+    config = json.load(sys.stdin)
+    base_url = config.get("base_url")
 
-class DockerHostPlugin(PluginBase):
-    """
-    DockerHostPlugin collects Docker host statistics.
+    try:
+        client = docker.DockerClient(base_url=base_url) if base_url else docker.from_env()
+    except Exception as e:
+        print(json.dumps({"error": str(e)}))
+        sys.exit(1)
 
-    Measured metrics (all floats):
+    metrics = {}
+    try:
+        all_containers = client.containers.list(all=True)
+        running = [c for c in all_containers if c.status == "running"]
+        paused = [c for c in all_containers if c.status == "paused"]
+        exited = [c for c in all_containers if c.status == "exited"]
+        metrics["containers_total"] = len(all_containers)
+        metrics["containers_running"] = len(running)
+        metrics["containers_paused"] = len(paused)
+        metrics["containers_stopped"] = len(exited)
 
-    - containers_total: total number of containers (all states)
-    - containers_running: number of running containers
-    - containers_paused: number of paused containers
-    - containers_stopped: number of stopped containers
-    - images_total: total number of images
-    - volumes_total: total number of volumes
-    - networks_total: total number of networks
-    """
+        metrics["images_total"] = len(client.images.list())
+        metrics["volumes_total"] = len(client.volumes.list())
+        metrics["networks_total"] = len(client.networks.list())
+    except Exception as e:
+        print(json.dumps({"error": str(e)}))
+        sys.exit(1)
 
-    def __init__(self, config: dict):
-        super().__init__(config)
-        base_url = config.get("base_url")
-        if base_url:
-            self.client = docker.DockerClient(base_url=base_url)
-        else:
-            self.client = docker.from_env()
-
-    def get_metrics(self) -> dict | list:
-        metrics: dict[str, float] = {}
-
-        try:
-            # Containers
-            all_containers = self.client.containers.list(all=True)
-            running_containers = self.client.containers.list(filters={"status": "running"})
-            paused_containers = self.client.containers.list(filters={"status": "paused"})
-            stopped_containers = self.client.containers.list(filters={"status": "exited"})
-
-            metrics["containers_total"] = len(all_containers)
-            metrics["containers_running"] = len(running_containers)
-            metrics["containers_paused"] = len(paused_containers)
-            metrics["containers_stopped"] = len(stopped_containers)
-
-            # Images
-            images = self.client.images.list()
-            metrics["images_total"] = float(len(images))
-
-            # Volumes
-            volumes = self.client.volumes.list()
-            metrics["volumes_total"] = float(len(volumes))
-
-            # Networks
-            networks = self.client.networks.list()
-            metrics["networks_total"] = float(len(networks))
-
-        except Exception:
-            # On any Docker error, return whatever we have (possibly empty)
-            return metrics
-
-        return metrics
-
-    def get_metric_type(self) -> type:
-        """
-        All metrics are numeric (float).
-        """
-        return float
-
-    def get_plugin_id(self) -> str:
-        """
-        Unique plugin identifier used by the server.
-        """
-        return "docker_host"
+    print(json.dumps(metrics))

@@ -6,6 +6,8 @@ from auth import require_agent_apikey
 from db_models import Metrics, Alarm
 import toml
 import base64
+import hashlib
+import os
 
 
 def _parse_iso_timestamp(value: str | None) -> datetime | None:
@@ -19,11 +21,11 @@ def _parse_iso_timestamp(value: str | None) -> datetime | None:
     return dateutil_parser.isoparse(value)
 
 
-@app.route("/agents/status", methods=["GET"])
+@app.route("/agents/status", methods=["POST"])
 @require_agent_apikey
 def status():
     """
-    Get agent status.
+    Update agent status.
     ---
     tags:
       - status
@@ -40,39 +42,37 @@ def status():
         schema:
           type: string
         description: API key for the agent
-      - in: query
-        name: online
-        required: false
+      - in: body
+        name: body
+        required: true
         schema:
-          type: string
-        description: If present, status will be set to "online"
-      - in: query
-        name: offline
-        required: false
-        schema:
-          type: string
-        description: If present, status will be set to "offline"
+          type: object
+          properties:
+            status:
+              type: string
+              enum: [online, offline]
+              description: Agent status
     responses:
       200:
         description: Current status of the agent
         content:
-          text/plain:
+          application/json:
             schema:
-              type: string
+              type: object
+              properties:
+                agentid:
+                  type: string
+                status:
+                  type: string
       401:
         description: Invalid or missing API key
     """
     agentid = request.agentid
-    status = None
-    if "online" in request.args:
-        status = "online"
-    elif "offline" in request.args:
-        status = "offline"
-    else:
-        status = "undefined"
+    data = request.get_json(silent=True) or {}
+    status = data.get("status", "undefined")
 
     logger.info(f"AgentID: {agentid}, Status: {status}")
-    return f"AgentID: {agentid}, Status: {status}", 200
+    return jsonify({"agentid": agentid, "status": status}), 200
 
 
 @app.route("/agents", methods=["GET"])
@@ -350,3 +350,31 @@ def list_agent_plugin_metric_data(agentname: str, pluginname: str, metricname: s
         return jsonify({"error": "Error while querying metrics"}), 500
     finally:
         session.close()
+
+
+# ---------------------------------------------------------------------------
+# Agent self-update
+# ---------------------------------------------------------------------------
+
+SERVER_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+AGENT_FILE = os.path.join(SERVER_ROOT, "agent.py")
+
+
+@app.route("/agent/version", methods=["GET"])
+def agent_version():
+    """Return SHA256 hash of canonical agent.py for self-update."""
+    if not os.path.exists(AGENT_FILE):
+        return jsonify({"error": "agent.py not found"}), 404
+    with open(AGENT_FILE, "rb") as f:
+        h = hashlib.sha256(f.read()).hexdigest()
+    return jsonify({"hash": h}), 200
+
+
+@app.route("/agent/download", methods=["GET"])
+def agent_download():
+    """Download canonical agent.py for self-update."""
+    if not os.path.exists(AGENT_FILE):
+        return jsonify({"error": "agent.py not found"}), 404
+    with open(AGENT_FILE, encoding="utf-8") as f:
+        content = f.read()
+    return content, 200, {"Content-Type": "text/plain"}
