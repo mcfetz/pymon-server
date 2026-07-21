@@ -12,6 +12,8 @@ from core import app, logger
 
 CONF_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "conf")
 CONFIG_JSON = os.path.join(CONF_DIR, "agents.json")
+RULES_JSON = os.path.join(CONF_DIR, "rules.json")
+EXECUTORS_JSON = os.path.join(CONF_DIR, "executors.json")
 
 
 # ── Plugin Schemas ──
@@ -184,9 +186,57 @@ def admin_plugin_schemas():
 @app.route("/admin/agents", methods=["GET"])
 @require_agent_apikey
 def admin_list_agents():
-    """List all agents with groups and plugin configs."""
+    """List all agents with groups, plugin configs, and online status."""
+    from datetime import datetime, timezone
+    from sqlalchemy import func
+    from core import SessionLocal
+    from db_models import Metrics
+
     cfg = _load_json_config()
-    return jsonify(cfg.get("agents", {}))
+    agents = cfg.get("agents", {})
+
+    # Query last_seen per agent from Metrics
+    session = SessionLocal()
+    try:
+        last_seen_rows = (
+            session.query(Metrics.agentid, func.max(Metrics.timestamp).label("last_seen"))
+            .group_by(Metrics.agentid)
+            .all()
+        )
+    except Exception:
+        last_seen_rows = []
+    finally:
+        session.close()
+
+    last_seen_map = {row.agentid: row.last_seen for row in last_seen_rows}
+    now = datetime.now(timezone.utc)
+
+    result = {}
+    for agent_id, agent_data in agents.items():
+        data = dict(agent_data)
+        last_seen = last_seen_map.get(agent_id)
+        data["last_seen"] = last_seen.isoformat() if last_seen else None
+
+        # Compute offline threshold: min sleep across all configured plugins
+        plugin_configs = data.get("plugins", {})
+        sleeps = []
+        for pname, pcfg in plugin_configs.items():
+            sleep_val = pcfg.get("sleep")
+            if sleep_val:
+                sleeps.append(int(sleep_val))
+        threshold = min(sleeps) if sleeps else 60
+
+        if last_seen is None:
+            data["online"] = False
+        else:
+            # Make last_seen timezone-aware for comparison
+            if last_seen.tzinfo is None:
+                last_seen = last_seen.replace(tzinfo=timezone.utc)
+            elapsed = (now - last_seen).total_seconds()
+            data["online"] = elapsed < threshold * 2  # 2x sleep as grace period
+        result[agent_id] = data
+
+    return jsonify(result)
 
 
 @app.route("/admin/agents", methods=["POST"])
@@ -296,6 +346,103 @@ def admin_list_groups():
     return jsonify(cfg.get("groups", {}))
 
 
+# ── Rules CRUD ──
+
+RULE_SCHEMA = {
+    "fields": [
+        {"key": "id", "label": "Rule-ID", "type": "string"},
+        {"key": "enabled", "label": "Aktiviert", "type": "boolean", "default": True},
+        {"key": "description", "label": "Beschreibung", "type": "string", "default": ""},
+        {"key": "pluginid", "label": "Plugin", "type": "string"},
+        {"key": "metric", "label": "Metrik", "type": "string"},
+        {"key": "condition", "label": "Bedingung", "type": "select", "options": ["gt", "ge", "lt", "le", "eq", "ne"]},
+        {"key": "threshold", "label": "Schwellwert", "type": "number"},
+        {"key": "scope", "label": "Scope", "type": "select", "options": ["single", "moving_avg", "count_ratio"]},
+        {"key": "window_size", "label": "Fenster (N Messungen)", "type": "number", "default": 10, "optional": True},
+        {"key": "min_violations", "label": "Min. Verletzungen", "type": "number", "default": 1, "optional": True},
+        {"key": "severity", "label": "Severity", "type": "select", "options": ["warning", "critical"]},
+        {"key": "fire", "label": "Fire-Modus", "type": "select", "options": ["single", "multi"]},
+        {"key": "notifications", "label": "Benachrichtigungen", "type": "array:string", "default": []},
+        {"key": "executors", "label": "Executors", "type": "array:string", "default": []},
+    ],
+}
+
+
+def _load_rules() -> dict:
+    if os.path.exists(RULES_JSON):
+        with open(RULES_JSON, encoding="utf-8") as f:
+            return json.load(f)
+    # First run: migrate from rules.toml
+    rules_map = {}
+    try:
+        toml_rules = toml.load(os.path.join(CONF_DIR, "rules.toml"))
+        for i, r in enumerate(toml_rules.get("rule", [])):
+            rid = r.get("id", f"rule_{i}")
+            rules_map[rid] = {
+                "id": rid,
+                "enabled": r.get("enabled", True),
+                "description": r.get("description", ""),
+                "pluginid": r.get("pluginid", ""),
+                "metric": r.get("metric", ""),
+                "condition": r.get("condition", "gt"),
+                "threshold": float(r.get("threshold", 0)),
+                "scope": r.get("scope", "single"),
+                "window_size": r.get("window_size"),
+                "min_violations": r.get("min_violations"),
+                "severity": r.get("severity", "warning"),
+                "fire": r.get("fire", "single"),
+                "notifications": r.get("notifications", []),
+                "executors": r.get("executors", []),
+            }
+    except Exception:
+        pass
+    _save_rules(rules_map)
+    return rules_map
+
+
+def _save_rules(rules_map: dict) -> None:
+    with open(RULES_JSON, "w", encoding="utf-8") as f:
+        json.dump(rules_map, f, indent=2, ensure_ascii=False)
+
+
+@app.route("/admin/rules/schema", methods=["GET"])
+@require_agent_apikey
+def admin_rules_schema():
+    """Return the rule schema for the UI form."""
+    return jsonify(RULE_SCHEMA)
+
+
+@app.route("/admin/rules", methods=["GET"])
+@require_agent_apikey
+def admin_list_rules():
+    """List all rules."""
+    return jsonify(_load_rules())
+
+
+@app.route("/admin/rules/<rule_id>", methods=["PUT"])
+@require_agent_apikey
+def admin_update_rule(rule_id: str):
+    """Create or update a rule."""
+    data = request.get_json(silent=True) or {}
+    data["id"] = rule_id
+    rules_map = _load_rules()
+    rules_map[rule_id] = data
+    _save_rules(rules_map)
+    return jsonify({"status": "saved", "rule": data})
+
+
+@app.route("/admin/rules/<rule_id>", methods=["DELETE"])
+@require_agent_apikey
+def admin_delete_rule(rule_id: str):
+    """Delete a rule."""
+    rules_map = _load_rules()
+    if rule_id not in rules_map:
+        return jsonify({"error": "not found"}), 404
+    del rules_map[rule_id]
+    _save_rules(rules_map)
+    return jsonify({"status": "deleted"})
+
+
 @app.route("/admin/groups/<groupid>", methods=["PUT"])
 @require_agent_apikey
 def admin_set_group(groupid: str):
@@ -316,6 +463,56 @@ def admin_delete_group(groupid: str):
     cfg = _load_json_config()
     cfg.get("groups", {}).pop(groupid, None)
     _save_json_config(cfg)
+    return jsonify({"status": "deleted"})
+
+
+# ── Executors CRUD ──
+
+def _load_executors() -> dict:
+    if os.path.exists(EXECUTORS_JSON):
+        with open(EXECUTORS_JSON, encoding="utf-8") as f:
+            return json.load(f)
+    exec_map = {}
+    try:
+        toml_data = toml.load(os.path.join(CONF_DIR, "executors.toml"))
+        for eid, econf in toml_data.get("executors", {}).items():
+            exec_map[eid] = {"id": eid, "command": econf.get("command", "")}
+    except Exception:
+        pass
+    _save_executors(exec_map)
+    return exec_map
+
+
+def _save_executors(exec_map: dict) -> None:
+    with open(EXECUTORS_JSON, "w", encoding="utf-8") as f:
+        json.dump(exec_map, f, indent=2, ensure_ascii=False)
+
+
+@app.route("/admin/executors", methods=["GET"])
+@require_agent_apikey
+def admin_list_executors():
+    return jsonify(_load_executors())
+
+
+@app.route("/admin/executors/<exec_id>", methods=["PUT"])
+@require_agent_apikey
+def admin_save_executor(exec_id: str):
+    data = request.get_json(silent=True) or {}
+    data["id"] = exec_id
+    exec_map = _load_executors()
+    exec_map[exec_id] = data
+    _save_executors(exec_map)
+    return jsonify({"status": "saved"})
+
+
+@app.route("/admin/executors/<exec_id>", methods=["DELETE"])
+@require_agent_apikey
+def admin_delete_executor(exec_id: str):
+    exec_map = _load_executors()
+    if exec_id not in exec_map:
+        return jsonify({"error": "not found"}), 404
+    del exec_map[exec_id]
+    _save_executors(exec_map)
     return jsonify({"status": "deleted"})
 
 

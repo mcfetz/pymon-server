@@ -1,4 +1,4 @@
-"""pymon-agent — Thin metric agent with subprocess plugin execution.
+"""pymon-agent â Thin metric agent with subprocess plugin execution.
 
 Each plugin is a standalone script invoked as a subprocess.
 Contract:
@@ -274,10 +274,9 @@ if __name__ == "__main__":
             plugins[:] = [p for p in plugins if p in fresh]
             last_plugin_refresh = now
 
-        # Periodic self-update check
-        if now - last_version_check > VERSION_CHECK_INTERVAL:
-            self_update()
-            last_version_check = now
+        # Periodic self-update check — disabled in dev
+        # self_update()
+        # last_version_check = now
 
         # Run plugins respecting per-plugin sleep interval
         ts = datetime.now(timezone.utc).isoformat()
@@ -295,7 +294,7 @@ if __name__ == "__main__":
             if metrics is None:
                 continue
 
-            # Normalize: plugin returns dict → list of {key: value}
+            # Normalize: plugin returns dict â list of {key: value}
             if isinstance(metrics, dict):
                 metrics_list = [{k: v} for k, v in metrics.items()]
             else:
