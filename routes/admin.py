@@ -670,6 +670,52 @@ def admin_delete_plugin(name: str):
     return jsonify({"status": "deleted"}), 200
 
 
+@app.route("/admin/plugins/check", methods=["POST"])
+@require_agent_apikey
+def admin_check_plugin():
+    """Check Python source for syntax errors and optionally run ruff."""
+    data = request.get_data(as_text=True)
+    if not data:
+        return jsonify({"error": "empty source"}), 400
+
+    errors = []
+    # 1. compile check
+    try:
+        compile(data, "<plugin>", "exec")
+    except SyntaxError as e:
+        errors.append({"type": "syntax", "line": e.lineno, "msg": e.msg})
+
+    # 2. ruff check (if available)
+    import subprocess, tempfile, os
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as f:
+        f.write(data)
+        tmp = f.name
+    try:
+        result = subprocess.run(
+            ["ruff", "check", "--select", "E,F", "--output-format", "json", tmp],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.stdout:
+            import json as _json
+            for issue in _json.loads(result.stdout):
+                errors.append({
+                    "type": "ruff",
+                    "line": issue.get("location", {}).get("row"),
+                    "msg": f"{issue.get('code', '?')} {issue.get('message', '')}",
+                })
+    except FileNotFoundError:
+        pass  # ruff not installed
+    except Exception:
+        pass
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+    return jsonify({"ok": len(errors) == 0, "errors": errors})
+
+
 # ── Schema Helpers ──
 
 def _validate_against_schema(data: dict, schema: dict) -> dict:
