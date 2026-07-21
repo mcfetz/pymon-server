@@ -351,7 +351,7 @@ def admin_list_groups():
 
 RULE_SCHEMA = {
     "fields": [
-        {"key": "id", "label": "Rule-ID", "type": "string"},
+        {"key": "id", "label": "ID", "type": "string"},
         {"key": "enabled", "label": "Aktiviert", "type": "boolean", "default": True},
         {"key": "description", "label": "Beschreibung", "type": "string", "default": ""},
         {"key": "pluginid", "label": "Plugin", "type": "string"},
@@ -521,6 +521,7 @@ def admin_delete_executor(exec_id: str):
 
 NOTIFY_SCHEMA = {
     "fields": [
+        {"key": "id", "label": "ID", "type": "string"},
         {"key": "type", "label": "Typ", "type": "select", "options": ["email"]},
         {"key": "to", "label": "Empfänger", "type": "string"},
         {"key": "from", "label": "Absender", "type": "string"},
