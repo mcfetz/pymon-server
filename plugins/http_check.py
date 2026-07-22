@@ -2,6 +2,11 @@
 """http.py — HTTP health checks. Uses urllib (stdlib, no external deps)."""
 import json, sys, urllib.request, urllib.error
 
+
+
+
+__schema__ = {'label': 'HTTP Check', 'description': 'HTTP/HTTPS status code and content check', 'fields': [{'key': 'sleep', 'label': 'Interval (s)', 'type': 'number', 'default': 60, 'min': 5}, {'key': 'timeout', 'label': 'Timeout (s)', 'type': 'number', 'default': 5, 'min': 1}, {'key': 'urls', 'label': 'URLs', 'type': 'array:object', 'default': [], 'fields': [{'key': 'name', 'label': 'Name', 'type': 'string'}, {'key': 'url', 'label': 'URL', 'type': 'string'}, {'key': 'expected_string', 'label': 'Expected text', 'type': 'string', 'optional': True}]}]}
+
 if __name__ == "__main__":
     config = json.load(sys.stdin)
     timeout = int(config.get("timeout", 5))

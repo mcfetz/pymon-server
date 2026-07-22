@@ -2,6 +2,11 @@
 """disk_usage.py — Disk usage per mountpoint via os.statvfs. No external deps."""
 import json, os, sys
 
+
+
+
+__schema__ = {'label': 'Disk', 'description': 'Disk usage per mountpoint', 'fields': [{'key': 'sleep', 'label': 'Interval (s)', 'type': 'number', 'default': 60, 'min': 5}, {'key': 'excludes', 'label': 'Excluded mountpoints', 'type': 'array:string', 'default': []}]}
+
 if __name__ == "__main__":
     config = json.load(sys.stdin)
     excludes = config.get("excludes", [])

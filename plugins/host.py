@@ -2,6 +2,11 @@
 """host.py — System information. No external deps."""
 import json, platform, socket, sys, os
 
+
+
+
+__schema__ = {'label': 'Host', 'description': 'System information (hostname, OS, CPU, RAM)', 'fields': [{'key': 'sleep', 'label': 'Interval (s)', 'type': 'number', 'default': 300, 'min': 5}]}
+
 if __name__ == "__main__":
     config = json.load(sys.stdin)
 

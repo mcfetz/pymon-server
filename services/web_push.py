@@ -16,18 +16,27 @@ VAPID_PUBLIC_KEY = os.environ.get("VAPID_PUBLIC_KEY")
 VAPID_SUBJECT = os.environ.get("VAPID_SUBJECT", "mailto:admin@localhost")
 
 
-def _vapid_claims(subscription_endpoint: str) -> dict:
+def _vapid_claims(subscription_endpoint: str, subject: str = "") -> dict:
     from urllib.parse import urlparse
     parsed = urlparse(subscription_endpoint)
+    s = subject or VAPID_SUBJECT
     return {
-        "sub": VAPID_SUBJECT if VAPID_SUBJECT.startswith("mailto:") else f"mailto:{VAPID_SUBJECT}",
+        "sub": s if s.startswith("mailto:") else f"mailto:{s}",
         "aud": f"{parsed.scheme}://{parsed.netloc}",
     }
 
 
-def send_push_notification(title: str, body: str, tag: str = "pymon-alarm") -> None:
-    if not VAPID_PRIVATE_KEY:
-        logger.warning("VAPID_PRIVATE_KEY not set, skipping push")
+def send_push_notification(
+    title: str,
+    body: str,
+    tag: str = "pymon-alarm",
+    private_key: str | None = None,
+    public_key: str | None = None,
+    subject: str | None = None,
+) -> None:
+    pk = private_key or VAPID_PRIVATE_KEY
+    if not pk:
+        logger.warning("VAPID private key not set, skipping push")
         return
 
     session = SessionLocal()
@@ -63,8 +72,8 @@ def send_push_notification(title: str, body: str, tag: str = "pymon-alarm") -> N
                     },
                 },
                 data=payload,
-                vapid_private_key=VAPID_PRIVATE_KEY,
-                vapid_claims=_vapid_claims(sub.endpoint),
+                vapid_private_key=pk,
+                vapid_claims=_vapid_claims(sub.endpoint, subject),
             )
         except WebPushException as exc:
             if exc.response and exc.response.status_code in (404, 410):

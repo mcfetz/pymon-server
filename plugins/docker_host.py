@@ -2,6 +2,11 @@
 """docker_host.py — Docker host statistics. Requires docker SDK."""
 import json, sys
 
+
+
+
+__schema__ = {'label': 'Docker', 'description': 'Docker host statistics', 'fields': [{'key': 'sleep', 'label': 'Interval (s)', 'type': 'number', 'default': 60, 'min': 5}, {'key': 'base_url', 'label': 'Docker socket URL', 'type': 'string', 'default': '', 'optional': True}]}
+
 try:
     import docker
 except ImportError:

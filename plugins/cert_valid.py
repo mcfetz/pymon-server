@@ -3,6 +3,11 @@
 import json, socket, ssl, sys
 from datetime import datetime, timezone
 
+
+
+
+__schema__ = {'label': 'TLS Certificate', 'description': 'SSL certificate expiry check', 'fields': [{'key': 'sleep', 'label': 'Interval (s)', 'type': 'number', 'default': 86400, 'min': 300}, {'key': 'timeout', 'label': 'Timeout (s)', 'type': 'number', 'default': 5, 'min': 1}, {'key': 'urls', 'label': 'HTTPS URLs', 'type': 'array:string', 'default': []}]}
+
 if __name__ == "__main__":
     config = json.load(sys.stdin)
     urls = config.get("urls", [])
@@ -12,7 +17,7 @@ if __name__ == "__main__":
     for url in urls:
         if not url.startswith("https://"):
             continue
-        hostname = url.removeprefix("https://").split("/", 1)[0]
+        hostname = url[len("https://"):].split("/", 1)[0] if url.startswith("https://") else url
         context = ssl.create_default_context()
         try:
             with socket.create_connection((hostname, 443), timeout=timeout) as sock:

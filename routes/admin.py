@@ -4,7 +4,6 @@ import json
 import os
 from datetime import UTC, datetime
 
-import toml
 from flask import jsonify, request
 
 from auth import require_agent_apikey
@@ -20,153 +19,57 @@ PLUGIN_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugins")
 
 # ── Plugin Schemas ──
 
-PLUGIN_SCHEMAS = {
-    "cpu": {
-        "label": "CPU",
-        "description": "CPU-Auslastung in Prozent",
-        "fields": [
-            {"key": "sleep", "label": "Intervall (s)", "type": "number", "default": 30, "min": 5},
-        ],
-    },
-    "ram": {
-        "label": "RAM",
-        "description": "Arbeitsspeicher und Swap-Auslastung",
-        "fields": [
-            {"key": "sleep", "label": "Intervall (s)", "type": "number", "default": 30, "min": 5},
-        ],
-    },
-    "disk_usage": {
-        "label": "Festplatte",
-        "description": "Speicherbelegung pro Partition",
-        "fields": [
-            {"key": "sleep", "label": "Intervall (s)", "type": "number", "default": 60, "min": 5},
-            {"key": "excludes", "label": "Ausgeschlossene Mountpoints", "type": "array:string", "default": []},
-        ],
-    },
-    "network": {
-        "label": "Netzwerk",
-        "description": "Netzwerk-IO und TCP-Verbindungen",
-        "fields": [
-            {"key": "sleep", "label": "Intervall (s)", "type": "number", "default": 30, "min": 5},
-        ],
-    },
-    "ping": {
-        "label": "Ping",
-        "description": "ICMP Ping zu konfigurierten Hosts",
-        "fields": [
-            {"key": "sleep", "label": "Intervall (s)", "type": "number", "default": 60, "min": 5},
-            {"key": "hosts", "label": "Hosts", "type": "array:string", "default": []},
-        ],
-    },
-    "http_check": {
-        "label": "HTTP Check",
-        "description": "HTTP/HTTPS Statuscode und Inhalt prüfen",
-        "fields": [
-            {"key": "sleep", "label": "Intervall (s)", "type": "number", "default": 60, "min": 5},
-            {"key": "timeout", "label": "Timeout (s)", "type": "number", "default": 5, "min": 1},
-            {"key": "urls", "label": "URLs", "type": "array:object", "default": [], "fields": [
-                {"key": "name", "label": "Name", "type": "string"},
-                {"key": "url", "label": "URL", "type": "string"},
-                {"key": "expected_string", "label": "Erwarteter Text", "type": "string", "optional": True},
-            ]},
-        ],
-    },
-    "host": {
-        "label": "Host",
-        "description": "Systeminformationen (Hostname, OS, CPU, RAM)",
-        "fields": [
-            {"key": "sleep", "label": "Intervall (s)", "type": "number", "default": 300, "min": 5},
-        ],
-    },
-    "services": {
-        "label": "Dienste",
-        "description": "systemd-Service-Status prüfen",
-        "fields": [
-            {"key": "sleep", "label": "Intervall (s)", "type": "number", "default": 60, "min": 5},
-            {"key": "services", "label": "Service-Namen", "type": "array:string", "default": []},
-        ],
-    },
-    "temperature": {
-        "label": "Temperatur",
-        "description": "Hardware-Sensor-Temperaturen",
-        "fields": [
-            {"key": "sleep", "label": "Intervall (s)", "type": "number", "default": 60, "min": 5},
-        ],
-    },
-    "cert_valid": {
-        "label": "TLS Zertifikat",
-        "description": "SSL-Zertifikatsgültigkeit prüfen",
-        "fields": [
-            {"key": "sleep", "label": "Intervall (s)", "type": "number", "default": 86400, "min": 300},
-            {"key": "timeout", "label": "Timeout (s)", "type": "number", "default": 5, "min": 1},
-            {"key": "urls", "label": "HTTPS-URLs", "type": "array:string", "default": []},
-        ],
-    },
-    "docker_host": {
-        "label": "Docker",
-        "description": "Docker-Host-Statistiken",
-        "fields": [
-            {"key": "sleep", "label": "Intervall (s)", "type": "number", "default": 60, "min": 5},
-            {"key": "base_url", "label": "Docker Socket URL", "type": "string", "default": "", "optional": True},
-        ],
-    },
-    "plugin_base": None,
+PLUGIN_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugins")
+
+DEFAULT_SCHEMA = {
+    "label": "no label set",
+    "description": "no description available",
+    "fields": [
+        {"key": "sleep", "label": "Interval (s)", "type": "number", "default": 300, "min": 5},
+    ],
 }
+
+
+def _get_plugin_schema(name: str) -> dict | None:
+    """Read __schema__ from a plugin file using AST (no execution)."""
+    import ast
+    fpath = os.path.join(PLUGIN_DIR, f"{name}.py")
+    if not os.path.exists(fpath):
+        return None
+    try:
+        with open(fpath, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id == "__schema__":
+                        return ast.literal_eval(node.value)
+    except Exception:
+        pass
+    return None
+
+
+def _get_all_plugin_names() -> list[str]:
+    """Return all plugin names from the plugins directory."""
+    if not os.path.isdir(PLUGIN_DIR):
+        return []
+    names = []
+    for fname in sorted(os.listdir(PLUGIN_DIR)):
+        if fname.endswith(".py") and not fname.startswith("_"):
+            names.append(fname[:-3])
+    return names
 
 
 # ── JSON Config I/O ──
 
 def _load_json_config() -> dict:
-    """Load config from agents.json, fall back to TOML on first run."""
+    """Load config from agents.json."""
     if os.path.exists(CONFIG_JSON):
         with open(CONFIG_JSON, encoding="utf-8") as f:
             return json.load(f)
-
-    # First run: migrate from TOML
-    cfg = {"agents": {}, "groups": {}, "_meta": {"migrated_from_toml": True, "created": datetime.now(UTC).isoformat()}}
-
-    # Read config.toml for groups + agent->group mapping
-    try:
-        toml_cfg = toml.load(os.path.join(CONF_DIR, "config.toml"))
-        cfg["groups"] = toml_cfg.get("groups", {})
-        agents_section = toml_cfg.get("agents", {})
-    except Exception:
-        agents_section = {}
-
-    # Read agents.toml for plugin configs
-    try:
-        agents_toml = toml.load(os.path.join(CONF_DIR, "agents.toml"))
-    except Exception:
-        agents_toml = {}
-
-    # Read apikeys.toml
-    try:
-        apikeys = toml.load(os.path.join(CONF_DIR, "apikeys.toml"))
-    except Exception:
-        apikeys = {}
-
-    for agent_id in list(agents_section.keys()) + [k for k in apikeys if k != "admin"]:
-        agent_data = {
-            "groups": agents_section.get(agent_id, []),
-            "apikey": apikeys.get(agent_id, {}).get("key", ""),
-            "plugins": {},
-        }
-        # Add description if available
-        desc = apikeys.get(agent_id, {}).get("description", "")
-        if desc:
-            agent_data["description"] = desc
-
-        # Migrate plugin configs
-        agent_plugin_cfg = agents_toml.get(agent_id, {})
-        for plugin_name, schema in PLUGIN_SCHEMAS.items():
-            if schema is None:
-                continue
-            if plugin_name in agent_plugin_cfg:
-                agent_data["plugins"][plugin_name] = dict(agent_plugin_cfg[plugin_name])
-
-        cfg["agents"][agent_id] = agent_data
-
+    cfg = {"agents": {}, "groups": {}}
     _save_json_config(cfg)
+    return cfg
     return cfg
 
 
@@ -181,8 +84,23 @@ def _save_json_config(cfg: dict) -> None:
 @app.route("/admin/plugins/schemas", methods=["GET"])
 @require_agent_apikey
 def admin_plugin_schemas():
-    """Return schemas for all plugins."""
-    return jsonify({k: v for k, v in PLUGIN_SCHEMAS.items() if v is not None})
+    """Return schemas for all plugins, reading from plugin files first."""
+    import ast
+    plugins_dir = os.path.join(os.path.dirname(__file__), "..", "plugins")
+    schemas = {}
+    if os.path.isdir(plugins_dir):
+        for fname in sorted(os.listdir(plugins_dir)):
+            if not fname.endswith(".py") or fname.startswith("_"):
+                continue
+            mod_name = fname[:-3]
+            schema = _get_plugin_schema(mod_name)
+            if schema is not None:
+                schemas[mod_name] = schema
+    # Fallback for plugins without __schema__
+    for name in _get_all_plugin_names():
+        if name not in schemas:
+            schemas[name] = DEFAULT_SCHEMA
+    return jsonify(schemas)
 
 
 @app.route("/admin/agents", methods=["GET"])
@@ -245,10 +163,11 @@ def admin_list_agents():
 @require_agent_apikey
 def admin_create_agent():
     """Create a new agent."""
+    import secrets
     data = request.get_json(silent=True) or {}
     agent_id = data.get("id", "").strip()
     if not agent_id:
-        return jsonify({"error": "agent id required"}), 400
+        agent_id = "a_" + secrets.token_hex(4)
     if not agent_id.isalnum():
         return jsonify({"error": "agent id must be alphanumeric"}), 400
 
@@ -256,10 +175,10 @@ def admin_create_agent():
     if agent_id in cfg.get("agents", {}):
         return jsonify({"error": "agent already exists"}), 409
 
-    import secrets
     api_key = data.get("apikey") or secrets.token_hex(8)
 
     cfg.setdefault("agents", {})[agent_id] = {
+        "title": data.get("title", agent_id),
         "groups": data.get("groups", []),
         "apikey": api_key,
         "plugins": {},
@@ -278,6 +197,35 @@ def admin_delete_agent(agentid: str):
     del cfg["agents"][agentid]
     _save_json_config(cfg)
     return jsonify({"status": "deleted"})
+
+
+@app.route("/admin/agents/<agentid>/enabled", methods=["PUT"])
+@require_agent_apikey
+def admin_toggle_agent_enabled(agentid: str):
+    """Enable or disable an agent."""
+    cfg = _load_json_config()
+    agents = cfg.get("agents", {})
+    if agentid not in agents:
+        return jsonify({"error": "not found"}), 404
+    data = request.get_json(silent=True) or {}
+    agents[agentid]["enabled"] = bool(data.get("enabled", True))
+    _save_json_config(cfg)
+    return jsonify({"status": "updated", "enabled": agents[agentid]["enabled"]})
+
+
+@app.route("/admin/agents/<agentid>", methods=["PUT"])
+@require_agent_apikey
+def admin_update_agent(agentid: str):
+    """Update agent metadata (title, etc.)."""
+    cfg = _load_json_config()
+    agents = cfg.get("agents", {})
+    if agentid not in agents:
+        return jsonify({"error": "not found"}), 404
+    data = request.get_json(silent=True) or {}
+    if "title" in data:
+        agents[agentid]["title"] = data["title"]
+    _save_json_config(cfg)
+    return jsonify({"status": "updated"})
 
 
 @app.route("/admin/agents/<agentid>/groups", methods=["PUT"])
@@ -317,7 +265,7 @@ def admin_set_plugin_config(agentid: str, pluginid: str):
         return jsonify({"error": "agent not found"}), 404
 
     # Validate against schema
-    schema = PLUGIN_SCHEMAS.get(pluginid)
+    schema = _get_plugin_schema(pluginid) or DEFAULT_SCHEMA
     if schema is None:
         return jsonify({"error": f"unknown plugin: {pluginid}"}), 400
 
@@ -363,7 +311,7 @@ RULE_SCHEMA = {
         {"key": "window_size", "label": "Fenster (N Messungen)", "type": "number", "default": 10, "optional": True},
         {"key": "min_violations", "label": "Min. Verletzungen", "type": "number", "default": 1, "optional": True},
         {"key": "severity", "label": "Severity", "type": "select", "options": ["warning", "critical"]},
-        {"key": "fire", "label": "Fire-Modus", "type": "select", "options": ["single", "multi"]},
+        {"key": "fire", "label": "Fire-Modus", "type": "select", "options": ["single", "multi", "replace"]},
         {"key": "notifications", "label": "Benachrichtigungen", "type": "array:string", "default": []},
         {"key": "executors", "label": "Executors", "type": "array:string", "default": []},
     ],
@@ -374,30 +322,7 @@ def _load_rules() -> dict:
     if os.path.exists(RULES_JSON):
         with open(RULES_JSON, encoding="utf-8") as f:
             return json.load(f)
-    # First run: migrate from rules.toml
     rules_map = {}
-    try:
-        toml_rules = toml.load(os.path.join(CONF_DIR, "rules.toml"))
-        for i, r in enumerate(toml_rules.get("rule", [])):
-            rid = r.get("id", f"rule_{i}")
-            rules_map[rid] = {
-                "id": rid,
-                "enabled": r.get("enabled", True),
-                "description": r.get("description", ""),
-                "pluginid": r.get("pluginid", ""),
-                "metric": r.get("metric", ""),
-                "condition": r.get("condition", "gt"),
-                "threshold": float(r.get("threshold", 0)),
-                "scope": r.get("scope", "single"),
-                "window_size": r.get("window_size"),
-                "min_violations": r.get("min_violations"),
-                "severity": r.get("severity", "warning"),
-                "fire": r.get("fire", "single"),
-                "notifications": r.get("notifications", []),
-                "executors": r.get("executors", []),
-            }
-    except Exception:
-        pass
     _save_rules(rules_map)
     return rules_map
 
@@ -475,12 +400,6 @@ def _load_executors() -> dict:
         with open(EXECUTORS_JSON, encoding="utf-8") as f:
             return json.load(f)
     exec_map = {}
-    try:
-        toml_data = toml.load(os.path.join(CONF_DIR, "executors.toml"))
-        for eid, econf in toml_data.get("executors", {}).items():
-            exec_map[eid] = {"id": eid, "command": econf.get("command", "")}
-    except Exception:
-        pass
     _save_executors(exec_map)
     return exec_map
 
@@ -523,16 +442,26 @@ def admin_delete_executor(exec_id: str):
 NOTIFY_SCHEMA = {
     "fields": [
         {"key": "id", "label": "ID", "type": "string"},
-        {"key": "title", "label": "Titel", "type": "string", "default": ""},
-        {"key": "enabled", "label": "Aktiviert", "type": "boolean", "default": True},
-        {"key": "type", "label": "Typ", "type": "select", "options": ["email"]},
-        {"key": "to", "label": "Empfänger", "type": "string"},
-        {"key": "from", "label": "Absender", "type": "string"},
-        {"key": "server", "label": "SMTP-Server", "type": "string"},
+        {"key": "title", "label": "Title", "type": "string", "default": ""},
+        {"key": "enabled", "label": "Enabled", "type": "boolean", "default": True},
+        {"key": "type", "label": "Type", "type": "select", "options": ["email", "web_push", "ntfy", "twilio_call"]},
+        {"key": "to", "label": "Recipient", "type": "string"},
+        {"key": "from", "label": "Sender", "type": "string"},
+        {"key": "server", "label": "SMTP Server", "type": "string"},
         {"key": "port", "label": "Port", "type": "number", "default": 587},
-        {"key": "user", "label": "SMTP-Benutzer", "type": "string"},
-        {"key": "password", "label": "Passwort (oder env NOTIFY_EMAIL_PASSWORD)", "type": "string", "optional": True},
-        {"key": "use_tls", "label": "TLS verwenden", "type": "boolean", "default": True},
+        {"key": "user", "label": "SMTP User", "type": "string"},
+        {"key": "password", "label": "Password (or env NOTIFY_EMAIL_PASSWORD)", "type": "string", "optional": True},
+        {"key": "use_tls", "label": "Use TLS", "type": "boolean", "default": True},
+        {"key": "vapid_public_key", "label": "VAPID Public Key", "type": "string", "optional": True},
+        {"key": "vapid_private_key", "label": "VAPID Private Key", "type": "string", "optional": True},
+        {"key": "vapid_subject", "label": "VAPID Subject (mailto:...)", "type": "string", "default": "mailto:admin@localhost", "optional": True},
+        {"key": "ntfy_url", "label": "ntfy Server URL", "type": "string", "default": "https://ntfy.sh", "optional": True},
+        {"key": "ntfy_topic", "label": "ntfy Topic", "type": "string", "optional": True},
+        {"key": "ntfy_access_token", "label": "ntfy Access Token", "type": "string", "optional": True},
+        {"key": "twilio_account_sid", "label": "Twilio Account SID", "type": "string", "optional": True},
+        {"key": "twilio_auth_token", "label": "Twilio Auth Token", "type": "string", "optional": True},
+        {"key": "twilio_call_from", "label": "Call From Number", "type": "string", "optional": True},
+        {"key": "twilio_call_to", "label": "Call To Number", "type": "string", "optional": True},
     ],
 }
 
@@ -542,17 +471,6 @@ def _load_notify() -> dict:
         with open(NOTIFY_JSON, encoding="utf-8") as f:
             return json.load(f)
     notify_map = {}
-    try:
-        toml_data = toml.load(os.path.join(CONF_DIR, "notifications.toml"))
-        for tid, tconf in toml_data.get("targets", {}).items():
-            clean = {"id": tid}
-            for f in NOTIFY_SCHEMA["fields"]:
-                val = tconf.get(f["key"])
-                if val is not None:
-                    clean[f["key"]] = val
-            notify_map[tid] = clean
-    except Exception:
-        pass
     _save_notify(notify_map)
     return notify_map
 
@@ -596,6 +514,89 @@ def admin_delete_notify(notify_id: str):
     return jsonify({"status": "deleted"})
 
 
+@app.route("/admin/notifications/test", methods=["POST"])
+@require_agent_apikey
+def admin_test_notify():
+    """Send a test notification."""
+    data = request.get_json(silent=True) or {}
+    target_type = data.get("type")
+    if target_type == "email":
+        from notifications import send_email_notification
+        subject = f"[pymon] Test notification from {data.get('id', 'unknown')}"
+        body = "This is a test notification from pymon.\n\nIf you receive this, your email config works."
+        try:
+            send_email_notification(data, subject, body)
+            return jsonify({"status": "test sent"})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    elif target_type == "web_push":
+        from services.web_push import send_push_notification
+        try:
+            send_push_notification(
+                "[pymon] Test",
+                "Web Push test notification from pymon",
+                tag="pymon-test",
+                private_key=data.get("vapid_private_key") or None,
+                public_key=data.get("vapid_public_key") or None,
+                subject=data.get("vapid_subject") or None,
+            )
+            return jsonify({"status": "test sent"})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    elif target_type == "ntfy":
+        import urllib.request
+        ntfy_url = (data.get("ntfy_url") or "https://ntfy.sh").rstrip("/")
+        topic = data.get("ntfy_topic")
+        if not topic:
+            return jsonify({"error": "ntfy_topic required"}), 400
+        token = data.get("ntfy_access_token") or None
+        import json
+        payload = json.dumps({
+            "topic": topic,
+            "title": "[pymon] Test",
+            "message": "Test notification from pymon",
+            "tags": ["test"],
+        }).encode()
+        req = urllib.request.Request(
+            ntfy_url, data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        if token:
+            req.add_header("Authorization", f"Bearer {token}")
+        try:
+            urllib.request.urlopen(req, timeout=10)
+            return jsonify({"status": "test sent"})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    elif target_type == "twilio_call":
+        try:
+            from twilio.rest import Client
+        except ImportError:
+            return jsonify({"error": "twilio package not installed"}), 500
+        sid = data.get("twilio_account_sid")
+        token = data.get("twilio_auth_token")
+        call_from = data.get("twilio_call_from")
+        call_to = data.get("twilio_call_to")
+        if not all([sid, token, call_from, call_to]):
+            return jsonify({"error": "twilio_account_sid, twilio_auth_token, twilio_call_from, twilio_call_to required"}), 400
+        try:
+            client = Client(sid, token)
+            client.calls.create(
+                twiml="<Response><Say>This is a test call from pymon.</Say></Response>",
+                to=call_to,
+                from_=call_from,
+            )
+            return jsonify({"status": "test sent"})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    return jsonify({"error": f"unknown type: {target_type}"}), 400
+
+
 # ── Plugin Management ──
 
 PLUGIN_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugins")
@@ -622,7 +623,7 @@ def admin_list_plugins():
     if not os.path.exists(PLUGIN_DIR):
         return jsonify([])
     for fname in sorted(os.listdir(PLUGIN_DIR)):
-        if not fname.endswith(".py") or fname == "__init__.py":
+        if not fname.endswith(".py") or fname.startswith("_"):
             continue
         name = fname[:-3]
         fpath = os.path.join(PLUGIN_DIR, fname)
@@ -640,7 +641,7 @@ def admin_list_plugins():
                         desc = second.strip('"\' ')
             elif first_line.startswith('"""') or first_line.startswith("'''"):
                 desc = first_line.strip('"\' ')
-            schema = PLUGIN_SCHEMAS.get(name, {})
+            schema = _get_plugin_schema(name) or DEFAULT_SCHEMA
             meta = _load_plugin_meta()
             pm = meta.get(name, {})
             plugins.append({
@@ -653,6 +654,17 @@ def admin_list_plugins():
         except Exception:
             plugins.append({"name": name, "label": name, "description": "", "size": 0})
     return jsonify(plugins)
+
+
+@app.route("/admin/plugins/template", methods=["GET"])
+@require_agent_apikey
+def admin_plugin_template():
+    """Return the plugin template source code."""
+    tpath = os.path.join(PLUGIN_DIR, "_template.py")
+    if not os.path.exists(tpath):
+        return jsonify({"error": "template not found"}), 404
+    with open(tpath, encoding="utf-8") as f:
+        return f.read(), 200, {"Content-Type": "text/plain"}
 
 
 @app.route("/admin/plugins/<name>/source", methods=["GET"])

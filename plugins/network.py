@@ -2,6 +2,11 @@
 """network.py — Network throughput via /proc/net/dev. No external deps."""
 import json, sys, time, os
 
+
+
+
+__schema__ = {'label': 'Network', 'description': 'Network I/O and TCP connections', 'fields': [{'key': 'sleep', 'label': 'Interval (s)', 'type': 'number', 'default': 30, 'min': 5}]}
+
 STATE_FILE = "/tmp/pymon_network_state.json"
 
 if __name__ == "__main__":

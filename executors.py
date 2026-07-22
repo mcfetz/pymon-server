@@ -3,18 +3,18 @@ import os
 import subprocess
 from typing import Any
 
-import toml
 
-
-def load_executor_config(path: str = "conf/executors.toml") -> dict[str, Any]:
+def _load_executor_config() -> dict[str, Any]:
+    """Load executor config from executors.json."""
+    fpath = os.path.join(os.path.dirname(__file__), "conf", "executors.json")
     try:
-        data = toml.load(path)
-    except FileNotFoundError:
+        with open(fpath, encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
         return {}
-    return data.get("executors", {})
 
 
-EXECUTOR_CONFIG: dict[str, Any] = load_executor_config()
+EXECUTOR_CONFIG: dict[str, Any] = _load_executor_config()
 
 
 def _is_executor_enabled(exec_id: str) -> bool:

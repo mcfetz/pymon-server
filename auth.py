@@ -1,4 +1,5 @@
-import toml
+import json
+import os
 from functools import wraps
 
 from flask import request, jsonify
@@ -7,51 +8,30 @@ from core import logger
 
 
 def verify_agent_apikey(agentid: str, apikey: str) -> bool:
-    """
-    Verify that the given API key is valid for the given agentid.
-
-    Returns True if a matching entry exists in conf/apikeys.toml with:
-      - type = "agent" or "user"
-      - table name == agentid
-      - key == apikey
-    """
     if not agentid or not apikey:
         return False
 
+    # Check agents.json (source of truth)
     try:
-        config = toml.load("conf/apikeys.toml")
-    except Exception as e:
-        logger.error("Error while loading apikeys.toml: %s", e)
-        return False
+        agents_json = os.path.join(os.path.dirname(__file__), "conf", "agents.json")
+        if os.path.exists(agents_json):
+            with open(agents_json, encoding="utf-8") as f:
+                cfg = json.load(f)
+            agent = cfg.get("agents", {}).get(agentid)
+            if agent and agent.get("apikey") == apikey:
+                return True
+    except Exception:
+        pass
 
-    entry = config.get(agentid)
-    if not entry:
-        return False
-
-    if entry.get("type") not in ("agent", "user"):
-        return False
-
-    stored_key = entry.get("key")
-    if not stored_key:
-        return False
-
-    return stored_key == apikey
+    return False
 
 
 def require_agent_apikey(func):
-    """
-    Decorator to enforce agentid + X-API-Key authentication on a route.
-
-    Expects headers:
-      - agentid: the agent identifier
-      - X-API-Key: the API key for that agent
-
-    On success:
-      - calls the wrapped function
-      - sets request.agentid for convenience
-    """
     @wraps(func)
     def wrapper(*args, **kwargs):
+        if getattr(request, 'frontend_user', None):
+            return func(*args, **kwargs)
+
         agentid = request.headers.get("agentid", None)
         apikey = request.headers.get("X-API-Key", None)
 
@@ -61,7 +41,6 @@ def require_agent_apikey(func):
         if not apikey or not verify_agent_apikey(agentid, apikey):
             return jsonify({"error": "invalid or missing API key"}), 401
 
-        # Attach agentid to request for use in the view
         request.agentid = agentid
         return func(*args, **kwargs)
 

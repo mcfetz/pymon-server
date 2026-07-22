@@ -2,6 +2,11 @@
 """ram.py — RAM and swap usage via /proc/meminfo. No external deps."""
 import json, sys
 
+
+
+
+__schema__ = {'label': 'RAM', 'description': 'Memory and swap usage', 'fields': [{'key': 'sleep', 'label': 'Interval (s)', 'type': 'number', 'default': 30, 'min': 5}]}
+
 if __name__ == "__main__":
     config = json.load(sys.stdin)
 

@@ -4,9 +4,7 @@ from datetime import datetime
 from dateutil import parser as dateutil_parser
 from auth import require_agent_apikey
 from db_models import Metrics, Alarm
-import toml
-import base64
-import hashlib
+import json
 import os
 
 
@@ -75,81 +73,61 @@ def status():
     return jsonify({"agentid": agentid, "status": status}), 200
 
 
+def _load_agents_json() -> dict:
+    """Load agents.json config."""
+    fpath = os.path.join(os.path.dirname(__file__), "..", "conf", "agents.json")
+    try:
+        with open(fpath) as f:
+            return json.load(f)
+    except Exception:
+        return {"agents": {}, "groups": {}}
+
+
+def _get_plugin_label(name: str) -> str | None:
+    """Read the label from a plugin's __schema__."""
+    import ast
+    fpath = os.path.join(os.path.dirname(__file__), "..", "plugins", f"{name}.py")
+    if not os.path.exists(fpath):
+        return None
+    try:
+        with open(fpath, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id == "__schema__":
+                        schema = ast.literal_eval(node.value)
+                        return schema.get("label")
+    except Exception:
+        pass
+    return None
+
+
 @app.route("/agents", methods=["GET"])
 @require_agent_apikey
 def list_agents():
     """
-    List all known agents from agents.toml.
-    ---
-    tags:
-      - agents
-    responses:
-      200:
-        description: List of agent ids
-        content:
-          application/json:
-            schema:
-              type: array
-              items:
-                type: string
-      500:
-        description: Error while loading agents configuration
+    List all known agents with id and title.
     """
-    try:
-        agents_config = toml.load("conf/agents.toml")
-    except Exception as e:
-        logger.error("Fehler beim Laden der agents.toml: %s", e)
-        return jsonify({"error": "Fehler beim Laden der Konfiguration"}), 500
-
-    # Top-level keys in agents.toml are agent ids
-    agent_ids = list(agents_config.keys())
-    return jsonify(agent_ids), 200
+    cfg = _load_agents_json()
+    agents = cfg.get("agents", {})
+    result = [{"id": aid, "title": agent.get("title", aid)} for aid, agent in agents.items()]
+    return jsonify(sorted(result, key=lambda a: a["id"])), 200
 
 
 @app.route("/groups", methods=["GET"])
 @require_agent_apikey
 def list_groups():
     """
-    List all known groups from config.toml.
-    ---
-    tags:
-      - agents
-    responses:
-      200:
-        description: List of groups and their assigned agents
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                groups:
-                  type: array
-                  items:
-                    type: string
-                agents:
-                  type: object
-                  additionalProperties:
-                    type: array
-                    items:
-                      type: string
-      500:
-        description: Error while loading configuration
+    List all known groups and their assigned agents.
     """
-    try:
-        config = toml.load("conf/config.toml")
-    except Exception as e:
-        logger.error("Fehler beim Laden der config.toml: %s", e)
-        return jsonify({"error": "Fehler beim Laden der Konfiguration"}), 500
+    cfg = _load_agents_json()
+    groups = cfg.get("groups", {})
+    agents = cfg.get("agents", {})
 
-    groups_section = config.get("groups", {})
-    group_names = list(groups_section.keys())
-
-    # Build mapping: group -> list of agents assigned to that group
-    agents_section = config.get("agents", {})
-    group_to_agents: dict[str, list[str]] = {group: [] for group in group_names}
-
-    for agent_id, agent_groups in agents_section.items():
-        for group in agent_groups:
+    group_to_agents: dict[str, list[str]] = {g: [] for g in groups}
+    for agent_id, agent_data in agents.items():
+        for group in agent_data.get("groups", []):
             if group in group_to_agents:
                 group_to_agents[group].append(agent_id)
 
@@ -160,53 +138,26 @@ def list_groups():
 @require_agent_apikey
 def list_agent_plugins(agentname: str):
     """
-    List all plugins assigned to a given agent via groups in config.toml.
-    ---
-    tags:
-      - agents
-    parameters:
-      - in: path
-        name: agentname
-        required: true
-        schema:
-          type: string
-        description: Agent identifier
-    responses:
-      200:
-        description: List of plugin names assigned to the agent
-        content:
-          application/json:
-            schema:
-              type: array
-              items:
-                type: string
-      404:
-        description: Agent not found in configuration
-      500:
-        description: Error while loading configuration
+    List all plugins assigned to a given agent via groups or direct assignment.
+    Returns objects with id and title (from plugin schema label, fallback to id).
     """
-    try:
-        config = toml.load("conf/config.toml")
-    except Exception as e:
-        logger.error("Error loading config.toml: %s", e)
-        return jsonify({"error": "Error loading configuration"}), 500
+    cfg = _load_agents_json()
+    agent = cfg.get("agents", {}).get(agentname)
+    if agent is None:
+        return jsonify({"error": "agent not found"}), 404
 
-    agents_section = config.get("agents", {})
-    groups_section = config.get("groups", {})
+    assigned = set()
+    for group in agent.get("groups", []):
+        for p in cfg.get("groups", {}).get(group, []):
+            assigned.add(p)
+    for p in agent.get("plugins", {}):
+        assigned.add(p)
 
-    # Get groups assigned to this agent
-    agent_groups = agents_section.get(agentname)
-    if agent_groups is None:
-        return jsonify({"error": "Agent not found"}), 404
-
-    # Collect plugins from all groups assigned to the agent
-    plugins: set[str] = set()
-    for group in agent_groups:
-        group_plugins = groups_section.get(group, [])
-        for plugin in group_plugins:
-            plugins.add(plugin)
-
-    return jsonify(sorted(plugins)), 200
+    result = []
+    for pid in sorted(assigned):
+        title = _get_plugin_label(pid)
+        result.append({"id": pid, "title": title or pid})
+    return jsonify(result), 200
 
 
 @app.route("/agents/<agentname>/plugins/<pluginname>/metrics", methods=["GET"])
@@ -388,7 +339,18 @@ def agent_install_script():
     """
     agentid = request.args.get("agentid", "AGENTID")
     apikey = request.args.get("apikey", "APIKEY")
-    server_url = request.host_url.rstrip("/")
+    explicit = request.args.get("server", "").strip()
+
+    if explicit:
+        server_url = explicit.rstrip("/")
+    else:
+        # Detect public URL behind reverse proxy
+        forwarded_host = request.headers.get("X-Forwarded-Host", "")
+        forwarded_proto = request.headers.get("X-Forwarded-Proto", "")
+        if forwarded_host and forwarded_proto:
+            server_url = f"{forwarded_proto}://{forwarded_host.split(',')[0].strip()}/api"
+        else:
+            server_url = request.host_url.rstrip("/")
 
     script = f"""#!/bin/sh
 # pymon-agent install (generated by pymon-server)
@@ -401,6 +363,14 @@ mkdir -p "$DIR/plugins"
 cd "$DIR"
 echo "Downloading agent..."
 curl -s -H "agentid: $AGENTID" -H "X-API-Key: $APIKEY" "$SERVER/agent/download" -o agent.py
+echo "Creating config..."
+cat > agent.json <<EOF
+{{
+  "server": "$SERVER",
+  "agentid": "$AGENTID",
+  "api_key": "$APIKEY"
+}}
+EOF
 echo "Fetching plugins..."
 PLUGINS=$(curl -s -H "agentid: $AGENTID" -H "X-API-Key: $APIKEY" "$SERVER/plugins")
 for plugin in $PLUGINS; do
@@ -408,7 +378,7 @@ for plugin in $PLUGINS; do
   curl -s -H "agentid: $AGENTID" -H "X-API-Key: $APIKEY" "$SERVER/plugins/$plugin" -o "plugins/${{plugin}}.py"
 done
 echo "Starting agent in background..."
-nohup python3 agent.py --server "$SERVER" --agentid "$AGENTID" --api-key "$APIKEY" > agent.log 2>&1 &
+nohup python3 agent.py > agent.log 2>&1 &
 echo "Agent $AGENTID started. Log: $DIR/agent.log"
 """
     return script, 200, {"Content-Type": "text/x-shellscript"}

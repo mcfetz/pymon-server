@@ -2,6 +2,11 @@
 """ping.py — ICMP ping to configured hosts. Uses subprocess. No external deps."""
 import json, subprocess, sys, platform, re
 
+
+
+
+__schema__ = {'label': 'Ping', 'description': 'ICMP ping to configured hosts', 'fields': [{'key': 'sleep', 'label': 'Interval (s)', 'type': 'number', 'default': 60, 'min': 5}, {'key': 'hosts', 'label': 'Hosts', 'type': 'array:string', 'default': []}]}
+
 if __name__ == "__main__":
     config = json.load(sys.stdin)
     hosts = config.get("hosts", [])

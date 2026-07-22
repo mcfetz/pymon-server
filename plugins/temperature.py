@@ -2,6 +2,11 @@
 """temperature.py — Hardware sensor temperatures via /sys/class/thermal. No external deps."""
 import json, os, sys
 
+
+
+
+__schema__ = {'label': 'Temperature', 'description': 'Hardware sensor temperatures', 'fields': [{'key': 'sleep', 'label': 'Interval (s)', 'type': 'number', 'default': 60, 'min': 5}]}
+
 if __name__ == "__main__":
     config = json.load(sys.stdin)
 

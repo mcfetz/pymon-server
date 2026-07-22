@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
-
-import toml
+import json
+import os
 
 from flask import jsonify, request
 from sqlalchemy import and_
@@ -378,6 +378,14 @@ def collect_metrics():
     logger.info(f"Received data from agentid: {agentid}")
     logger.debug("Received payload: %s", payload)
 
+    # Check if agent is enabled
+    from routes.admin import _load_json_config
+    cfg = _load_json_config()
+    agent_cfg = cfg.get("agents", {}).get(agentid)
+    if agent_cfg is not None and not agent_cfg.get("enabled", True):
+        logger.info("Agent %s is disabled, discarding metrics", agentid)
+        return jsonify({"status": "agent disabled, metrics discarded"}), 200
+
     # Open a SQLAlchemy session
     session = SessionLocal()
     try:
@@ -438,15 +446,18 @@ def collect_metrics():
 
 
 def _resolve_group_agents(group_name: str) -> list[str]:
-    """Resolve a group name to agent IDs using config.toml."""
+    """Resolve a group name to agent IDs using agents.json."""
+    import json, os
+    fpath = os.path.join(os.path.dirname(__file__), "..", "conf", "agents.json")
     try:
-        config = toml.load("conf/config.toml")
+        with open(fpath) as f:
+            cfg = json.load(f)
     except Exception:
         return []
-    agents_section = config.get("agents", {})
+    agents = cfg.get("agents", {})
     result = []
-    for agent_id, agent_groups in agents_section.items():
-        if group_name in agent_groups:
+    for agent_id, agent_data in agents.items():
+        if group_name in agent_data.get("groups", []):
             result.append(agent_id)
     return result
 
@@ -509,7 +520,7 @@ def query_metrics():
         description: List of metrics with optional alarm info
     """
     group_param = request.args.get("group")
-    agentid_param = request.args.get("agentid")
+    agentid_raw = request.args.get("agentid")
     pluginid_param = request.args.get("pluginid")
     metric_param = request.args.get("metric")
     time_from_param = request.args.get("from")
@@ -526,8 +537,8 @@ def query_metrics():
         agentids = _resolve_group_agents(group_param)
         if not agentids:
             return jsonify([]), 200
-    elif agentid_param:
-        agentids = [agentid_param]
+    elif agentid_raw:
+        agentids = [a.strip() for a in agentid_raw.split(",") if a.strip()]
 
     session = SessionLocal()
     try:

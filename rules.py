@@ -3,7 +3,6 @@ import os
 from dataclasses import dataclass
 from typing import Literal
 
-import toml
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
@@ -12,11 +11,10 @@ from functions import get_value_from_row
 from notifications import notify_targets
 from cache import timed_cache
 from executors import run_executors
-from services.web_push import send_push_notification
 
 Condition = Literal["gt", "lt", "ge", "le", "eq", "ne"]
 Scope = Literal["single", "moving_avg", "count_ratio"]
-FireMode = Literal["single", "multi"]
+FireMode = Literal["single", "multi", "replace"]
 
 
 @dataclass
@@ -40,31 +38,6 @@ class Rule:
 @timed_cache(ttl_seconds=5)
 def load_rules(path: str = "conf/rules.json") -> list[Rule]:
     if not os.path.exists(path):
-        # Fallback to TOML for migration
-        toml_path = path.replace(".json", ".toml")
-        if os.path.exists(toml_path):
-            data = toml.load(toml_path)
-            rules: list[Rule] = []
-            for r in data.get("rule", []):
-                rules.append(
-                    Rule(
-                        id=r["id"],
-                        enabled=r.get("enabled", True),
-                        description=r.get("description", ""),
-                        pluginid=r["pluginid"],
-                        metric=r["metric"],
-                        condition=r["condition"],
-                        threshold=float(r["threshold"]),
-                        scope=r.get("scope", "single"),
-                        window_size=r.get("window_size"),
-                        min_violations=r.get("min_violations"),
-                        severity=r.get("severity", "warning"),
-                        notifications=r.get("notifications", []),
-                        fire=r.get("fire", "single"),
-                        executors=r.get("executors", []),
-                    )
-                )
-            return rules
         return []
     with open(path, encoding="utf-8") as f:
         raw = json.load(f)
@@ -134,6 +107,21 @@ def _is_snoozed(rule_id: str, agentid: str, pluginid: str, metric: str) -> bool:
     return False
 
 
+def _ack_open_alarms(session: Session, agentid: str, rule: Rule, metric: str) -> None:
+    q = (
+        select(Alarm)
+        .where(
+            Alarm.agentid == agentid,
+            Alarm.rule_id == rule.id,
+            Alarm.pluginid == rule.pluginid,
+            Alarm.metric == metric,
+            Alarm.acknowledged == False,
+        )
+    )
+    for alarm in session.execute(q).scalars().all():
+        alarm.acknowledged = True
+
+
 def create_alarm(
     session: Session,
     agentid: str,
@@ -145,6 +133,10 @@ def create_alarm(
     # fire=single: nur einen offenen Alarm pro (agentid, rule)
     if rule.fire == "single" and has_open_alarm(session, agentid, rule):
         return
+
+    # fire=replace: bestehende offene Alarme acknoledgen, dann neuen auslösen
+    if rule.fire == "replace":
+        _ack_open_alarms(session, agentid, rule, metric)
 
     # snoozed: skip alarm creation for this combo
     if _is_snoozed(rule.id, agentid, rule.pluginid, metric):
@@ -168,14 +160,6 @@ def create_alarm(
     # Notifications auslösen (Fehler hier sollen die DB-Transaktion nicht verhindern)
     try:
         notify_targets(rule, agentid, metric, value, message, alarm.id)
-    except Exception:
-        pass
-
-    # Web Push Benachrichtigung
-    try:
-        push_title = f"[{rule.severity}] {rule.id}"
-        push_body = f"Agent: {agentid} | {rule.pluginid}/{metric} = {value}"
-        send_push_notification(push_title, push_body, tag=f"pymon-{rule.id}")
     except Exception:
         pass
 

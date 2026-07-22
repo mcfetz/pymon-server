@@ -170,6 +170,7 @@ Rules define conditions on metrics. When a metric arrives, all matching rules ar
 
 - **single**: Only create one alarm per (agent, rule) until acknowledged
 - **multi**: Create a new alarm for every violation
+- **replace**: Acknowledge existing open alarms for (agent, rule, plugin, metric) and create a new alarm — always the latest
 
 ### Supported Conditions
 

@@ -2,6 +2,11 @@
 """services.py — systemd service status. No external deps."""
 import json, subprocess, sys
 
+
+
+
+__schema__ = {'label': 'Services', 'description': 'systemd service status check', 'fields': [{'key': 'sleep', 'label': 'Interval (s)', 'type': 'number', 'default': 60, 'min': 5}, {'key': 'services', 'label': 'Service names', 'type': 'array:string', 'default': []}]}
+
 if __name__ == "__main__":
     config = json.load(sys.stdin)
     services = config.get("services", [])

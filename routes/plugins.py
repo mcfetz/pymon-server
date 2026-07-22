@@ -1,6 +1,6 @@
 from core import app, logger
 from flask import request, jsonify
-import toml
+import json
 import os
 import hashlib
 
@@ -9,22 +9,28 @@ from auth import require_agent_apikey
 
 def get_assigned_plugins_for_agentid(agentid: str) -> list:
     try:
-        config = toml.load("conf/config.toml")
+        import json, os
+        agents_json = os.path.join(os.path.dirname(__file__), "..", "conf", "agents.json")
+        if os.path.exists(agents_json):
+            with open(agents_json) as f:
+                cfg = json.load(f)
+            agent = cfg.get("agents", {}).get(agentid)
+            if not agent:
+                return []
+            # Collect plugins from groups
+            from_fn = os.path.join(os.path.dirname(__file__), "..", "conf", "agents.json")
+            groups = cfg.get("groups", {})
+            assigned = set()
+            for g in agent.get("groups", []):
+                for p in groups.get(g, []):
+                    assigned.add(p)
+            # Add directly assigned plugins
+            for p in agent.get("plugins", {}):
+                assigned.add(p)
+            return list(assigned)
     except Exception as e:
-        logger.error(f"error while loading config.toml: {e}")
-        return []
-
-    # Determine the groups of the agent (if defined)
-    agent_groups = config.get("agents", {}).get(agentid, [])
-
-    # Collect all plugins that are assigned to the agent's groups
-    assigned_plugins = set()
-    groups_config = config.get("groups", {})
-    for group in agent_groups:
-        plugins_for_group = groups_config.get(group, [])
-        assigned_plugins.update(plugins_for_group)
-
-    return list(assigned_plugins)
+        logger.error("error loading agent config: %s", e)
+    return []
 
 
 @app.route("/plugins", methods=["GET"])
@@ -222,38 +228,34 @@ def get_plugin_config(name):
         description: Error while loading configuration
     """
     try:
-        # Load the contents of the agents.toml file
-        agents_config = toml.load("conf/agents.toml")
+        import json, os
+        agents_json = os.path.join(os.path.dirname(__file__), "..", "conf", "agents.json")
+        if not os.path.exists(agents_json):
+            return jsonify({"error": "no config"}), 500
+        with open(agents_json) as f:
+            cfg = json.load(f)
+
+        agent = cfg.get("agents", {}).get(request.agentid)
+        if not agent:
+            return jsonify({"error": "agent not found"}), 404
+
+        # Collect all assigned plugins for this agent
+        assigned = set()
+        for g in agent.get("groups", []):
+            for p in cfg.get("groups", {}).get(g, []):
+                assigned.add(p)
+        for p in agent.get("plugins", {}):
+            assigned.add(p)
+
+        if name not in assigned:
+            return jsonify({"error": "plugin not assigned to this agent"}), 403
+
+        # Return plugin config from the agent's plugin config
+        plugin_config = agent.get("plugins", {}).get(name, {})
+        return jsonify(plugin_config), 200
     except Exception as e:
-        logger.error("Fehler beim Laden der agents.toml: %s", e)
-        return jsonify({"error": "Fehler beim Laden der Konfiguration"}), 500
-
-    # Load global config to determine which plugins are assigned to the agent
-    try:
-        global_config = toml.load("conf/config.toml")
-    except Exception as e:
-        logger.error("Fehler beim Laden der config.toml: %s", e)
-        return jsonify({"error": "Fehler beim Laden der Konfiguration"}), 500
-
-    # Determine the groups of the agent (if defined)
-    agent_groups = global_config.get("agents", {}).get(request.agentid, [])
-
-    # Collect all plugins that are assigned to the agent's groups
-    assigned_plugins = set()
-    groups_config = global_config.get("groups", {})
-    for group in agent_groups:
-        plugins_for_group = groups_config.get(group, [])
-        assigned_plugins.update(plugins_for_group)
-
-    # Reject if the requested plugin is not assigned to this agent
-    if name not in assigned_plugins:
-        return jsonify({"error": "plugin not assigned to this agent"}), 403
-
-    # Look up the agent section in the agents.toml file
-    agent_config = agents_config.get(request.agentid, {})
-
-    # Within the agent section: get the configuration for the plugin (plugin name equals <name>)
-    plugin_config = agent_config.get(name, {})
+        logger.error("Error loading plugin config: %s", e)
+        return jsonify({"error": "error loading config"}), 500
 
     # Return the configuration as a dictionary
     return jsonify(plugin_config), 200

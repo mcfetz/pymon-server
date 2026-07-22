@@ -2,6 +2,11 @@
 """cpu.py — CPU usage via /proc/stat. No external deps."""
 import json, sys, time
 
+
+
+
+__schema__ = {'label': 'CPU', 'description': 'CPU usage in percent', 'fields': [{'key': 'sleep', 'label': 'Interval (s)', 'type': 'number', 'default': 30, 'min': 5}]}
+
 def _cpu_times():
     with open("/proc/stat") as f:
         line = f.readline()
