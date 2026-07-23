@@ -1,19 +1,19 @@
 import json
+import logging
 import os
 import subprocess
 from typing import Any
 
+logger = logging.getLogger(__name__)
 
-def _load_executor_config() -> dict[str, Any]:
+
+def _load_executors_fresh():
     fpath = os.path.join(os.path.dirname(__file__), "conf", "executors.json")
     try:
         with open(fpath, encoding="utf-8") as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
-
-
-EXECUTOR_CONFIG: dict[str, Any] = _load_executor_config()
 
 
 def _build_command(executor_id: str, rule: Any, agentid: str, metric: str, value: float, message: str) -> str | None:
@@ -41,22 +41,25 @@ def run_executors(
     value: float,
     message: str,
 ) -> list[dict[str, str]]:
-    """
-    Run server-side executors and return agent-side executor commands.
-    Each executor defines a shell command and an execution_target field.
-    """
     agent_executors: list[dict[str, str]] = []
 
     if not rule.executors:
         return agent_executors
 
+    config = _load_executors_fresh()
+
     for executor_id in rule.executors:
-        conf = EXECUTOR_CONFIG.get(executor_id)
-        if not conf or not conf.get("enabled", True):
+        conf = config.get(executor_id)
+        if not conf:
+            logger.warning("Executor '%s' not found in config", executor_id)
+            continue
+        if not conf.get("enabled", True):
+            logger.info("Executor '%s' is disabled", executor_id)
             continue
 
         command_template = conf.get("command")
         if not command_template:
+            logger.warning("Executor '%s' has no command", executor_id)
             continue
 
         command = command_template.format(
@@ -70,12 +73,10 @@ def run_executors(
         )
 
         target = conf.get("execution_target", "server")
+        logger.info("Executor '%s' target=%s cmd=%s", executor_id, target, command)
 
         if target == "agent":
-            agent_executors.append({
-                "id": executor_id,
-                "command": command,
-            })
+            agent_executors.append({"id": executor_id, "command": command})
         else:
             try:
                 subprocess.run(command, shell=True, check=False)

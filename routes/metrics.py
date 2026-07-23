@@ -454,6 +454,7 @@ def collect_metrics():
     response = {"status": "Metrics stored"}
         if agent_execs:
             response["executors"] = agent_execs
+            logger.info("Returning %d agent-side executor(s) for agent '%s'", len(agent_execs), agentid_payload)
         return jsonify(response), 200
 
 
