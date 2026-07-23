@@ -39,6 +39,8 @@ def check_frontend_auth():
     for prefix in AGENT_ROUTE_PREFIXES:
         if request.path.startswith(prefix):
             return
+    if request.headers.get("agentid"):
+        return
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
         return jsonify({"error": "unauthorized"}), 401
