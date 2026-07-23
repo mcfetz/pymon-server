@@ -311,7 +311,7 @@ RULE_SCHEMA = {
         {"key": "threshold", "label": "Threshold", "type": "number"},
         {"key": "scope", "label": "Scope", "type": "select", "options": ["single", "moving_avg", "count_ratio"]},
         {"key": "window_size", "label": "Window (N measurements)", "type": "number", "default": 10, "optional": True},
-        {"key": "min_violations", "label": "Min. violations", "type": "number", "default": 1, "optional": True},
+        {"key": "min_violations", "label": "Violations", "type": "number", "default": 1, "optional": True},
         {"key": "severity", "label": "Severity", "type": "select", "options": ["warning", "critical"]},
         {"key": "fire", "label": "Fire mode", "type": "select", "options": ["single", "multi", "replace"]},
         {"key": "notifications", "label": "Notifications", "type": "array:string", "default": []},

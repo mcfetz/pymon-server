@@ -12,6 +12,15 @@ from functions import get_value_from_row
 from notifications import notify_targets
 from cache import timed_cache
 from executors import run_executors
+
+# Agent-side executor commands collected during rule evaluation, returned in the response
+_pending_agent_executors: list[dict] = []
+
+
+def get_pending_agent_executors() -> list[dict]:
+    result = list(_pending_agent_executors)
+    _pending_agent_executors.clear()
+    return result
 import logging
 
 logger = logging.getLogger(__name__)
@@ -270,7 +279,9 @@ def create_alarm(
 
     # Executor ausführen (Fehler hier sollen die DB-Transaktion ebenfalls nicht verhindern)
     try:
-        run_executors(rule, agentid, metric, value, message)
+        agent_execs = run_executors(rule, agentid, metric, value, message)
+        if agent_execs:
+            _pending_agent_executors.extend(agent_execs)
     except Exception:
         pass
 

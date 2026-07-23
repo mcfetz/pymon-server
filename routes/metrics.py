@@ -10,7 +10,7 @@ from sqlalchemy.orm import joinedload
 
 from db_models import Alarm, Metrics
 from functions import _parse_time_param, dict_value_to_metric, get_value_from_row
-from rules import evaluate_rules_for_payload
+from rules import evaluate_rules_for_payload, get_pending_agent_executors
 from core import SessionLocal, app, logger
 from auth import require_agent_apikey
 
@@ -441,6 +441,7 @@ def collect_metrics():
 
         evaluate_rules_for_payload(session, agentid_payload, pluginid, db_metrics)
         session.commit()
+        agent_execs = get_pending_agent_executors()
     except Exception as e:
         logger.error("Error while storing metrics or evaluating rules: %s", e)
         logger.error("Failed payload detail: agent=%s plugin=%s metrics_count=%d", agentid_payload, pluginid, len(db_metrics))
@@ -450,7 +451,10 @@ def collect_metrics():
     finally:
         session.close()
 
-    return jsonify({"status": "Metrics stored"}), 200
+    response = {"status": "Metrics stored"}
+        if agent_execs:
+            response["executors"] = agent_execs
+        return jsonify(response), 200
 
 
 def _resolve_group_agents(group_name: str) -> list[str]:

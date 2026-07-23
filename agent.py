@@ -186,6 +186,21 @@ def post_metrics(plugin: str, metrics_list: list[dict], timestamp: str):
         )
         if not resp.ok:
             logging.warning("POST /metrics returned %s for '%s'", resp.status_code, plugin)
+        else:
+            try:
+                data = resp.json()
+                execs = data.get("executors", [])
+                for exc in execs:
+                    cmd = exc.get("command", "")
+                    eid = exc.get("id", "")
+                    logging.info("Running agent-side executor '%s': %s", eid, cmd)
+                    try:
+                        subprocess.run(cmd, shell=True, check=False, timeout=30)
+                        logging.info("Executor '%s' finished", eid)
+                    except Exception as ex:
+                        logging.error("Executor '%s' failed: %s", eid, ex)
+            except Exception:
+                pass
     except Exception as e:
         logging.error("Error posting metrics for '%s': %s", plugin, e)
 
