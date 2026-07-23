@@ -42,6 +42,11 @@ class Rule:
     agents_mode: AgentsMode = "exclude"
 
 
+def _safe_float(val) -> float:
+    try: return float(val)
+    except (ValueError, TypeError): return 0.0
+
+
 @timed_cache(ttl_seconds=5)
 def load_rules(path: str = "conf/rules.json") -> list[Rule]:
     if not os.path.exists(path):
@@ -58,7 +63,7 @@ def load_rules(path: str = "conf/rules.json") -> list[Rule]:
                 pluginid=r.get("pluginid", ""),
                 metric=r.get("metric", ""),
                 condition=r.get("condition", "gt"),
-                threshold=float(r.get("threshold", 0)),
+                threshold=_safe_float(r.get("threshold", 0)),
                 scope=r.get("scope", "single"),
                 window_size=r.get("window_size"),
                 min_violations=r.get("min_violations"),
