@@ -17,7 +17,7 @@ JWT_ALGO = "HS256"
 JWT_TTL_DAYS = 30
 
 # Routes that agent uses directly (no frontend auth needed)
-AGENT_ROUTE_PREFIXES = ("/push/", "/agent/", "/plugins/")
+AGENT_ROUTE_PREFIXES = ("/push/", "/agent/", "/plugins")
 
 
 def _load_secret() -> str:
