@@ -2,6 +2,8 @@ from datetime import UTC, datetime
 import json
 import os
 
+import logging
+
 from flask import jsonify, request
 from sqlalchemy import and_
 from sqlalchemy.orm import joinedload
@@ -441,6 +443,8 @@ def collect_metrics():
         session.commit()
     except Exception as e:
         logger.error("Error while storing metrics or evaluating rules: %s", e)
+        logger.error("Failed payload detail: agent=%s plugin=%s metrics_count=%d", agentid_payload, pluginid, len(db_metrics))
+        logger.error("Traceback:", exc_info=True)
         session.rollback()
         return jsonify({"status": "error", "message": str(e)}), 500
     finally:
