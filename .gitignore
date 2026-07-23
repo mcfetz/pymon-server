@@ -3,3 +3,10 @@ plugins/__pycache__
 .ignore
 __pycache__
 metrics.db
+metrics.db-shm
+metrics.db-wal
+venv/
+
+# Persistent data — contains secrets (API keys, passwords, JWT secret)
+# Use docker-entrypoint.sh or copy conf.example/ to set up a fresh instance
+conf/
