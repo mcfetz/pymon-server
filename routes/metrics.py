@@ -390,6 +390,7 @@ def collect_metrics():
 
     # Open a SQLAlchemy session
     session = SessionLocal()
+    agent_execs = []
     try:
         if not isinstance(payload, dict):
             return jsonify({"error": "invalid payload: only dict is allowed."}), 400
@@ -452,10 +453,10 @@ def collect_metrics():
         session.close()
 
     response = {"status": "Metrics stored"}
-        if agent_execs:
-            response["executors"] = agent_execs
-            logger.info("Returning %d agent-side executor(s) for agent '%s'", len(agent_execs), agentid_payload)
-        return jsonify(response), 200
+    if agent_execs:
+        response["executors"] = agent_execs
+        logger.info("Returning %d agent-side executor(s) for agent '%s'", len(agent_execs), agentid_payload)
+    return jsonify(response), 200
 
 
 def _resolve_group_agents(group_name: str) -> list[str]:
