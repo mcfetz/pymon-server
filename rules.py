@@ -12,6 +12,9 @@ from functions import get_value_from_row
 from notifications import notify_targets
 from cache import timed_cache
 from executors import run_executors
+import logging
+
+logger = logging.getLogger(__name__)
 
 Condition = Literal["gt", "lt", "ge", "le", "eq", "ne"]
 Scope = Literal["single", "moving_avg", "count_ratio"]
@@ -71,6 +74,8 @@ def load_rules(path: str = "conf/rules.json") -> list[Rule]:
 
 
 def compare(value: float, condition: Condition, threshold: float) -> bool:
+    if isinstance(value, str):
+        value = float(value)
     if condition == "gt":
         return value > threshold
     if condition == "ge":
@@ -293,8 +298,12 @@ def evaluate_single_rule(
         return
 
     if rule.scope == "single":
-        if compare(float(value), rule.condition, rule.threshold):
-            _maybe_create_alarm(session, agentid, rule, metric, float(value), trigger_metric.id)
+        try:
+            if compare(float(value), rule.condition, rule.threshold):
+                _maybe_create_alarm(session, agentid, rule, metric, float(value), trigger_metric.id)
+        except Exception as e:
+            logger.error("rule '%s' evaluation failed for agent='%s' plugin='%s' metric='%s' value=%r: %s", rule.id, agentid, pluginid, metric, value, e)
+            raise
 
     elif rule.scope == "moving_avg":
         window = rule.window_size or 10

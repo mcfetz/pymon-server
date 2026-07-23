@@ -419,15 +419,19 @@ def collect_metrics():
         for metric_dict in metrics_list:
             if isinstance(metric_dict, dict):
                 for metric_name, value in metric_dict.items():
-                    metric_entry = Metrics(
-                        agentid=agentid_payload,
-                        pluginid=pluginid,
-                        timestamp=timestamp,
-                        metric=metric_name,
-                    )
-                    metric_entry = dict_value_to_metric(value, metric_entry)
-                    session.add(metric_entry)
-                    db_metrics.append(metric_entry)
+                    try:
+                        metric_entry = Metrics(
+                            agentid=agentid_payload,
+                            pluginid=pluginid,
+                            timestamp=timestamp,
+                            metric=metric_name,
+                        )
+                        metric_entry = dict_value_to_metric(value, metric_entry)
+                        session.add(metric_entry)
+                        db_metrics.append(metric_entry)
+                    except Exception as e:
+                        logger.error("Error storing metric '%s' from plugin '%s': value=%r, error=%s", metric_name, pluginid, value, e)
+                        raise
 
         # Flush to get IDs for new metrics, then evaluate rules.
         # This is all one transaction.
