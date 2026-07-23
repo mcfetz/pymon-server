@@ -5,26 +5,25 @@ import os
 import hashlib
 
 from auth import require_agent_apikey
+from config import CONF_DIR, PLUGINS_DIR
 
 
 def get_assigned_plugins_for_agentid(agentid: str) -> list:
     try:
-        import json, os
-        agents_json = os.path.join(os.path.dirname(__file__), "..", "conf", "agents.json")
+        agents_json = os.path.join(CONF_DIR, "agents.json")
         if os.path.exists(agents_json):
             with open(agents_json) as f:
                 cfg = json.load(f)
             agent = cfg.get("agents", {}).get(agentid)
             if not agent:
                 return []
-            # Collect plugins from groups
-            from_fn = os.path.join(os.path.dirname(__file__), "..", "conf", "agents.json")
             groups = cfg.get("groups", {})
             assigned = set()
             for g in agent.get("groups", []):
-                for p in groups.get(g, []):
+                grp = groups.get(g, [])
+                plugins_list = grp.get("plugins", grp) if isinstance(grp, dict) else grp
+                for p in plugins_list:
                     assigned.add(p)
-            # Add directly assigned plugins
             for p in agent.get("plugins", {}):
                 assigned.add(p)
             return list(assigned)
@@ -126,7 +125,7 @@ def get_plugin(name):
         return jsonify({"error": f"Plugin '{name}' not assigned to agent {request.agentid}"}), 404
 
     # Build the path to the Python script file in the 'plugins' folder
-    plugin_path = os.path.join("plugins", f"{name}.py")
+    plugin_path = os.path.join(PLUGINS_DIR, f"{name}.py")
 
     # Check if the file exists and is readable
     if not os.path.exists(plugin_path):
@@ -172,7 +171,7 @@ def get_plugin_version(name):
       404:
         description: Plugin not found
     """
-    plugin_path = os.path.join("plugins", f"{name}.py")
+    plugin_path = os.path.join(PLUGINS_DIR, f"{name}.py")
     if not os.path.exists(plugin_path):
         return jsonify({"error": "Plugin not found"}), 404
     try:
@@ -228,8 +227,7 @@ def get_plugin_config(name):
         description: Error while loading configuration
     """
     try:
-        import json, os
-        agents_json = os.path.join(os.path.dirname(__file__), "..", "conf", "agents.json")
+        agents_json = os.path.join(CONF_DIR, "agents.json")
         if not os.path.exists(agents_json):
             return jsonify({"error": "no config"}), 500
         with open(agents_json) as f:

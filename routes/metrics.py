@@ -461,8 +461,9 @@ def collect_metrics():
 
 def _resolve_group_agents(group_name: str) -> list[str]:
     """Resolve a group name to agent IDs using agents.json."""
+    from config import CONF_DIR
     import json, os
-    fpath = os.path.join(os.path.dirname(__file__), "..", "conf", "agents.json")
+    fpath = os.path.join(CONF_DIR, "agents.json")
     try:
         with open(fpath) as f:
             cfg = json.load(f)

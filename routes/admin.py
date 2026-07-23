@@ -15,13 +15,14 @@ from flask import jsonify, request
 
 from auth import require_agent_apikey
 from core import app, logger
+from config import CONF_DIR, PLUGINS_DIR
 
-CONF_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "conf")
+CONF_DIR    = CONF_DIR   # re-export for local use (keeps existing references)
 CONFIG_JSON = os.path.join(CONF_DIR, "agents.json")
-RULES_JSON = os.path.join(CONF_DIR, "rules.json")
+RULES_JSON  = os.path.join(CONF_DIR, "rules.json")
 EXECUTORS_JSON = os.path.join(CONF_DIR, "executors.json")
 NOTIFY_JSON = os.path.join(CONF_DIR, "notifications.json")
-PLUGIN_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugins")
+PLUGIN_DIR  = PLUGINS_DIR
 BLACKOUTS_JSON = os.path.join(CONF_DIR, "blackouts.json")
 
 _SAFE_NAME_RE = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
@@ -106,7 +107,7 @@ def _validate_ntfy_url(url: str) -> bool:
 
 # ── Plugin Schemas ──
 
-PLUGIN_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugins")
+# PLUGIN_DIR already set from config import above
 
 DEFAULT_SCHEMA = {
     "label": "no label set",
@@ -728,7 +729,6 @@ def admin_test_notify():
 
 # ── Plugin Management ──
 
-PLUGIN_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugins")
 PLUGIN_META_JSON = os.path.join(CONF_DIR, "plugins.json")
 
 

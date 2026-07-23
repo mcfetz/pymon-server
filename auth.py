@@ -6,6 +6,7 @@ from functools import wraps
 from flask import request, jsonify
 
 from core import logger
+from config import CONF_DIR
 
 
 def verify_agent_apikey(agentid: str, apikey: str) -> bool:
@@ -13,7 +14,7 @@ def verify_agent_apikey(agentid: str, apikey: str) -> bool:
         return False
 
     try:
-        agents_json = os.path.join(os.path.dirname(__file__), "conf", "agents.json")
+        agents_json = os.path.join(CONF_DIR, "agents.json")
         if os.path.exists(agents_json):
             with open(agents_json, encoding="utf-8") as f:
                 cfg = json.load(f)

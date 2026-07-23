@@ -4,6 +4,7 @@ from datetime import datetime
 from dateutil import parser as dateutil_parser
 from auth import require_agent_apikey
 from db_models import Metrics, Alarm
+from config import CONF_DIR, PLUGINS_DIR
 import json
 import os
 
@@ -75,7 +76,7 @@ def status():
 
 def _load_agents_json() -> dict:
     """Load agents.json config."""
-    fpath = os.path.join(os.path.dirname(__file__), "..", "conf", "agents.json")
+    fpath = os.path.join(CONF_DIR, "agents.json")
     try:
         with open(fpath) as f:
             return json.load(f)
@@ -86,7 +87,7 @@ def _load_agents_json() -> dict:
 def _get_plugin_label(name: str) -> str | None:
     """Read the label from a plugin's __schema__."""
     import ast
-    fpath = os.path.join(os.path.dirname(__file__), "..", "plugins", f"{name}.py")
+    fpath = os.path.join(PLUGINS_DIR, f"{name}.py")
     if not os.path.exists(fpath):
         return None
     try:

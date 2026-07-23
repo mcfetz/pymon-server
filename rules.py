@@ -14,6 +14,7 @@ from functions import get_value_from_row
 from notifications import notify_targets
 from cache import timed_cache
 from executors import run_executors
+from config import CONF_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -61,10 +62,11 @@ def _safe_float(val) -> float:
 
 
 @timed_cache(ttl_seconds=5)
-def load_rules(path: str = "conf/rules.json") -> list[Rule]:
-    if not os.path.exists(path):
+def load_rules(path: str = "") -> list[Rule]:
+    fpath = path or os.path.join(CONF_DIR, "rules.json")
+    if not os.path.exists(fpath):
         return []
-    with open(path, encoding="utf-8") as f:
+    with open(fpath, encoding="utf-8") as f:
         raw = json.load(f)
     rules: list[Rule] = []
     for rule_id, r in raw.items():
@@ -128,7 +130,8 @@ def has_open_alarm(session: Session, agentid: str, rule: Rule) -> bool:
     return session.execute(q).scalars().first() is not None
 
 
-SNOOZE_FILE = os.path.join(os.path.dirname(__file__), "conf", "snoozes.json")
+SNOOZE_FILE    = os.path.join(CONF_DIR, "snoozes.json")
+BLACKOUTS_FILE = os.path.join(CONF_DIR, "blackouts.json")
 
 
 def _is_snoozed(rule_id: str, agentid: str, pluginid: str, metric: str) -> bool:
@@ -143,13 +146,11 @@ def _is_snoozed(rule_id: str, agentid: str, pluginid: str, metric: str) -> bool:
     return False
 
 
-BLACKOUTS_FILE = os.path.join(os.path.dirname(__file__), "conf", "blackouts.json")
-
 
 def _get_agent_groups(agentid: str) -> list[str]:
     """Get the groups an agent belongs to from agents.json."""
     try:
-        agents_file = os.path.join(os.path.dirname(__file__), "conf", "agents.json")
+        agents_file = os.path.join(CONF_DIR, "agents.json")
         with open(agents_file, encoding="utf-8") as f:
             cfg = json.load(f)
         return cfg.get("agents", {}).get(agentid, {}).get("groups", [])

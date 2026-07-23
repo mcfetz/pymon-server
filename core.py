@@ -8,6 +8,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from db_models import Base
+from config import DB_PATH, CONF_DIR
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,8 +26,9 @@ CORS(app, origins=_cors_origins.split(",") if _cors_origins else [])
 
 swagger = Swagger(app)
 
-# SQLAlchemy ORM Setup
-DATABASE_URL = "sqlite:///metrics.db"
+# SQLAlchemy ORM Setup — absolute path so it works from any working directory
+os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+DATABASE_URL = f"sqlite:///{DB_PATH}"
 engine = create_engine(DATABASE_URL, echo=False, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 

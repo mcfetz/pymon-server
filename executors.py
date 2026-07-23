@@ -4,11 +4,13 @@ import os
 import shlex
 import subprocess
 
+from config import CONF_DIR
+
 logger = logging.getLogger(__name__)
 
 
 def _load_executors_fresh():
-    fpath = os.path.join(os.path.dirname(__file__), "conf", "executors.json")
+    fpath = os.path.join(CONF_DIR, "executors.json")
     try:
         with open(fpath, encoding="utf-8") as f:
             return json.load(f)

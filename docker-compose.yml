@@ -1,0 +1,22 @@
+services:
+  pymon-server:
+    build: .
+    image: pymon-server:latest
+    container_name: pymon-server
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      - pymon-data:/data
+    environment:
+      # Required: set to the URL where the web frontend is reachable
+      PYMON_CORS_ORIGINS: "http://localhost:5174"
+      # Optional: direct alarm links in notifications (e.g. https://pymon.example.com)
+      # PYMON_FRONTEND_URL: ""
+      # Optional: override admin password on first boot (before users.json is created)
+      # PYMON_ADMIN_PASSWORD: "changeme"
+      # Optional: custom plugins directory (mount an extra volume)
+      # PYMON_PLUGINS_DIR: "/plugins"
+
+volumes:
+  pymon-data:

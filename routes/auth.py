@@ -11,9 +11,9 @@ from flask import request, jsonify
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from core import app, logger
+from config import CONF_DIR
 
-CONF_DIR = os.path.join(os.path.dirname(__file__), "..", "conf")
-USERS_FILE = os.path.join(CONF_DIR, "users.json")
+USERS_FILE  = os.path.join(CONF_DIR, "users.json")
 SECRET_FILE = os.path.join(CONF_DIR, "jwt_secret.txt")
 
 JWT_ALGO = "HS256"

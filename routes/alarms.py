@@ -7,9 +7,9 @@ from core import app, logger, SessionLocal
 from db_models import Alarm, Metrics
 from auth import require_agent_apikey
 from sqlalchemy import desc, asc
+from config import CONF_DIR
 
-SNOOZE_FILE = os.path.join(os.path.dirname(__file__), "..", "conf", "snoozes.json")
-CONF_DIR    = os.path.join(os.path.dirname(__file__), "..", "conf")
+SNOOZE_FILE = os.path.join(CONF_DIR, "snoozes.json")
 
 
 def _alarm_to_dict(a: Alarm) -> dict:

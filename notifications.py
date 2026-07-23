@@ -7,10 +7,10 @@ from typing import Any
 
 import rules
 from core import logger
+from config import CONF_DIR
 from services.web_push import send_push_notification
 
 # Frontend base URL for direct alarm links — set via PYMON_FRONTEND_URL env var
-# Example: https://pymon.example.com   (no trailing slash)
 FRONTEND_URL = os.environ.get("PYMON_FRONTEND_URL", "").rstrip("/")
 
 
@@ -22,7 +22,7 @@ def _alarm_url(alarm_id: int | None) -> str | None:
 
 
 def _load_notifications_json() -> dict[str, Any]:
-    fpath = os.path.join(os.path.dirname(__file__), "conf", "notifications.json")
+    fpath = os.path.join(CONF_DIR, "notifications.json")
     try:
         with open(fpath, encoding="utf-8") as f:
             return json.load(f)
@@ -61,8 +61,7 @@ def send_email_notification(target_conf: dict[str, Any], subject: str, body: str
 
 
 def _is_notify_enabled(target_name: str) -> bool:
-    import json, os
-    notify_json = os.path.join(os.path.dirname(__file__), "conf", "notifications.json")
+    notify_json = os.path.join(CONF_DIR, "notifications.json")
     try:
         with open(notify_json, encoding="utf-8") as f:
             cfg = json.load(f)
@@ -73,7 +72,7 @@ def _is_notify_enabled(target_name: str) -> bool:
 
 def _get_notify_config(target_name: str) -> dict:
     """Read notification config from JSON (source of truth)."""
-    notify_json = os.path.join(os.path.dirname(__file__), "conf", "notifications.json")
+    notify_json = os.path.join(CONF_DIR, "notifications.json")
     try:
         with open(notify_json, encoding="utf-8") as f:
             cfg = json.load(f)

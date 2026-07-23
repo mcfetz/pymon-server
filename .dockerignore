@@ -1,0 +1,39 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Persistent data — never bake into the image
+conf/
+metrics.db
+metrics.db-shm
+metrics.db-wal
+
+# Dev/test artifacts
+*.log
+.env
+.env.*
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Git
+.git/
+.gitignore
+
+# Docker itself
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Docs
+README.md
+AGENTS.md
+*.md
+
+# CI/CD
+.github/
