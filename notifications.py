@@ -3,9 +3,11 @@ import os
 import smtplib
 import urllib.request
 from email.message import EmailMessage
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import rules
+if TYPE_CHECKING:
+    import rules
+
 from core import logger
 from config import CONF_DIR
 from services.web_push import send_push_notification
@@ -82,7 +84,7 @@ def _get_notify_config(target_name: str) -> dict:
 
 
 def notify_targets(
-    rule: rules.Rule,
+    rule: "rules.Rule",
     agentid: str,
     metric: str,
     value: float,
