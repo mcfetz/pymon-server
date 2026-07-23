@@ -806,8 +806,8 @@ BLACKOUT_SCHEMA = {
         {"key": "weekdays", "label": "Weekdays", "type": "weekdays", "default": []},
         {"key": "start_time", "label": "Start time", "type": "string", "default": "00:00"},
         {"key": "end_time", "label": "End time", "type": "string", "default": "23:59"},
-        {"key": "target_mode", "label": "Target mode", "type": "select", "options": ["rules", "agents"], "default": "rules"},
-        {"key": "targets", "label": "Targets", "type": "targets", "default": []},
+        {"key": "target_rules", "label": "Target rules", "type": "targets", "default": []},
+        {"key": "target_agents", "label": "Target agents", "type": "targets", "default": []},
         {"key": "mode", "label": "Blackout mode", "type": "select", "options": ["no_alarms", "no_notifications"], "default": "no_alarms"},
     ],
 }

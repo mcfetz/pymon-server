@@ -149,14 +149,12 @@ def _check_blackout(agentid: str, rule_id: str) -> tuple[bool, str | None]:
         if start and end and not (start <= time_str <= end):
             continue
 
-        target_mode = b.get("target_mode", "rules")
-        targets = b.get("targets", [])
-        if not targets:
+        target_rules = b.get("target_rules", [])
+        target_agents = b.get("target_agents", [])
+        if not target_rules and not target_agents:
             continue
 
-        if target_mode == "rules" and rule_id in targets:
-            return True, b.get("mode", "no_alarms")
-        if target_mode == "agents" and agentid in targets:
+        if rule_id in target_rules or agentid in target_agents:
             return True, b.get("mode", "no_alarms")
 
     return False, None
