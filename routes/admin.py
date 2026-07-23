@@ -377,12 +377,18 @@ def admin_delete_rule(rule_id: str):
 @app.route("/admin/groups/<groupid>", methods=["PUT"])
 @require_agent_apikey
 def admin_set_group(groupid: str):
-    """Set plugins for a group."""
+    """Set group data: title, description, plugins."""
     data = request.get_json(silent=True) or {}
     plugins = data.get("plugins", [])
+    title = data.get("title", "")
+    description = data.get("description", "")
 
     cfg = _load_json_config()
-    cfg.setdefault("groups", {})[groupid] = plugins
+    cfg.setdefault("groups", {})[groupid] = {
+        "title": title,
+        "description": description,
+        "plugins": plugins,
+    }
     _save_json_config(cfg)
     return jsonify({"status": "updated"})
 
