@@ -446,6 +446,7 @@ NOTIFY_SCHEMA = {
     "fields": [
         {"key": "id", "label": "ID", "type": "string"},
         {"key": "title", "label": "Title", "type": "string", "default": ""},
+        {"key": "description", "label": "Description", "type": "string", "default": ""},
         {"key": "enabled", "label": "Enabled", "type": "boolean", "default": True},
         {"key": "type", "label": "Type", "type": "select", "options": ["email", "web_push", "ntfy", "twilio_call"]},
         {"key": "to", "label": "Recipient", "type": "string"},
@@ -803,6 +804,7 @@ BLACKOUT_SCHEMA = {
         {"key": "id", "label": "ID", "type": "string"},
         {"key": "enabled", "label": "Enabled", "type": "boolean", "default": True},
         {"key": "title", "label": "Title", "type": "string", "default": ""},
+        {"key": "description", "label": "Description", "type": "string", "default": ""},
         {"key": "weekdays", "label": "Weekdays", "type": "weekdays", "default": []},
         {"key": "start_time", "label": "Start time", "type": "string", "default": "00:00"},
         {"key": "end_time", "label": "End time", "type": "string", "default": "23:59"},
