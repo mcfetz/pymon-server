@@ -665,8 +665,8 @@ def admin_list_plugins():
             pm = meta.get(name, {})
             plugins.append({
                 "name": name,
-                "label": schema.get("label", name),
-                "description": schema.get("description", desc),
+                "label": pm.get("label") or schema.get("label", name),
+                "description": pm.get("description") or schema.get("description", desc),
                 "size": size,
                 "enabled": pm.get("enabled", True),
             })
@@ -731,6 +731,21 @@ def admin_toggle_plugin(name: str):
     meta[name] = {"enabled": enabled}
     _save_plugin_meta(meta)
     return jsonify({"status": "updated", "enabled": enabled})
+
+
+@app.route("/admin/plugins/<name>/meta", methods=["PUT"])
+@require_agent_apikey
+def admin_save_plugin_meta(name: str):
+    """Save plugin metadata (label, description)."""
+    data = request.get_json(silent=True) or {}
+    meta = _load_plugin_meta()
+    entry = meta.setdefault(name, {})
+    if "label" in data:
+        entry["label"] = data["label"]
+    if "description" in data:
+        entry["description"] = data["description"]
+    _save_plugin_meta(meta)
+    return jsonify({"status": "updated"})
 
 
 @app.route("/admin/plugins/check", methods=["POST"])
