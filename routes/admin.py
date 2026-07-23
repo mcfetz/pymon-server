@@ -355,6 +355,8 @@ def admin_list_rules():
 def admin_update_rule(rule_id: str):
     """Create or update a rule."""
     data = request.get_json(silent=True) or {}
+    if data.get("id") and data["id"] != rule_id:
+        return jsonify({"error": "cannot change ID of existing entity"}), 400
     data["id"] = rule_id
     rules_map = _load_rules()
     rules_map[rule_id] = data
@@ -429,6 +431,8 @@ def admin_list_executors():
 @require_agent_apikey
 def admin_save_executor(exec_id: str):
     data = request.get_json(silent=True) or {}
+    if data.get("id") and data["id"] != exec_id:
+        return jsonify({"error": "cannot change ID of existing entity"}), 400
     data["id"] = exec_id
     exec_map = _load_executors()
     exec_map[exec_id] = data
@@ -507,6 +511,8 @@ def admin_notify_schema():
 @require_agent_apikey
 def admin_save_notify(notify_id: str):
     data = request.get_json(silent=True) or {}
+    if data.get("id") and data["id"] != notify_id:
+        return jsonify({"error": "cannot change ID of existing entity"}), 400
     data["id"] = notify_id
     notify_map = _load_notify()
     notify_map[notify_id] = data
@@ -841,6 +847,9 @@ def admin_save_blackout(blackout_id: str):
     data = request.get_json(silent=True)
     if not data:
         return jsonify({"error": "no data"}), 400
+
+    if data.get("id") and data["id"] != blackout_id:
+        return jsonify({"error": "cannot change ID of existing entity"}), 400
 
     item = _validate_against_schema(data, BLACKOUT_SCHEMA)
     item["id"] = blackout_id
