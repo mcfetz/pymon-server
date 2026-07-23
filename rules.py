@@ -1,6 +1,7 @@
 import json
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Literal
 
 from sqlalchemy import desc, func, select
@@ -112,6 +113,71 @@ def _is_snoozed(rule_id: str, agentid: str, pluginid: str, metric: str) -> bool:
     return False
 
 
+BLACKOUTS_FILE = os.path.join(os.path.dirname(__file__), "conf", "blackouts.json")
+
+
+def _load_blackouts() -> list[dict]:
+    try:
+        with open(BLACKOUTS_FILE, encoding="utf-8") as f:
+            return list(json.load(f).values())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def _check_blackout(agentid: str, rule_id: str) -> tuple[bool, str | None]:
+    """Check if a blackout is active for this agent+rule.
+    Returns (should_block, mode) where mode is 'no_alarms' or 'no_notifications'.
+    """
+    blackouts = _load_blackouts()
+    if not blackouts:
+        return False, None
+
+    now = datetime.now(timezone.utc)
+    weekday = now.weekday()  # 0=Mon, 6=Sun
+    time_str = now.strftime("%H:%M")
+
+    for b in blackouts:
+        if not b.get("enabled", True):
+            continue
+
+        weekdays = b.get("weekdays", [])
+        if weekdays and weekday not in weekdays:
+            continue
+
+        start = b.get("start_time", "")
+        end = b.get("end_time", "")
+        if start and end and not (start <= time_str <= end):
+            continue
+
+        target_mode = b.get("target_mode", "rules")
+        targets = b.get("targets", [])
+        if not targets:
+            continue
+
+        if target_mode == "rules" and rule_id in targets:
+            return True, b.get("mode", "no_alarms")
+        if target_mode == "agents" and agentid in targets:
+            return True, b.get("mode", "no_alarms")
+
+    return False, None
+
+
+def _maybe_create_alarm(
+    session: Session,
+    agentid: str,
+    rule: Rule,
+    metric: str,
+    value: float,
+    metric_id: int,
+) -> None:
+    blocked, mode = _check_blackout(agentid, rule.id)
+    if blocked:
+        if mode == "no_notifications":
+            create_alarm(session, agentid, rule, metric, value, metric_id, suppress_notifications=True)
+        return
+    create_alarm(session, agentid, rule, metric, value, metric_id)
+
+
 def _ack_open_alarms(session: Session, agentid: str, rule: Rule, metric: str) -> None:
     q = (
         select(Alarm)
@@ -134,6 +200,7 @@ def create_alarm(
     metric: str,
     value: float,
     metric_id: int,
+    suppress_notifications: bool = False,
 ) -> None:
     # fire=single: nur einen offenen Alarm pro (agentid, rule)
     if rule.fire == "single" and has_open_alarm(session, agentid, rule):
@@ -163,10 +230,11 @@ def create_alarm(
     session.flush()  # ensure alarm.id is available before commit
 
     # Notifications auslösen (Fehler hier sollen die DB-Transaktion nicht verhindern)
-    try:
-        notify_targets(rule, agentid, metric, value, message, alarm.id)
-    except Exception:
-        pass
+    if not suppress_notifications:
+        try:
+            notify_targets(rule, agentid, metric, value, message, alarm.id)
+        except Exception:
+            pass
 
     # Executor ausführen (Fehler hier sollen die DB-Transaktion ebenfalls nicht verhindern)
     try:
@@ -210,7 +278,7 @@ def evaluate_single_rule(
 
     if rule.scope == "single":
         if compare(float(value), rule.condition, rule.threshold):
-            create_alarm(session, agentid, rule, metric, float(value), trigger_metric.id)
+            _maybe_create_alarm(session, agentid, rule, metric, float(value), trigger_metric.id)
 
     elif rule.scope == "moving_avg":
         window = rule.window_size or 10
@@ -219,7 +287,7 @@ def evaluate_single_rule(
         if avg_value is None:
             return
         if compare(float(avg_value), rule.condition, rule.threshold):
-            create_alarm(session, agentid, rule, metric, float(avg_value), trigger_metric.id)
+            _maybe_create_alarm(session, agentid, rule, metric, float(avg_value), trigger_metric.id)
 
     elif rule.scope == "count_ratio":
         window = rule.window_size or 10
@@ -230,7 +298,7 @@ def evaluate_single_rule(
             return
         violations = sum(1 for v in values if compare(float(v), rule.condition, rule.threshold))
         if violations >= min_violations:
-            create_alarm(session, agentid, rule, metric, float(violations), trigger_metric.id)
+            _maybe_create_alarm(session, agentid, rule, metric, float(violations), trigger_metric.id)
 
 
 def evaluate_rules_for_payload(

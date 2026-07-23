@@ -15,6 +15,7 @@ RULES_JSON = os.path.join(CONF_DIR, "rules.json")
 EXECUTORS_JSON = os.path.join(CONF_DIR, "executors.json")
 NOTIFY_JSON = os.path.join(CONF_DIR, "notifications.json")
 PLUGIN_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugins")
+BLACKOUTS_JSON = os.path.join(CONF_DIR, "blackouts.json")
 
 
 # ── Plugin Schemas ──
@@ -780,3 +781,71 @@ def _validate_against_schema(data: dict, schema: dict) -> dict:
             else:
                 result[key] = default
     return result
+
+
+# ── Blackouts CRUD ──
+
+def _load_blackouts() -> dict:
+    if not os.path.exists(BLACKOUTS_JSON):
+        return {}
+    with open(BLACKOUTS_JSON, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _save_blackouts(data: dict) -> None:
+    os.makedirs(CONF_DIR, exist_ok=True)
+    with open(BLACKOUTS_JSON, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+BLACKOUT_SCHEMA = {
+    "fields": [
+        {"key": "id", "label": "ID", "type": "string"},
+        {"key": "enabled", "label": "Enabled", "type": "boolean", "default": True},
+        {"key": "title", "label": "Title", "type": "string", "default": ""},
+        {"key": "weekdays", "label": "Weekdays", "type": "weekdays", "default": []},
+        {"key": "start_time", "label": "Start time", "type": "string", "default": "00:00"},
+        {"key": "end_time", "label": "End time", "type": "string", "default": "23:59"},
+        {"key": "target_mode", "label": "Target mode", "type": "select", "options": ["rules", "agents"], "default": "rules"},
+        {"key": "targets", "label": "Targets", "type": "targets", "default": []},
+        {"key": "mode", "label": "Blackout mode", "type": "select", "options": ["no_alarms", "no_notifications"], "default": "no_alarms"},
+    ],
+}
+
+
+@app.route("/admin/blackouts", methods=["GET"])
+@require_agent_apikey
+def admin_list_blackouts():
+    return jsonify(_load_blackouts())
+
+
+@app.route("/admin/blackouts/schema", methods=["GET"])
+@require_agent_apikey
+def admin_blackout_schema():
+    return jsonify(BLACKOUT_SCHEMA)
+
+
+@app.route("/admin/blackouts/<blackout_id>", methods=["PUT"])
+@require_agent_apikey
+def admin_save_blackout(blackout_id: str):
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "no data"}), 400
+
+    item = _validate_against_schema(data, BLACKOUT_SCHEMA)
+    item["id"] = blackout_id
+
+    blackouts = _load_blackouts()
+    blackouts[blackout_id] = item
+    _save_blackouts(blackouts)
+    return jsonify({"status": "saved", "id": blackout_id})
+
+
+@app.route("/admin/blackouts/<blackout_id>", methods=["DELETE"])
+@require_agent_apikey
+def admin_delete_blackout(blackout_id: str):
+    blackouts = _load_blackouts()
+    if blackout_id in blackouts:
+        del blackouts[blackout_id]
+        _save_blackouts(blackouts)
+    return jsonify({"status": "deleted"})
