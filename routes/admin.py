@@ -1,7 +1,14 @@
 """Admin routes — Agent & Plugin configuration via JSON storage."""
 
+import ipaddress
 import json
 import os
+import pathlib
+import re
+import tempfile
+import threading
+import urllib.parse
+from contextlib import contextmanager
 from datetime import UTC, datetime
 
 from flask import jsonify, request
@@ -16,6 +23,85 @@ EXECUTORS_JSON = os.path.join(CONF_DIR, "executors.json")
 NOTIFY_JSON = os.path.join(CONF_DIR, "notifications.json")
 PLUGIN_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugins")
 BLACKOUTS_JSON = os.path.join(CONF_DIR, "blackouts.json")
+
+_SAFE_NAME_RE = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
+
+# ── Per-file threading locks (prevent read-modify-write races) ──
+_config_lock = threading.Lock()
+_rules_lock = threading.Lock()
+_executors_lock = threading.Lock()
+_notify_lock = threading.Lock()
+_blackouts_lock = threading.Lock()
+
+_PATH_LOCK_MAP: dict[str, threading.Lock] = {}
+
+
+def _get_lock(path: str) -> threading.Lock:
+    return {
+        CONFIG_JSON: _config_lock,
+        RULES_JSON: _rules_lock,
+        EXECUTORS_JSON: _executors_lock,
+        NOTIFY_JSON: _notify_lock,
+        BLACKOUTS_JSON: _blackouts_lock,
+    }.get(path, threading.Lock())
+
+
+@contextmanager
+def _locked(path: str):
+    """Acquire the per-file lock for the duration of a read-modify-write cycle."""
+    with _get_lock(path):
+        yield
+
+
+def _atomic_write_json(path: str, data: dict) -> None:
+    """Write JSON atomically using a temp file + os.replace to prevent partial writes."""
+    dir_ = os.path.dirname(path) or "."
+    os.makedirs(dir_, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=dir_, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _safe_plugin_path(name: str) -> pathlib.Path | None:
+    """Return resolved plugin path only if it stays within PLUGIN_DIR, else None."""
+    if not _SAFE_NAME_RE.match(name):
+        return None
+    resolved = (pathlib.Path(PLUGIN_DIR) / f"{name}.py").resolve()
+    if not str(resolved).startswith(str(pathlib.Path(PLUGIN_DIR).resolve())):
+        return None
+    return resolved
+
+
+def _validate_ntfy_url(url: str) -> bool:
+    """Return True only if the URL is safe to use as an ntfy endpoint (prevents SSRF)."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False
+        host = parsed.hostname or ""
+        if not host:
+            return False
+        # Block localhost / loopback names
+        if host.lower() in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+            return False
+        # Block private / link-local / loopback IP ranges
+        try:
+            addr = ipaddress.ip_address(host)
+            if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_multicast:
+                return False
+        except ValueError:
+            pass  # hostname — allow
+        return True
+    except Exception:
+        return False
 
 
 # ── Plugin Schemas ──
@@ -66,18 +152,20 @@ def _get_all_plugin_names() -> list[str]:
 def _load_json_config() -> dict:
     """Load config from agents.json."""
     if os.path.exists(CONFIG_JSON):
-        with open(CONFIG_JSON, encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(CONFIG_JSON, encoding="utf-8") as f:
+                return json.load(f)
+        except json.JSONDecodeError as e:
+            logger.error("Corrupt config file %s: %s — returning empty config", CONFIG_JSON, e)
+            return {"agents": {}, "groups": {}}
     cfg = {"agents": {}, "groups": {}}
     _save_json_config(cfg)
-    return cfg
     return cfg
 
 
 def _save_json_config(cfg: dict) -> None:
-    """Write config to agents.json."""
-    with open(CONFIG_JSON, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
+    """Write config to agents.json atomically."""
+    _atomic_write_json(CONFIG_JSON, cfg)
 
 
 # ── Routes ──
@@ -144,7 +232,10 @@ def admin_list_agents():
         for pname, pcfg in plugin_configs.items():
             sleep_val = pcfg.get("sleep")
             if sleep_val:
-                sleeps.append(int(sleep_val))
+                try:
+                    sleeps.append(int(sleep_val))
+                except (ValueError, TypeError):
+                    pass
         threshold = min(sleeps) if sleeps else 60
 
         if last_seen is None:
@@ -168,23 +259,23 @@ def admin_create_agent():
     data = request.get_json(silent=True) or {}
     agent_id = data.get("id", "").strip()
     if not agent_id:
-        agent_id = "a_" + secrets.token_hex(4)
+        agent_id = "a" + secrets.token_hex(4)
     if not agent_id.isalnum():
         return jsonify({"error": "agent id must be alphanumeric"}), 400
 
-    cfg = _load_json_config()
-    if agent_id in cfg.get("agents", {}):
-        return jsonify({"error": "agent already exists"}), 409
-
     api_key = data.get("apikey") or secrets.token_hex(8)
 
-    cfg.setdefault("agents", {})[agent_id] = {
-        "title": data.get("title", agent_id),
-        "groups": data.get("groups", []),
-        "apikey": api_key,
-        "plugins": {},
-    }
-    _save_json_config(cfg)
+    with _locked(CONFIG_JSON):
+        cfg = _load_json_config()
+        if agent_id in cfg.get("agents", {}):
+            return jsonify({"error": "agent already exists"}), 409
+        cfg.setdefault("agents", {})[agent_id] = {
+            "title": data.get("title", agent_id),
+            "groups": data.get("groups", []),
+            "apikey": api_key,
+            "plugins": {},
+        }
+        _save_json_config(cfg)
     return jsonify({"status": "created", "agentid": agent_id, "apikey": api_key}), 201
 
 
@@ -192,11 +283,12 @@ def admin_create_agent():
 @require_agent_apikey
 def admin_delete_agent(agentid: str):
     """Delete an agent."""
-    cfg = _load_json_config()
-    if agentid not in cfg.get("agents", {}):
-        return jsonify({"error": "not found"}), 404
-    del cfg["agents"][agentid]
-    _save_json_config(cfg)
+    with _locked(CONFIG_JSON):
+        cfg = _load_json_config()
+        if agentid not in cfg.get("agents", {}):
+            return jsonify({"error": "not found"}), 404
+        del cfg["agents"][agentid]
+        _save_json_config(cfg)
     return jsonify({"status": "deleted"})
 
 
@@ -204,13 +296,14 @@ def admin_delete_agent(agentid: str):
 @require_agent_apikey
 def admin_toggle_agent_enabled(agentid: str):
     """Enable or disable an agent."""
-    cfg = _load_json_config()
-    agents = cfg.get("agents", {})
-    if agentid not in agents:
-        return jsonify({"error": "not found"}), 404
     data = request.get_json(silent=True) or {}
-    agents[agentid]["enabled"] = bool(data.get("enabled", True))
-    _save_json_config(cfg)
+    with _locked(CONFIG_JSON):
+        cfg = _load_json_config()
+        agents = cfg.get("agents", {})
+        if agentid not in agents:
+            return jsonify({"error": "not found"}), 404
+        agents[agentid]["enabled"] = bool(data.get("enabled", True))
+        _save_json_config(cfg)
     return jsonify({"status": "updated", "enabled": agents[agentid]["enabled"]})
 
 
@@ -218,16 +311,17 @@ def admin_toggle_agent_enabled(agentid: str):
 @require_agent_apikey
 def admin_update_agent(agentid: str):
     """Update agent metadata (title, description, etc.)."""
-    cfg = _load_json_config()
-    agents = cfg.get("agents", {})
-    if agentid not in agents:
-        return jsonify({"error": "not found"}), 404
     data = request.get_json(silent=True) or {}
-    if "title" in data:
-        agents[agentid]["title"] = data["title"]
-    if "description" in data:
-        agents[agentid]["description"] = data["description"]
-    _save_json_config(cfg)
+    with _locked(CONFIG_JSON):
+        cfg = _load_json_config()
+        agents = cfg.get("agents", {})
+        if agentid not in agents:
+            return jsonify({"error": "not found"}), 404
+        if "title" in data:
+            agents[agentid]["title"] = data["title"]
+        if "description" in data:
+            agents[agentid]["description"] = data["description"]
+        _save_json_config(cfg)
     return jsonify({"status": "updated"})
 
 
@@ -237,12 +331,12 @@ def admin_set_agent_groups(agentid: str):
     """Update agent group membership."""
     data = request.get_json(silent=True) or {}
     groups = data.get("groups", [])
-
-    cfg = _load_json_config()
-    if agentid not in cfg.get("agents", {}):
-        return jsonify({"error": "not found"}), 404
-    cfg["agents"][agentid]["groups"] = groups
-    _save_json_config(cfg)
+    with _locked(CONFIG_JSON):
+        cfg = _load_json_config()
+        if agentid not in cfg.get("agents", {}):
+            return jsonify({"error": "not found"}), 404
+        cfg["agents"][agentid]["groups"] = groups
+        _save_json_config(cfg)
     return jsonify({"status": "updated", "groups": groups})
 
 
@@ -262,19 +356,16 @@ def admin_get_agent_plugins(agentid: str):
 def admin_set_plugin_config(agentid: str, pluginid: str):
     """Update plugin config for an agent."""
     data = request.get_json(silent=True) or {}
-
-    cfg = _load_json_config()
-    if agentid not in cfg.get("agents", {}):
-        return jsonify({"error": "agent not found"}), 404
-
-    # Validate against schema
     schema = _get_plugin_schema(pluginid) or DEFAULT_SCHEMA
     if schema is None:
         return jsonify({"error": f"unknown plugin: {pluginid}"}), 400
-
     clean = _validate_against_schema(data, schema)
-    cfg["agents"][agentid].setdefault("plugins", {})[pluginid] = clean
-    _save_json_config(cfg)
+    with _locked(CONFIG_JSON):
+        cfg = _load_json_config()
+        if agentid not in cfg.get("agents", {}):
+            return jsonify({"error": "agent not found"}), 404
+        cfg["agents"][agentid].setdefault("plugins", {})[pluginid] = clean
+        _save_json_config(cfg)
     return jsonify({"status": "updated", "config": clean})
 
 
@@ -282,12 +373,13 @@ def admin_set_plugin_config(agentid: str, pluginid: str):
 @require_agent_apikey
 def admin_remove_plugin(agentid: str, pluginid: str):
     """Remove a plugin from an agent."""
-    cfg = _load_json_config()
-    agent = cfg.get("agents", {}).get(agentid)
-    if agent is None:
-        return jsonify({"error": "not found"}), 404
-    agent.get("plugins", {}).pop(pluginid, None)
-    _save_json_config(cfg)
+    with _locked(CONFIG_JSON):
+        cfg = _load_json_config()
+        agent = cfg.get("agents", {}).get(agentid)
+        if agent is None:
+            return jsonify({"error": "not found"}), 404
+        agent.get("plugins", {}).pop(pluginid, None)
+        _save_json_config(cfg)
     return jsonify({"status": "removed"})
 
 
@@ -326,16 +418,19 @@ RULE_SCHEMA = {
 
 def _load_rules() -> dict:
     if os.path.exists(RULES_JSON):
-        with open(RULES_JSON, encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(RULES_JSON, encoding="utf-8") as f:
+                return json.load(f)
+        except json.JSONDecodeError as e:
+            logger.error("Corrupt config file %s: %s — returning empty rules", RULES_JSON, e)
+            return {}
     rules_map = {}
     _save_rules(rules_map)
     return rules_map
 
 
 def _save_rules(rules_map: dict) -> None:
-    with open(RULES_JSON, "w", encoding="utf-8") as f:
-        json.dump(rules_map, f, indent=2, ensure_ascii=False)
+    _atomic_write_json(RULES_JSON, rules_map)
 
 
 @app.route("/admin/rules/schema", methods=["GET"])
@@ -360,9 +455,10 @@ def admin_update_rule(rule_id: str):
     if data.get("id") and data["id"] != rule_id:
         return jsonify({"error": "cannot change ID of existing entity"}), 400
     data["id"] = rule_id
-    rules_map = _load_rules()
-    rules_map[rule_id] = data
-    _save_rules(rules_map)
+    with _locked(RULES_JSON):
+        rules_map = _load_rules()
+        rules_map[rule_id] = data
+        _save_rules(rules_map)
     return jsonify({"status": "saved", "rule": data})
 
 
@@ -370,11 +466,12 @@ def admin_update_rule(rule_id: str):
 @require_agent_apikey
 def admin_delete_rule(rule_id: str):
     """Delete a rule."""
-    rules_map = _load_rules()
-    if rule_id not in rules_map:
-        return jsonify({"error": "not found"}), 404
-    del rules_map[rule_id]
-    _save_rules(rules_map)
+    with _locked(RULES_JSON):
+        rules_map = _load_rules()
+        if rule_id not in rules_map:
+            return jsonify({"error": "not found"}), 404
+        del rules_map[rule_id]
+        _save_rules(rules_map)
     return jsonify({"status": "deleted"})
 
 
@@ -386,14 +483,14 @@ def admin_set_group(groupid: str):
     plugins = data.get("plugins", [])
     title = data.get("title", "")
     description = data.get("description", "")
-
-    cfg = _load_json_config()
-    cfg.setdefault("groups", {})[groupid] = {
-        "title": title,
-        "description": description,
-        "plugins": plugins,
-    }
-    _save_json_config(cfg)
+    with _locked(CONFIG_JSON):
+        cfg = _load_json_config()
+        cfg.setdefault("groups", {})[groupid] = {
+            "title": title,
+            "description": description,
+            "plugins": plugins,
+        }
+        _save_json_config(cfg)
     return jsonify({"status": "updated"})
 
 
@@ -401,9 +498,10 @@ def admin_set_group(groupid: str):
 @require_agent_apikey
 def admin_delete_group(groupid: str):
     """Delete a group."""
-    cfg = _load_json_config()
-    cfg.get("groups", {}).pop(groupid, None)
-    _save_json_config(cfg)
+    with _locked(CONFIG_JSON):
+        cfg = _load_json_config()
+        cfg.get("groups", {}).pop(groupid, None)
+        _save_json_config(cfg)
     return jsonify({"status": "deleted"})
 
 
@@ -411,16 +509,19 @@ def admin_delete_group(groupid: str):
 
 def _load_executors() -> dict:
     if os.path.exists(EXECUTORS_JSON):
-        with open(EXECUTORS_JSON, encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(EXECUTORS_JSON, encoding="utf-8") as f:
+                return json.load(f)
+        except json.JSONDecodeError as e:
+            logger.error("Corrupt config file %s: %s — returning empty executors", EXECUTORS_JSON, e)
+            return {}
     exec_map = {}
     _save_executors(exec_map)
     return exec_map
 
 
 def _save_executors(exec_map: dict) -> None:
-    with open(EXECUTORS_JSON, "w", encoding="utf-8") as f:
-        json.dump(exec_map, f, indent=2, ensure_ascii=False)
+    _atomic_write_json(EXECUTORS_JSON, exec_map)
 
 
 @app.route("/admin/executors", methods=["GET"])
@@ -436,20 +537,22 @@ def admin_save_executor(exec_id: str):
     if data.get("id") and data["id"] != exec_id:
         return jsonify({"error": "cannot change ID of existing entity"}), 400
     data["id"] = exec_id
-    exec_map = _load_executors()
-    exec_map[exec_id] = data
-    _save_executors(exec_map)
+    with _locked(EXECUTORS_JSON):
+        exec_map = _load_executors()
+        exec_map[exec_id] = data
+        _save_executors(exec_map)
     return jsonify({"status": "saved"})
 
 
 @app.route("/admin/executors/<exec_id>", methods=["DELETE"])
 @require_agent_apikey
 def admin_delete_executor(exec_id: str):
-    exec_map = _load_executors()
-    if exec_id not in exec_map:
-        return jsonify({"error": "not found"}), 404
-    del exec_map[exec_id]
-    _save_executors(exec_map)
+    with _locked(EXECUTORS_JSON):
+        exec_map = _load_executors()
+        if exec_id not in exec_map:
+            return jsonify({"error": "not found"}), 404
+        del exec_map[exec_id]
+        _save_executors(exec_map)
     return jsonify({"status": "deleted"})
 
 
@@ -485,16 +588,19 @@ NOTIFY_SCHEMA = {
 
 def _load_notify() -> dict:
     if os.path.exists(NOTIFY_JSON):
-        with open(NOTIFY_JSON, encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(NOTIFY_JSON, encoding="utf-8") as f:
+                return json.load(f)
+        except json.JSONDecodeError as e:
+            logger.error("Corrupt config file %s: %s — returning empty notifications", NOTIFY_JSON, e)
+            return {}
     notify_map = {}
     _save_notify(notify_map)
     return notify_map
 
 
 def _save_notify(notify_map: dict) -> None:
-    with open(NOTIFY_JSON, "w", encoding="utf-8") as f:
-        json.dump(notify_map, f, indent=2, ensure_ascii=False)
+    _atomic_write_json(NOTIFY_JSON, notify_map)
 
 
 @app.route("/admin/notifications", methods=["GET"])
@@ -516,20 +622,22 @@ def admin_save_notify(notify_id: str):
     if data.get("id") and data["id"] != notify_id:
         return jsonify({"error": "cannot change ID of existing entity"}), 400
     data["id"] = notify_id
-    notify_map = _load_notify()
-    notify_map[notify_id] = data
-    _save_notify(notify_map)
+    with _locked(NOTIFY_JSON):
+        notify_map = _load_notify()
+        notify_map[notify_id] = data
+        _save_notify(notify_map)
     return jsonify({"status": "saved"})
 
 
 @app.route("/admin/notifications/<notify_id>", methods=["DELETE"])
 @require_agent_apikey
 def admin_delete_notify(notify_id: str):
-    notify_map = _load_notify()
-    if notify_id not in notify_map:
-        return jsonify({"error": "not found"}), 404
-    del notify_map[notify_id]
-    _save_notify(notify_map)
+    with _locked(NOTIFY_JSON):
+        notify_map = _load_notify()
+        if notify_id not in notify_map:
+            return jsonify({"error": "not found"}), 404
+        del notify_map[notify_id]
+        _save_notify(notify_map)
     return jsonify({"status": "deleted"})
 
 
@@ -565,8 +673,10 @@ def admin_test_notify():
             return jsonify({"error": str(e)}), 500
 
     elif target_type == "ntfy":
-        import urllib.request
+        import urllib.request as _urllib_request
         ntfy_url = (data.get("ntfy_url") or "https://ntfy.sh").rstrip("/")
+        if not _validate_ntfy_url(ntfy_url):
+            return jsonify({"error": "invalid or disallowed ntfy_url"}), 400
         topic = data.get("ntfy_topic")
         if not topic:
             return jsonify({"error": "ntfy_topic required"}), 400
@@ -578,7 +688,7 @@ def admin_test_notify():
             "message": "Test notification from pymon",
             "tags": ["test"],
         }).encode()
-        req = urllib.request.Request(
+        req = _urllib_request.Request(
             ntfy_url, data=payload,
             headers={"Content-Type": "application/json"},
             method="POST",
@@ -586,7 +696,7 @@ def admin_test_notify():
         if token:
             req.add_header("Authorization", f"Bearer {token}")
         try:
-            urllib.request.urlopen(req, timeout=10)
+            _urllib_request.urlopen(req, timeout=10)
             return jsonify({"status": "test sent"})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -690,8 +800,10 @@ def admin_plugin_template():
 @require_agent_apikey
 def admin_get_plugin_source(name: str):
     """Get plugin source code."""
-    fpath = os.path.join(PLUGIN_DIR, f"{name}.py")
-    if not os.path.exists(fpath):
+    fpath = _safe_plugin_path(name)
+    if fpath is None:
+        return jsonify({"error": "invalid plugin name"}), 400
+    if not fpath.exists():
         return jsonify({"error": "not found"}), 404
     with open(fpath, encoding="utf-8") as f:
         return f.read(), 200, {"Content-Type": "text/plain"}
@@ -701,12 +813,18 @@ def admin_get_plugin_source(name: str):
 @require_agent_apikey
 def admin_save_plugin_source(name: str):
     """Update plugin source code."""
+    fpath = _safe_plugin_path(name)
+    if fpath is None:
+        return jsonify({"error": "invalid plugin name"}), 400
     data = request.get_data(as_text=True)
     if not data:
         return jsonify({"error": "empty source"}), 400
-    fpath = os.path.join(PLUGIN_DIR, f"{name}.py")
-    with open(fpath, "w", encoding="utf-8") as f:
-        f.write(data)
+    try:
+        with open(fpath, "w", encoding="utf-8") as f:
+            f.write(data)
+    except OSError as e:
+        logger.error("Error writing plugin source for '%s': %s", name, e)
+        return jsonify({"error": "could not save plugin source"}), 500
     return jsonify({"status": "saved"}), 200
 
 
@@ -714,8 +832,10 @@ def admin_save_plugin_source(name: str):
 @require_agent_apikey
 def admin_delete_plugin(name: str):
     """Delete a plugin file."""
-    fpath = os.path.join(PLUGIN_DIR, f"{name}.py")
-    if not os.path.exists(fpath):
+    fpath = _safe_plugin_path(name)
+    if fpath is None:
+        return jsonify({"error": "invalid plugin name"}), 400
+    if not fpath.exists():
         return jsonify({"error": "not found"}), 404
     os.remove(fpath)
     return jsonify({"status": "deleted"}), 200
@@ -819,14 +939,16 @@ def _validate_against_schema(data: dict, schema: dict) -> dict:
 def _load_blackouts() -> dict:
     if not os.path.exists(BLACKOUTS_JSON):
         return {}
-    with open(BLACKOUTS_JSON, encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(BLACKOUTS_JSON, encoding="utf-8") as f:
+            return json.load(f)
+    except json.JSONDecodeError as e:
+        logger.error("Corrupt config file %s: %s — returning empty blackouts", BLACKOUTS_JSON, e)
+        return {}
 
 
 def _save_blackouts(data: dict) -> None:
-    os.makedirs(CONF_DIR, exist_ok=True)
-    with open(BLACKOUTS_JSON, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    _atomic_write_json(BLACKOUTS_JSON, data)
 
 
 BLACKOUT_SCHEMA = {
@@ -864,15 +986,15 @@ def admin_save_blackout(blackout_id: str):
     data = request.get_json(silent=True)
     if not data:
         return jsonify({"error": "no data"}), 400
-
     if data.get("id") and data["id"] != blackout_id:
         return jsonify({"error": "cannot change ID of existing entity"}), 400
-
     item = _validate_against_schema(data, BLACKOUT_SCHEMA)
     item["id"] = blackout_id
-
-    blackouts = _load_blackouts()
-    blackouts[blackout_id] = item
+    with _locked(BLACKOUTS_JSON):
+        blackouts = _load_blackouts()
+        blackouts[blackout_id] = item
+        _save_blackouts(blackouts)
+    return jsonify({"status": "saved", "id": blackout_id})
     _save_blackouts(blackouts)
     return jsonify({"status": "saved", "id": blackout_id})
 
@@ -880,8 +1002,9 @@ def admin_save_blackout(blackout_id: str):
 @app.route("/admin/blackouts/<blackout_id>", methods=["DELETE"])
 @require_agent_apikey
 def admin_delete_blackout(blackout_id: str):
-    blackouts = _load_blackouts()
-    if blackout_id in blackouts:
-        del blackouts[blackout_id]
-        _save_blackouts(blackouts)
+    with _locked(BLACKOUTS_JSON):
+        blackouts = _load_blackouts()
+        if blackout_id in blackouts:
+            del blackouts[blackout_id]
+            _save_blackouts(blackouts)
     return jsonify({"status": "deleted"})

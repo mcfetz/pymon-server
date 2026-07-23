@@ -17,7 +17,7 @@ class PushSubscription(Base):
 class Metrics(Base):
     __tablename__ = "metrics"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True, autoincrement=True, index=True)
     agentid = Column(String, nullable=False)
     pluginid = Column(String, nullable=False)
     timestamp = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)

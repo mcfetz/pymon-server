@@ -1,4 +1,5 @@
 import logging
+import os
 
 from flask import Flask
 from flask_cors import CORS
@@ -16,7 +17,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-CORS(app)
+
+# Restrict CORS to configured origins; override via PYMON_CORS_ORIGINS env var
+# (comma-separated list, e.g. "https://pymon.example.com,http://localhost:5174")
+_cors_origins = os.environ.get("PYMON_CORS_ORIGINS", "").strip()
+CORS(app, origins=_cors_origins.split(",") if _cors_origins else [])
+
 swagger = Swagger(app)
 
 # SQLAlchemy ORM Setup

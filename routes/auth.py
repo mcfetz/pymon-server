@@ -1,5 +1,8 @@
 import json
 import os
+import time
+import threading
+from collections import defaultdict
 from functools import wraps
 from datetime import datetime, timedelta, timezone
 
@@ -19,10 +22,39 @@ JWT_TTL_DAYS = 30
 # Routes that agent uses directly (no frontend auth needed)
 AGENT_ROUTE_PREFIXES = ("/push/", "/agent/", "/plugins")
 
+# ── Rate limiting for /login ──
+_login_attempts: dict[str, list[float]] = defaultdict(list)
+_login_lock = threading.Lock()
+_RATE_WINDOW = 60   # seconds
+_RATE_MAX = 10      # max attempts per window
+
+
+def _check_rate_limit(ip: str) -> bool:
+    """Return True if this IP has exceeded the login rate limit."""
+    now = time.time()
+    with _login_lock:
+        _login_attempts[ip] = [t for t in _login_attempts[ip] if now - t < _RATE_WINDOW]
+        if len(_login_attempts[ip]) >= _RATE_MAX:
+            return True
+        _login_attempts[ip].append(now)
+        return False
+
 
 def _load_secret() -> str:
-    with open(SECRET_FILE) as f:
-        return f.read().strip()
+    if not os.path.exists(SECRET_FILE):
+        import secrets as _secrets
+        secret = _secrets.token_hex(32)
+        os.makedirs(os.path.dirname(SECRET_FILE), exist_ok=True)
+        with open(SECRET_FILE, "w") as f:
+            f.write(secret)
+        logger.info("Generated new JWT secret at %s", SECRET_FILE)
+        return secret
+    try:
+        with open(SECRET_FILE) as f:
+            return f.read().strip()
+    except OSError as e:
+        logger.critical("Cannot read JWT secret from %s: %s", SECRET_FILE, e)
+        raise RuntimeError(f"Cannot read JWT secret: {e}") from e
 
 
 def _load_users() -> dict[str, str]:
@@ -40,7 +72,12 @@ def check_frontend_auth():
         if request.path.startswith(prefix):
             return
     if request.headers.get("agentid"):
-        return
+        from auth import verify_agent_apikey
+        agentid = request.headers.get("agentid", "")
+        apikey = request.headers.get("X-API-Key", "")
+        if verify_agent_apikey(agentid, apikey):
+            return
+        return jsonify({"error": "invalid agent credentials"}), 401
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
         return jsonify({"error": "unauthorized"}), 401
@@ -56,6 +93,11 @@ def check_frontend_auth():
 
 @app.route("/login", methods=["POST"])
 def login():
+    ip = request.remote_addr or "unknown"
+    if _check_rate_limit(ip):
+        logger.warning("Login rate limit exceeded for IP %s", ip)
+        return jsonify({"error": "too many requests, try again later"}), 429
+
     data = request.get_json(silent=True) or {}
     username = data.get("username", "")
     password = data.get("password", "")

@@ -157,10 +157,14 @@ def list_alarms():
         if agentid_param:
             q = q.filter(Alarm.agentid == agentid_param)
 
-        limit = request.args.get("limit", 100, type=int)
-        q = q.order_by(desc(Alarm.created_at)).limit(limit)
+        limit = request.args.get("limit", 500, type=int)
+        q = q.order_by(desc(Alarm.created_at)).limit(limit + 1)
 
         alarms = q.all()
+        truncated = len(alarms) > limit
+        if truncated:
+            alarms = alarms[:limit]
+
         result = []
         for a in alarms:
             result.append({
@@ -176,7 +180,10 @@ def list_alarms():
                 "acknowledged": a.acknowledged,
                 "metrics_id": a.metrics_id,
             })
-        return jsonify(result), 200
+        resp = jsonify(result)
+        if truncated:
+            resp.headers["X-Truncated"] = "true"
+        return resp, 200
     except Exception as e:
         logger.error("Error listing alarms: %s", e)
         return jsonify({"error": "internal error"}), 500
@@ -190,8 +197,11 @@ def list_open_alarms():
     """List all open (unacknowledged) alarms."""
     session = SessionLocal()
     try:
-        q = session.query(Alarm).filter(Alarm.acknowledged == False).order_by(desc(Alarm.created_at)).limit(100)  # noqa: E712
+        q = session.query(Alarm).filter(Alarm.acknowledged == False).order_by(desc(Alarm.created_at)).limit(501)  # noqa: E712
         alarms = q.all()
+        truncated = len(alarms) > 500
+        if truncated:
+            alarms = alarms[:500]
         result = []
         for a in alarms:
             result.append({
@@ -207,7 +217,10 @@ def list_open_alarms():
                 "acknowledged": a.acknowledged,
                 "metrics_id": a.metrics_id,
             })
-        return jsonify(result), 200
+        resp = jsonify(result)
+        if truncated:
+            resp.headers["X-Truncated"] = "true"
+        return resp, 200
     except Exception as e:
         logger.error("Error listing open alarms: %s", e)
         return jsonify({"error": "internal error"}), 500
@@ -251,7 +264,6 @@ def acknowledge_alarm(alarmid: int):
     try:
         alarm = session.get(Alarm, alarmid)
         if alarm is None:
-            session.close()
             return jsonify({"error": f"Alarm with id {alarmid} not found"}), 404
 
         alarm.acknowledged = True
@@ -269,10 +281,10 @@ def acknowledge_alarm(alarmid: int):
             clear_snooze_for_alarm(alarm.rule_id, alarm.agentid, alarm.pluginid, alarm.metric)
 
         session.commit()
-        session.close()
         return jsonify({"status": "acknowledged", "alarmid": alarmid}), 200
     except Exception as e:
         session.rollback()
-        session.close()
         logger.error("Error while acknowledging alarm %s: %s", alarmid, e)
         return jsonify({"error": "internal error"}), 500
+    finally:
+        session.close()

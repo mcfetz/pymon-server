@@ -1,8 +1,8 @@
 import json
 import logging
 import os
+import shlex
 import subprocess
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -14,24 +14,6 @@ def _load_executors_fresh():
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
-
-
-def _build_command(executor_id: str, rule: Any, agentid: str, metric: str, value: float, message: str) -> str | None:
-    conf = EXECUTOR_CONFIG.get(executor_id)
-    if not conf:
-        return None
-    command_template = conf.get("command")
-    if not command_template:
-        return None
-    return command_template.format(
-        rule_id=rule.id,
-        agentid=agentid,
-        pluginid=rule.pluginid,
-        metric=metric,
-        value=value,
-        message=message,
-        severity=rule.severity,
-    )
 
 
 def run_executors(
@@ -79,7 +61,7 @@ def run_executors(
             agent_executors.append({"id": executor_id, "command": command})
         else:
             try:
-                subprocess.run(command, shell=True, check=False)
+                subprocess.run(shlex.split(command), shell=False, check=False)
             except Exception:
                 continue
 

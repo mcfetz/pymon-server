@@ -1,5 +1,7 @@
 import json
+import logging
 import os
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
@@ -13,17 +15,18 @@ from notifications import notify_targets
 from cache import timed_cache
 from executors import run_executors
 
+logger = logging.getLogger(__name__)
+
 # Agent-side executor commands collected during rule evaluation, returned in the response
 _pending_agent_executors: list[dict] = []
+_pending_lock = threading.Lock()
 
 
 def get_pending_agent_executors() -> list[dict]:
-    result = list(_pending_agent_executors)
-    _pending_agent_executors.clear()
-    return result
-import logging
-
-logger = logging.getLogger(__name__)
+    with _pending_lock:
+        result = list(_pending_agent_executors)
+        _pending_agent_executors.clear()
+        return result
 
 Condition = Literal["gt", "lt", "ge", "le", "eq", "ne"]
 Scope = Literal["single", "moving_avg", "count_ratio"]
@@ -108,6 +111,8 @@ def compare(value: float, condition: Condition, threshold: float) -> bool:
         return value == threshold
     if condition == "ne":
         return value != threshold
+    logger.error("compare: unknown condition '%s' in rule evaluation", condition)
+    return False
 
 
 def has_open_alarm(session: Session, agentid: str, rule: Rule) -> bool:
@@ -182,8 +187,15 @@ def _check_blackout(agentid: str, rule_id: str) -> tuple[bool, str | None]:
 
         start = b.get("start_time", "")
         end = b.get("end_time", "")
-        if start and end and not (start <= time_str <= end):
-            continue
+        if start and end:
+            if end >= start:
+                # Same-day window (e.g. 08:00–22:00)
+                if not (start <= time_str <= end):
+                    continue
+            else:
+                # Overnight window (e.g. 22:00–06:00): active if time >= start OR time <= end
+                if not (time_str >= start or time_str <= end):
+                    continue
 
         target_rules = b.get("target_rules", [])
         target_agents = b.get("target_agents", [])
@@ -256,7 +268,7 @@ def create_alarm(
         return
 
     message = f"Rule '{rule.id}' triggered for agent '{agentid}', plugin '{rule.pluginid}', metric '{metric}': value={value}"
-    print(message)
+    logger.info("%s", message)
     alarm = Alarm(
         agentid=agentid,
         rule_id=rule.id,
@@ -274,16 +286,16 @@ def create_alarm(
     if not suppress_notifications:
         try:
             notify_targets(rule, agentid, metric, value, message, alarm.id)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error("Notification failed for rule '%s', agent '%s': %s", rule.id, agentid, e)
 
-    # Executor ausführen (Fehler hier sollen die DB-Transaktion ebenfalls nicht verhindern)
     try:
         agent_execs = run_executors(rule, agentid, metric, value, message)
         if agent_execs:
-            _pending_agent_executors.extend(agent_execs)
-    except Exception:
-        pass
+            with _pending_lock:
+                _pending_agent_executors.extend(agent_execs)
+    except Exception as e:
+        logger.error("Executor failed for rule '%s', agent '%s': %s", rule.id, agentid, e)
 
 
 def _rule_applies_to_agent(rule: Rule, agentid: str) -> bool:

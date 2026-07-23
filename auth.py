@@ -1,3 +1,4 @@
+import hmac
 import json
 import os
 from functools import wraps
@@ -11,17 +12,18 @@ def verify_agent_apikey(agentid: str, apikey: str) -> bool:
     if not agentid or not apikey:
         return False
 
-    # Check agents.json (source of truth)
     try:
         agents_json = os.path.join(os.path.dirname(__file__), "conf", "agents.json")
         if os.path.exists(agents_json):
             with open(agents_json, encoding="utf-8") as f:
                 cfg = json.load(f)
             agent = cfg.get("agents", {}).get(agentid)
-            if agent and agent.get("apikey") == apikey:
-                return True
-    except Exception:
-        pass
+            if agent and agent.get("enabled", True) is not False:
+                stored = agent.get("apikey", "")
+                if stored and hmac.compare_digest(stored, apikey):
+                    return True
+    except Exception as e:
+        logger.error("Error reading agents.json during API key verification: %s", e)
 
     return False
 
