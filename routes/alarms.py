@@ -4,11 +4,28 @@ from datetime import datetime, UTC
 
 from flask import jsonify, request
 from core import app, logger, SessionLocal
-from db_models import Alarm
+from db_models import Alarm, Metrics
 from auth import require_agent_apikey
-from sqlalchemy import desc
+from sqlalchemy import desc, asc
 
 SNOOZE_FILE = os.path.join(os.path.dirname(__file__), "..", "conf", "snoozes.json")
+CONF_DIR    = os.path.join(os.path.dirname(__file__), "..", "conf")
+
+
+def _alarm_to_dict(a: Alarm) -> dict:
+    return {
+        "id": a.id,
+        "agentid": a.agentid,
+        "rule_id": a.rule_id,
+        "pluginid": a.pluginid,
+        "metric": a.metric,
+        "severity": a.severity,
+        "value": a.value,
+        "created_at": a.created_at.isoformat(),
+        "message": a.message,
+        "acknowledged": a.acknowledged,
+        "metrics_id": a.metrics_id,
+    }
 
 
 def _load_snoozes() -> list[dict]:
@@ -167,19 +184,7 @@ def list_alarms():
 
         result = []
         for a in alarms:
-            result.append({
-                "id": a.id,
-                "agentid": a.agentid,
-                "rule_id": a.rule_id,
-                "pluginid": a.pluginid,
-                "metric": a.metric,
-                "severity": a.severity,
-                "value": a.value,
-                "created_at": a.created_at.isoformat(),
-                "message": a.message,
-                "acknowledged": a.acknowledged,
-                "metrics_id": a.metrics_id,
-            })
+            result.append(_alarm_to_dict(a))
         resp = jsonify(result)
         if truncated:
             resp.headers["X-Truncated"] = "true"
@@ -202,27 +207,97 @@ def list_open_alarms():
         truncated = len(alarms) > 500
         if truncated:
             alarms = alarms[:500]
-        result = []
-        for a in alarms:
-            result.append({
-                "id": a.id,
-                "agentid": a.agentid,
-                "rule_id": a.rule_id,
-                "pluginid": a.pluginid,
-                "metric": a.metric,
-                "severity": a.severity,
-                "value": a.value,
-                "created_at": a.created_at.isoformat(),
-                "message": a.message,
-                "acknowledged": a.acknowledged,
-                "metrics_id": a.metrics_id,
-            })
+        result = [_alarm_to_dict(a) for a in alarms]
         resp = jsonify(result)
         if truncated:
             resp.headers["X-Truncated"] = "true"
         return resp, 200
     except Exception as e:
         logger.error("Error listing open alarms: %s", e)
+        return jsonify({"error": "internal error"}), 500
+    finally:
+        session.close()
+
+
+@app.route("/alarms/<int:alarmid>", methods=["GET"])
+@require_agent_apikey
+def get_alarm_detail(alarmid: int):
+    """Get a single alarm with full context: surrounding alarms, rule info, agent info, metric history."""
+    session = SessionLocal()
+    try:
+        alarm = session.get(Alarm, alarmid)
+        if alarm is None:
+            return jsonify({"error": "not found"}), 404
+
+        result = _alarm_to_dict(alarm)
+
+        # 5 alarms before and after (same rule+agent+plugin+metric), ordered by id
+        before = session.query(Alarm).filter(
+            Alarm.rule_id == alarm.rule_id,
+            Alarm.agentid == alarm.agentid,
+            Alarm.pluginid == alarm.pluginid,
+            Alarm.metric == alarm.metric,
+            Alarm.id < alarmid,
+        ).order_by(desc(Alarm.id)).limit(5).all()
+
+        after = session.query(Alarm).filter(
+            Alarm.rule_id == alarm.rule_id,
+            Alarm.agentid == alarm.agentid,
+            Alarm.pluginid == alarm.pluginid,
+            Alarm.metric == alarm.metric,
+            Alarm.id > alarmid,
+        ).order_by(asc(Alarm.id)).limit(5).all()
+
+        result["surrounding"] = sorted(
+            [_alarm_to_dict(a) for a in before + after],
+            key=lambda x: x["id"],
+        )
+        result["total_same_type"] = session.query(Alarm).filter(
+            Alarm.rule_id == alarm.rule_id,
+            Alarm.agentid == alarm.agentid,
+            Alarm.pluginid == alarm.pluginid,
+            Alarm.metric == alarm.metric,
+        ).count()
+
+        # Rule info from rules.json
+        try:
+            with open(os.path.join(CONF_DIR, "rules.json"), encoding="utf-8") as f:
+                result["rule"] = json.load(f).get(alarm.rule_id)
+        except Exception:
+            result["rule"] = None
+
+        # Agent info from agents.json
+        try:
+            with open(os.path.join(CONF_DIR, "agents.json"), encoding="utf-8") as f:
+                cfg = json.load(f)
+            agent = cfg.get("agents", {}).get(alarm.agentid, {})
+            result["agent"] = {
+                "title": agent.get("title", alarm.agentid),
+                "description": agent.get("description", ""),
+                "enabled": agent.get("enabled", True),
+            }
+        except Exception:
+            result["agent"] = {"title": alarm.agentid, "description": "", "enabled": True}
+
+        # 30 most recent metric values for sparkline (reverse-chronological fetch, then reverse)
+        metrics_rows = session.query(Metrics).filter(
+            Metrics.agentid == alarm.agentid,
+            Metrics.pluginid == alarm.pluginid,
+            Metrics.metric == alarm.metric,
+        ).order_by(desc(Metrics.timestamp)).limit(30).all()
+
+        result["metric_history"] = [
+            {
+                "timestamp": m.timestamp.isoformat(),
+                "value": m.value_float if m.value_float is not None else m.value_int,
+            }
+            for m in reversed(metrics_rows)
+            if m.value_float is not None or m.value_int is not None
+        ]
+
+        return jsonify(result), 200
+    except Exception as e:
+        logger.error("Error fetching alarm detail %s: %s", alarmid, e)
         return jsonify({"error": "internal error"}), 500
     finally:
         session.close()

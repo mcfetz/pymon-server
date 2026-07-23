@@ -9,6 +9,17 @@ import rules
 from core import logger
 from services.web_push import send_push_notification
 
+# Frontend base URL for direct alarm links — set via PYMON_FRONTEND_URL env var
+# Example: https://pymon.example.com   (no trailing slash)
+FRONTEND_URL = os.environ.get("PYMON_FRONTEND_URL", "").rstrip("/")
+
+
+def _alarm_url(alarm_id: int | None) -> str | None:
+    """Return a direct link to the alarm detail modal, or None if not configured."""
+    if alarm_id is not None and FRONTEND_URL:
+        return f"{FRONTEND_URL}/#alarm/{alarm_id}"
+    return None
+
 
 def _load_notifications_json() -> dict[str, Any]:
     fpath = os.path.join(os.path.dirname(__file__), "conf", "notifications.json")
@@ -97,28 +108,30 @@ def notify_targets(
             subject = f"[pymon] Alarm {rule.severity}: {rule.id} on {agentid}"
             body = (
                 "Alarm triggered\n\n"
-                f"Rule: {rule.id}\n"
-                f"Agent: {agentid}\n"
-                f"Plugin: {rule.pluginid}\n"
-                f"Metric: {metric}\n"
-                f"Value: {value}\n"
+                f"Rule:     {rule.id}\n"
+                f"Agent:    {agentid}\n"
+                f"Plugin:   {rule.pluginid}\n"
+                f"Metric:   {metric}\n"
+                f"Value:    {value}\n"
                 f"Severity: {rule.severity}\n\n"
                 f"Message: {message}\n"
             )
-
-            if alarm_id is not None:
-                ack_link = f"http://localhost:5000/alarms/{alarm_id}/ack"
-                body += f"\nAcknowledge this alarm: {ack_link}\n"
-
+            detail_url = _alarm_url(alarm_id)
+            if detail_url:
+                body += f"\nView alarm details: {detail_url}\n"
+            elif alarm_id is not None:
+                body += f"\nAcknowledge: http://localhost:5000/alarms/{alarm_id}/ack\n"
             send_email_notification(target_conf, subject, body)
 
         elif target_type == "web_push":
             push_title = f"[{rule.severity}] {rule.id}"
             push_body = f"Agent: {agentid} | {rule.pluginid}/{metric} = {value}"
+            detail_url = _alarm_url(alarm_id)
             send_push_notification(
                 push_title,
                 push_body,
                 tag=f"pymon-{rule.id}",
+                url=detail_url,
                 private_key=cfg.get("vapid_private_key") or None,
                 public_key=cfg.get("vapid_public_key") or None,
                 subject=cfg.get("vapid_subject") or None,
@@ -130,14 +143,23 @@ def notify_targets(
             if not topic:
                 continue
             token = cfg.get("ntfy_access_token") or None
-            ntfy_body = json.dumps({
+            detail_url = _alarm_url(alarm_id)
+            ntfy_payload: dict[str, Any] = {
                 "topic": topic,
                 "title": f"[{rule.severity}] {rule.id}",
-                "message": (f"Agent: {agentid} | {rule.pluginid}/{metric} = {value}\n"
-                            f"Rule: {rule.id}\n{message}"),
+                "message": (
+                    f"Agent: {agentid} | {rule.pluginid}/{metric} = {value}\n"
+                    f"Rule: {rule.id}\n{message}"
+                ),
                 "tags": [rule.severity],
                 "priority": 4 if rule.severity == "critical" else 3,
-            }).encode()
+            }
+            if detail_url:
+                ntfy_payload["click"] = detail_url
+                ntfy_payload["actions"] = [
+                    {"action": "view", "label": "View alarm", "url": detail_url, "clear": False},
+                ]
+            ntfy_body = json.dumps(ntfy_payload).encode()
             req = urllib.request.Request(
                 ntfy_url,
                 data=ntfy_body,
