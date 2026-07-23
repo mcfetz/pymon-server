@@ -302,6 +302,7 @@ def admin_list_groups():
 RULE_SCHEMA = {
     "fields": [
         {"key": "id", "label": "ID", "type": "string"},
+        {"key": "title", "label": "Title", "type": "string", "default": ""},
         {"key": "enabled", "label": "Enabled", "type": "boolean", "default": True},
         {"key": "description", "label": "Description", "type": "string", "default": ""},
         {"key": "pluginid", "label": "Plugin", "type": "string"},

@@ -25,6 +25,7 @@ AgentsMode = Literal["exclude", "include"]
 @dataclass
 class Rule:
     id: str
+    title: str
     enabled: bool
     description: str
     pluginid: str
@@ -58,6 +59,7 @@ def load_rules(path: str = "conf/rules.json") -> list[Rule]:
         rules.append(
             Rule(
                 id=rule_id,
+                title=r.get("title", ""),
                 enabled=r.get("enabled", True),
                 description=r.get("description", ""),
                 pluginid=r.get("pluginid", ""),
