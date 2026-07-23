@@ -363,7 +363,7 @@ DIR="${{HOME:-/tmp}}/pymon-agent-$AGENTID"
 mkdir -p "$DIR/plugins"
 cd "$DIR"
 echo "Downloading agent..."
-curl -s -H "agentid: $AGENTID" -H "X-API-Key: $APIKEY" "$SERVER/agent/download" -o agent.py
+curl -sL -H "agentid: $AGENTID" -H "X-API-Key: $APIKEY" "$SERVER/agent/download" -o agent.py
 echo "Creating config..."
 cat > agent.json <<EOF
 {{
