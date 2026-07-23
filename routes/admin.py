@@ -217,7 +217,7 @@ def admin_toggle_agent_enabled(agentid: str):
 @app.route("/admin/agents/<agentid>", methods=["PUT"])
 @require_agent_apikey
 def admin_update_agent(agentid: str):
-    """Update agent metadata (title, etc.)."""
+    """Update agent metadata (title, description, etc.)."""
     cfg = _load_json_config()
     agents = cfg.get("agents", {})
     if agentid not in agents:
@@ -225,6 +225,8 @@ def admin_update_agent(agentid: str):
     data = request.get_json(silent=True) or {}
     if "title" in data:
         agents[agentid]["title"] = data["title"]
+    if "description" in data:
+        agents[agentid]["description"] = data["description"]
     _save_json_config(cfg)
     return jsonify({"status": "updated"})
 
