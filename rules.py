@@ -116,6 +116,17 @@ def _is_snoozed(rule_id: str, agentid: str, pluginid: str, metric: str) -> bool:
 BLACKOUTS_FILE = os.path.join(os.path.dirname(__file__), "conf", "blackouts.json")
 
 
+def _get_agent_groups(agentid: str) -> list[str]:
+    """Get the groups an agent belongs to from agents.json."""
+    try:
+        agents_file = os.path.join(os.path.dirname(__file__), "conf", "agents.json")
+        with open(agents_file, encoding="utf-8") as f:
+            cfg = json.load(f)
+        return cfg.get("agents", {}).get(agentid, {}).get("groups", [])
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
 def _load_blackouts() -> list[dict]:
     try:
         with open(BLACKOUTS_FILE, encoding="utf-8") as f:
@@ -151,11 +162,18 @@ def _check_blackout(agentid: str, rule_id: str) -> tuple[bool, str | None]:
 
         target_rules = b.get("target_rules", [])
         target_agents = b.get("target_agents", [])
-        if not target_rules and not target_agents:
-            continue
+        target_groups = b.get("target_groups", [])
 
         if rule_id in target_rules or agentid in target_agents:
             return True, b.get("mode", "no_alarms")
+
+        if target_groups:
+            agent_groups = _get_agent_groups(agentid)
+            if any(g in target_groups for g in agent_groups):
+                return True, b.get("mode", "no_alarms")
+
+        if not target_rules and not target_agents and not target_groups:
+            continue
 
     return False, None
 
