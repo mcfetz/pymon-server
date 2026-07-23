@@ -314,6 +314,8 @@ RULE_SCHEMA = {
         {"key": "fire", "label": "Fire-Modus", "type": "select", "options": ["single", "multi", "replace"]},
         {"key": "notifications", "label": "Benachrichtigungen", "type": "array:string", "default": []},
         {"key": "executors", "label": "Executors", "type": "array:string", "default": []},
+        {"key": "agents_mode", "label": "Agent-Modus", "type": "select", "options": ["exclude", "include"], "default": "exclude"},
+        {"key": "agents", "label": "Agents", "type": "agents", "default": [], "optional": True},
     ],
 }
 

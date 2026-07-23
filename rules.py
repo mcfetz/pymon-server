@@ -15,6 +15,7 @@ from executors import run_executors
 Condition = Literal["gt", "lt", "ge", "le", "eq", "ne"]
 Scope = Literal["single", "moving_avg", "count_ratio"]
 FireMode = Literal["single", "multi", "replace"]
+AgentsMode = Literal["exclude", "include"]
 
 
 @dataclass
@@ -33,6 +34,8 @@ class Rule:
     notifications: list[str] | None = None
     fire: FireMode = "single"
     executors: list[str] | None = None
+    agents: list[str] | None = None
+    agents_mode: AgentsMode = "exclude"
 
 
 @timed_cache(ttl_seconds=5)
@@ -59,6 +62,8 @@ def load_rules(path: str = "conf/rules.json") -> list[Rule]:
                 notifications=r.get("notifications", []),
                 fire=r.get("fire", "single"),
                 executors=r.get("executors", []),
+                agents=r.get("agents", []),
+                agents_mode=r.get("agents_mode", "exclude"),
             )
         )
     return rules
@@ -170,6 +175,15 @@ def create_alarm(
         pass
 
 
+def _rule_applies_to_agent(rule: Rule, agentid: str) -> bool:
+    agents = rule.agents or []
+    if not agents:
+        return True
+    if rule.agents_mode == "include":
+        return agentid in agents
+    return agentid not in agents
+
+
 def evaluate_single_rule(
     session: Session,
     agentid: str,
@@ -178,6 +192,8 @@ def evaluate_single_rule(
     rule: Rule,
     trigger_metric: Metrics,
 ) -> None:
+    if not _rule_applies_to_agent(rule, agentid):
+        return
     base_filter = (
         (Metrics.agentid == agentid),
         (Metrics.pluginid == pluginid),
