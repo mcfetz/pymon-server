@@ -75,7 +75,11 @@ def load_rules(path: str = "conf/rules.json") -> list[Rule]:
 
 def compare(value: float, condition: Condition, threshold: float) -> bool:
     if isinstance(value, str):
-        value = float(value)
+        try:
+            value = float(value)
+        except ValueError:
+            logger.warning("compare: cannot convert string '%s' to float, skipping", value)
+            return False
     if condition == "gt":
         return value > threshold
     if condition == "ge":
@@ -299,11 +303,11 @@ def evaluate_single_rule(
 
     if rule.scope == "single":
         try:
-            if compare(float(value), rule.condition, rule.threshold):
-                _maybe_create_alarm(session, agentid, rule, metric, float(value), trigger_metric.id)
-        except Exception as e:
-            logger.error("rule '%s' evaluation failed for agent='%s' plugin='%s' metric='%s' value=%r: %s", rule.id, agentid, pluginid, metric, value, e)
-            raise
+            v = float(value)
+            if compare(v, rule.condition, rule.threshold):
+                _maybe_create_alarm(session, agentid, rule, metric, v, trigger_metric.id)
+        except (ValueError, TypeError) as e:
+            logger.warning("rule '%s' skipped: cannot convert metric='%s' value=%r to float: %s", rule.id, metric, value, e)
 
     elif rule.scope == "moving_avg":
         window = rule.window_size or 10
@@ -311,8 +315,12 @@ def evaluate_single_rule(
         avg_value = session.execute(q).scalar()
         if avg_value is None:
             return
-        if compare(float(avg_value), rule.condition, rule.threshold):
-            _maybe_create_alarm(session, agentid, rule, metric, float(avg_value), trigger_metric.id)
+        try:
+            v = float(avg_value)
+            if compare(v, rule.condition, rule.threshold):
+                _maybe_create_alarm(session, agentid, rule, metric, v, trigger_metric.id)
+        except (ValueError, TypeError) as e:
+            logger.warning("rule '%s' moving_avg: cannot convert avg=%r to float: %s", rule.id, avg_value, e)
 
     elif rule.scope == "count_ratio":
         window = rule.window_size or 10
@@ -321,7 +329,11 @@ def evaluate_single_rule(
         values = [row.v for row in session.execute(q) if row.v is not None]
         if not values:
             return
-        violations = sum(1 for v in values if compare(float(v), rule.condition, rule.threshold))
+        try:
+            violations = sum(1 for v in values if compare(float(v), rule.condition, rule.threshold))
+        except (ValueError, TypeError) as e:
+            logger.warning("rule '%s' count_ratio: cannot convert value to float: %s", rule.id, e)
+            return
         if violations >= min_violations:
             _maybe_create_alarm(session, agentid, rule, metric, float(violations), trigger_metric.id)
 
