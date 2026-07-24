@@ -191,6 +191,9 @@ def download_plugin(plugin: str) -> bool:
 def fetch_plugin_config(plugin: str) -> dict:
     try:
         resp = requests.get(f"{args.server}/plugins/{plugin}/config", headers=_build_headers())
+        if resp.status_code == 403:
+            logging.info("No active config for '%s'; using empty config", plugin)
+            return {}
         resp.raise_for_status()
         return resp.json()
     except Exception as e:

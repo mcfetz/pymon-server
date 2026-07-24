@@ -8,6 +8,21 @@ from auth import require_agent_apikey
 from config import CONF_DIR, PLUGINS_DIR
 
 
+def _disabled_plugins() -> set[str]:
+    """Return plugins disabled globally in the admin metadata."""
+    metadata_path = os.path.join(CONF_DIR, "plugins.json")
+    try:
+        with open(metadata_path, encoding="utf-8") as f:
+            metadata = json.load(f)
+        return {
+            name
+            for name, config in metadata.items()
+            if isinstance(config, dict) and config.get("enabled", True) is False
+        }
+    except (FileNotFoundError, json.JSONDecodeError, AttributeError):
+        return set()
+
+
 def get_assigned_plugins_for_agentid(agentid: str) -> list:
     try:
         agents_json = os.path.join(CONF_DIR, "agents.json")
@@ -26,7 +41,7 @@ def get_assigned_plugins_for_agentid(agentid: str) -> list:
                     assigned.add(p)
             for p in agent.get("plugins", {}):
                 assigned.add(p)
-            return list(assigned)
+            return sorted(assigned - _disabled_plugins())
     except Exception as e:
         logger.error("error loading agent config: %s", e)
     return []
@@ -237,15 +252,10 @@ def get_plugin_config(name):
         if not agent:
             return jsonify({"error": "agent not found"}), 404
 
-        # Collect all assigned plugins for this agent
-        assigned = set()
-        for g in agent.get("groups", []):
-            for p in cfg.get("groups", {}).get(g, []):
-                assigned.add(p)
-        for p in agent.get("plugins", {}):
-            assigned.add(p)
-
-        if name not in assigned:
+        # Use the same group-aware assignment logic as GET /plugins.
+        if name in _disabled_plugins():
+            return jsonify({}), 200
+        if name not in get_assigned_plugins_for_agentid(request.agentid):
             return jsonify({"error": "plugin not assigned to this agent"}), 403
 
         # Return plugin config from the agent's plugin config
