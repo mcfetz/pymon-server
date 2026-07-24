@@ -263,6 +263,35 @@ def admin_list_agents():
     return jsonify(result)
 
 
+@app.route("/admin/maintenance/stats", methods=["GET"])
+@require_agent_apikey
+def admin_maintenance_stats():
+    """Return configuration and stored metric counts for maintenance tools."""
+    cfg = _load_json_config()
+    resources = {
+        "agents": len(cfg.get("agents", {})),
+        "groups": len(cfg.get("groups", {})),
+        "rules": len(_load_rules()),
+        "notifications": len(_load_notify()),
+        "executors": len(_load_executors()),
+        "blackouts": len(_load_blackouts()),
+        "variables": len(_load_variables()),
+        "plugins": len(_get_all_plugin_names()),
+    }
+
+    from sqlalchemy import func
+    from core import SessionLocal
+    from db_models import Metrics
+
+    session = SessionLocal()
+    try:
+        resources["metrics"] = session.query(func.count(Metrics.id)).scalar() or 0
+    finally:
+        session.close()
+
+    return jsonify(resources)
+
+
 @app.route("/admin/agents", methods=["POST"])
 @require_agent_apikey
 def admin_create_agent():
