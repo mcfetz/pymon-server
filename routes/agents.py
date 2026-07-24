@@ -149,7 +149,9 @@ def list_agent_plugins(agentname: str):
 
     assigned = set()
     for group in agent.get("groups", []):
-        for p in cfg.get("groups", {}).get(group, []):
+        grp = cfg.get("groups", {}).get(group, [])
+        plugin_list = grp.get("plugins", grp) if isinstance(grp, dict) else grp
+        for p in plugin_list:
             assigned.add(p)
     for p in agent.get("plugins", {}):
         assigned.add(p)
