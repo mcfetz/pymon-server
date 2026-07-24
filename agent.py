@@ -31,7 +31,7 @@ logging.basicConfig(
 
 PLUGINS_DIR = "plugins"
 POLL_INTERVAL = 5
-PLUGIN_REFRESH_INTERVAL = 60
+PLUGIN_REFRESH_INTERVAL = 30
 PLUGIN_TIMEOUT = 30
 VERSION_CHECK_INTERVAL = 300
 CONFIG_FILE = "agent.json"
@@ -164,14 +164,17 @@ def plugin_hash(name: str) -> Optional[str]:
         return None
 
 
-def fetch_plugin_list() -> list[str]:
+def fetch_plugin_list() -> Optional[list[str]]:
     try:
         resp = requests.get(f"{args.server}/plugins", headers=_build_headers())
         resp.raise_for_status()
-        return resp.json()
+        plugins = resp.json()
+        if not isinstance(plugins, list):
+            raise ValueError("plugin list response is not an array")
+        return plugins
     except Exception as e:
         logging.error("Error fetching plugin list: %s", e)
-        return []
+        return None
 
 
 def download_plugin(plugin: str) -> bool:
@@ -188,17 +191,58 @@ def download_plugin(plugin: str) -> bool:
         return False
 
 
-def fetch_plugin_config(plugin: str) -> dict:
+def fetch_plugin_hash(plugin: str) -> Optional[str]:
+    try:
+        resp = requests.get(f"{args.server}/plugins/{plugin}/version", headers=_build_headers())
+        resp.raise_for_status()
+        plugin_hash_value = resp.json().get("hash")
+        return plugin_hash_value if isinstance(plugin_hash_value, str) else None
+    except Exception as e:
+        logging.warning("Error fetching version for '%s': %s", plugin, e)
+        return None
+
+
+def fetch_plugin_config(plugin: str) -> Optional[dict]:
     try:
         resp = requests.get(f"{args.server}/plugins/{plugin}/config", headers=_build_headers())
         if resp.status_code == 403:
-            logging.info("No active config for '%s'; using empty config", plugin)
-            return {}
+            logging.info("No active config for '%s'; skipping run", plugin)
+            return None
         resp.raise_for_status()
-        return resp.json()
+        config = resp.json()
+        if not isinstance(config, dict):
+            raise ValueError("plugin config response is not an object")
+        return config
     except Exception as e:
         logging.warning("Error fetching config for '%s': %s", plugin, e)
-        return {}
+        return None
+
+
+def sync_plugins(plugins: list[str]) -> bool:
+    """Synchronize assigned plugins without stopping on an empty assignment."""
+    fresh = fetch_plugin_list()
+    if fresh is None:
+        return False
+
+    fresh = [plugin for plugin in fresh if plugin != "plugin_base"]
+    active = []
+    for plugin in fresh:
+        remote_hash = fetch_plugin_hash(plugin)
+        if remote_hash is not None:
+            if plugin_hash(plugin) != remote_hash and not download_plugin(plugin):
+                continue
+        elif plugin_hash(plugin) is None and not download_plugin(plugin):
+            continue
+        active.append(plugin)
+
+    previous = set(plugins)
+    plugins[:] = active
+    if previous != set(active):
+        if active:
+            logging.info("Assigned plugins: %s", active)
+        else:
+            logging.info("No plugins assigned; retrying in %ss", PLUGIN_REFRESH_INTERVAL)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +264,9 @@ def run_plugin(plugin: str, config: dict) -> Optional[dict]:
         )
     except FileNotFoundError:
         logging.error("Python interpreter not found for plugin '%s'", plugin)
+        return None
+    except subprocess.TimeoutExpired:
+        logging.warning("Plugin '%s' timed out after %ss; continuing", plugin, PLUGIN_TIMEOUT)
         return None
 
     if proc.returncode != 0:
@@ -377,43 +424,28 @@ signal.signal(signal.SIGTERM, signal_handler)
 if __name__ == "__main__":
     os.makedirs(PLUGINS_DIR, exist_ok=True)
 
-    plugins = fetch_plugin_list()
+    plugins: list[str] = []
+    sync_plugins(plugins)
     if not plugins:
-        logging.error("No plugins assigned. Exiting.")
-        sys.exit(0)
-
-    plugins = [p for p in plugins if p != "plugin_base"]
-    logging.info("Assigned plugins: %s", plugins)
-
-    # Download all plugins and fetch configs
-    configs: dict[str, dict] = {}
-    for plugin in plugins:
-        if plugin_hash(plugin) is None:
-            download_plugin(plugin)
-        configs[plugin] = fetch_plugin_config(plugin)
+        logging.info("No plugins assigned; waiting for server configuration.")
 
     send_status("online")
     logging.info("Agent online.")
 
-    last_plugin_refresh = 0.0
+    last_plugin_refresh = time.time()
     last_version_check = 0.0
     last_run: dict[str, float] = {}
+    plugin_sleeps: dict[str, int] = {}
 
     while True:
         now = time.time()
 
         # Periodic plugin list refresh
-        if now - last_plugin_refresh > PLUGIN_REFRESH_INTERVAL:
-            fresh = fetch_plugin_list()
-            fresh = [p for p in fresh if p != "plugin_base"]
-            for plugin in fresh:
-                if plugin not in plugins:
-                    logging.info("New plugin detected: %s", plugin)
-                    download_plugin(plugin)
-                    configs[plugin] = fetch_plugin_config(plugin)
-                    plugins.append(plugin)
-            # Remove plugins no longer assigned
-            plugins[:] = [p for p in plugins if p in fresh]
+        if now - last_plugin_refresh >= PLUGIN_REFRESH_INTERVAL:
+            if sync_plugins(plugins):
+                for stale in (set(last_run) | set(plugin_sleeps)) - set(plugins):
+                    last_run.pop(stale, None)
+                    plugin_sleeps.pop(stale, None)
             last_plugin_refresh = now
 
         # Periodic self-update check -- disabled in dev
@@ -426,10 +458,21 @@ if __name__ == "__main__":
             if plugin_hash(plugin) is None:
                 continue
 
-            cfg = configs.get(plugin, {})
-            plugin_sleep = int(cfg.get("sleep", 60))
             last_ts = last_run.get(plugin, 0.0)
-            if now - last_ts < plugin_sleep:
+            plugin_sleep = plugin_sleeps.get(plugin, 0)
+            if plugin_sleep and now - last_ts < plugin_sleep:
+                continue
+
+            # Fetch the current config immediately before a due run.
+            cfg = fetch_plugin_config(plugin)
+            if cfg is None:
+                continue
+            try:
+                plugin_sleep = max(1, int(cfg.get("sleep", 60)))
+            except (TypeError, ValueError):
+                plugin_sleep = 60
+            plugin_sleeps[plugin] = plugin_sleep
+            if last_ts and now - last_ts < plugin_sleep:
                 continue
 
             metrics = run_plugin(plugin, cfg)
