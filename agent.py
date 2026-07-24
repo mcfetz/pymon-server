@@ -36,7 +36,7 @@ PLUGIN_TIMEOUT = 30
 VERSION_CHECK_INTERVAL = 300
 CONFIG_FILE = "agent.json"
 
-SYSTEMD_USER_DIR = os.path.expanduser("~/.config/systemd/user")
+SYSTEMD_SYSTEM_DIR = "/etc/systemd/system"
 
 
 def _load_config() -> dict:
@@ -52,7 +52,7 @@ def _service_name(agentid: str) -> str:
 
 
 def _install_service(agentid: str) -> None:
-    """Install agent as a systemd --user service.
+    """Install agent as a system-wide systemd service.
     Credentials are read from agent.json in WorkingDirectory at runtime.
     """
     python_exe   = sys.executable
@@ -76,33 +76,31 @@ def _install_service(agentid: str) -> None:
         "StandardError=journal\n"
         "\n"
         "[Install]\n"
-        "WantedBy=default.target\n"
+        "WantedBy=multi-user.target\n"
     )
 
-    os.makedirs(SYSTEMD_USER_DIR, exist_ok=True)
-    svc_path = os.path.join(SYSTEMD_USER_DIR, svc_name)
+    os.makedirs(SYSTEMD_SYSTEM_DIR, exist_ok=True)
+    svc_path = os.path.join(SYSTEMD_SYSTEM_DIR, svc_name)
     with open(svc_path, "w") as f:
         f.write(unit)
     print(f"Written:  {svc_path}")
 
-    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
-    subprocess.run(["systemctl", "--user", "enable", svc_name], check=True)
-    subprocess.run(["systemctl", "--user", "start",  svc_name], check=True)
+    subprocess.run(["systemctl", "daemon-reload"], check=True)
+    subprocess.run(["systemctl", "enable", svc_name], check=True)
+    subprocess.run(["systemctl", "start",  svc_name], check=True)
 
     print(f"Service   {svc_name} installed and started.")
-    print(f"Status:   systemctl --user status {svc_name}")
-    print(f"Logs:     journalctl --user -u {svc_name} -f")
-    user = os.environ.get("USER", "")
-    print(f"Tip:      loginctl enable-linger {user}  # persist across reboots without login")
+    print(f"Status:   systemctl status {svc_name}")
+    print(f"Logs:     journalctl -u {svc_name} -f")
 
 
 def _uninstall_service(agentid: str) -> None:
-    """Stop, disable and remove the systemd --user service."""
+    """Stop, disable and remove the system-wide systemd service."""
     svc_name = _service_name(agentid)
-    svc_path = os.path.join(SYSTEMD_USER_DIR, svc_name)
+    svc_path = os.path.join(SYSTEMD_SYSTEM_DIR, svc_name)
 
-    subprocess.run(["systemctl", "--user", "stop",    svc_name], check=False)
-    subprocess.run(["systemctl", "--user", "disable", svc_name], check=False)
+    subprocess.run(["systemctl", "stop",    svc_name], check=False)
+    subprocess.run(["systemctl", "disable", svc_name], check=False)
 
     if os.path.exists(svc_path):
         os.remove(svc_path)
@@ -110,7 +108,7 @@ def _uninstall_service(agentid: str) -> None:
     else:
         print(f"Not found: {svc_path} (already removed?)")
 
-    subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
+    subprocess.run(["systemctl", "daemon-reload"], check=False)
     print(f"Service   {svc_name} uninstalled.")
 
 
@@ -120,8 +118,8 @@ parser = argparse.ArgumentParser(description="pymon Agent")
 parser.add_argument("--server",    default=cfg_file.get("server"),  help="Server URL")
 parser.add_argument("--agentid",   default=cfg_file.get("agentid"), help="Agent ID")
 parser.add_argument("--api-key",   default=cfg_file.get("api_key"), type=str, help="API key for server auth")
-parser.add_argument("--install",   action="store_true", help="Install as systemd --user service and exit")
-parser.add_argument("--uninstall", action="store_true", help="Remove systemd --user service and exit")
+parser.add_argument("--install",   action="store_true", help="Install as system-wide systemd service and exit")
+parser.add_argument("--uninstall", action="store_true", help="Remove system-wide systemd service and exit")
 args = parser.parse_args()
 
 if args.install:
