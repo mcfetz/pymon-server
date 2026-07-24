@@ -1014,7 +1014,7 @@ def admin_delete_blackout(blackout_id: str):
 # ── Variables CRUD ──
 
 _variables_lock = threading.Lock()
-_VARNAME_RE = re.compile(r'^\$[A-Z0-9]+$')
+_VARNAME_RE = re.compile(r'^\$[A-Z0-9_]+$')
 
 
 def _load_variables() -> dict:
@@ -1044,7 +1044,7 @@ def admin_save_variable(var_id: str):
     data = request.get_json(silent=True) or {}
     name = data.get("name", "").strip().upper()
     if not _VARNAME_RE.match(name):
-        return jsonify({"error": "name must match $[A-Z0-9]+ (e.g. $CPU_THRESHOLD)"}), 400
+        return jsonify({"error": "name must match $[A-Z0-9_]+ (e.g. $CPU_THRESHOLD)"}), 400
 
     data["id"] = var_id
     data["name"] = name
