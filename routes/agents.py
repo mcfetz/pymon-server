@@ -336,7 +336,7 @@ def agent_download():
 
 @app.route("/agent/install.sh", methods=["GET"])
 def agent_install_script():
-    """Generate a shell script to install and run the pymon-agent on a target host.
+    """Generate a shell script to install the pymon-agent on a target host.
     
     Usage: curl -s 'http://SERVER:5000/agent/install.sh?agentid=NAME&apikey=KEY' | sh
     """
@@ -380,8 +380,19 @@ for plugin in $PLUGINS; do
   [ "$plugin" = "plugin_base" ] && continue
   curl -s -H "agentid: $AGENTID" -H "X-API-Key: $APIKEY" "$SERVER/plugins/$plugin" -o "plugins/${{plugin}}.py"
 done
-echo "Starting agent in background..."
-nohup python3 agent.py > agent.log 2>&1 &
-echo "Agent $AGENTID started. Log: $DIR/agent.log"
+echo ""
+echo "Agent $AGENTID installed in $DIR."
+echo ""
+echo "The local agent.json stores the server URL, agent ID and API key."
+echo "The server's agents.json stores agent registration, API keys and plugin assignments."
+echo ""
+echo "Start the agent interactively:"
+echo "  cd $DIR && python3 agent.py"
+echo ""
+echo "Install as a systemd user service:"
+echo "  cd $DIR && python3 agent.py --install --agentid $AGENTID"
+echo ""
+echo "Uninstall the systemd user service:"
+echo "  cd $DIR && python3 agent.py --uninstall --agentid $AGENTID"
 """
     return script, 200, {"Content-Type": "text/x-shellscript"}
