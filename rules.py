@@ -15,6 +15,7 @@ from notifications import notify_targets
 from cache import timed_cache
 from executors import run_executors
 from config import CONF_DIR
+from snooze import is_snoozed
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +136,6 @@ def has_open_alarm(session: Session, agentid: str, rule: Rule) -> bool:
     return session.execute(q).scalars().first() is not None
 
 
-SNOOZE_FILE    = os.path.join(CONF_DIR, "snoozes.json")
 BLACKOUTS_FILE = os.path.join(CONF_DIR, "blackouts.json")
 VARIABLES_FILE = os.path.join(CONF_DIR, "variables.json")
 
@@ -183,15 +183,7 @@ def _resolve_threshold(threshold: float | str, agentid: str) -> float:
 
 
 def _is_snoozed(rule_id: str, agentid: str, pluginid: str, metric: str) -> bool:
-    try:
-        with open(SNOOZE_FILE, encoding="utf-8") as f:
-            snoozes = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return False
-    for s in snoozes:
-        if s.get("rule_id") == rule_id and s.get("agentid") == agentid and s.get("pluginid") == pluginid and s.get("metric") == metric:
-            return True
-    return False
+    return is_snoozed(rule_id, agentid, pluginid, metric)
 
 
 

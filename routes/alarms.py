@@ -1,6 +1,6 @@
 import json
 import os
-from datetime import datetime, UTC
+from datetime import UTC, datetime, timedelta
 
 from flask import jsonify, request
 from core import app, logger, SessionLocal
@@ -8,8 +8,14 @@ from db_models import Alarm, Metrics
 from auth import require_agent_apikey
 from sqlalchemy import desc, asc
 from config import CONF_DIR
+from snooze import load_snoozes, prune_expired_snoozes, save_snoozes, snooze_key
 
-SNOOZE_FILE = os.path.join(CONF_DIR, "snoozes.json")
+SNOOZE_DURATIONS = {
+    "1h": timedelta(hours=1),
+    "6h": timedelta(hours=6),
+    "1d": timedelta(days=1),
+    "1w": timedelta(weeks=1),
+}
 
 
 def _alarm_to_dict(a: Alarm) -> dict:
@@ -29,25 +35,32 @@ def _alarm_to_dict(a: Alarm) -> dict:
 
 
 def _load_snoozes() -> list[dict]:
-    try:
-        with open(SNOOZE_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return []
+    return prune_expired_snoozes(load_snoozes())
 
 
 def _save_snoozes(snoozes: list[dict]) -> None:
-    with open(SNOOZE_FILE, "w", encoding="utf-8") as f:
-        json.dump(snoozes, f, indent=2)
+    save_snoozes(snoozes)
 
 
 def _snooze_key(rule_id: str, agentid: str, pluginid: str, metric: str) -> str:
-    return f"{rule_id}|{agentid}|{pluginid}|{metric}"
+    return snooze_key(rule_id, agentid, pluginid, metric)
 
 
 def is_snoozed(rule_id: str, agentid: str, pluginid: str, metric: str) -> bool:
     key = _snooze_key(rule_id, agentid, pluginid, metric)
     return any(_snooze_key(s["rule_id"], s["agentid"], s["pluginid"], s["metric"]) == key for s in _load_snoozes())
+
+
+def _snooze_for_alarm(rule_id: str, agentid: str, pluginid: str, metric: str) -> dict | None:
+    key = _snooze_key(rule_id, agentid, pluginid, metric)
+    return next(
+        (
+            s
+            for s in _load_snoozes()
+            if _snooze_key(s["rule_id"], s["agentid"], s["pluginid"], s["metric"]) == key
+        ),
+        None,
+    )
 
 
 def clear_snooze_for_alarm(rule_id: str, agentid: str, pluginid: str, metric: str) -> None:
@@ -100,26 +113,42 @@ def toggle_snooze():
     agentid = data.get("agentid")
     pluginid = data.get("pluginid")
     metric = data.get("metric")
+    duration = data.get("duration")
     if not all([rule_id, agentid, pluginid, metric]):
         return jsonify({"error": "rule_id, agentid, pluginid, metric required"}), 400
+    if duration is not None and duration not in SNOOZE_DURATIONS:
+        return jsonify({"error": "duration must be one of: 1h, 6h, 1d, 1w"}), 400
 
     key = _snooze_key(rule_id, agentid, pluginid, metric)
     snoozes = _load_snoozes()
     for i, s in enumerate(snoozes):
         if _snooze_key(s["rule_id"], s["agentid"], s["pluginid"], s["metric"]) == key:
-            snoozes.pop(i)
-            _save_snoozes(snoozes)
-            return jsonify({"status": "unsnoozed"}), 200
+            if duration is None:
+                snoozes.pop(i)
+                _save_snoozes(snoozes)
+                return jsonify({"status": "unsnoozed"}), 200
 
-    snoozes.append({
+            expires_at = datetime.now(UTC) + SNOOZE_DURATIONS[duration]
+            s["snoozed_at"] = datetime.now(UTC).isoformat()
+            s["expires_at"] = expires_at.isoformat()
+            _save_snoozes(snoozes)
+            return jsonify({"status": "snoozed", "expires_at": s["expires_at"]}), 200
+
+    snooze = {
         "rule_id": rule_id,
         "agentid": agentid,
         "pluginid": pluginid,
         "metric": metric,
         "snoozed_at": datetime.now(UTC).isoformat(),
-    })
+    }
+    if duration is not None:
+        snooze["expires_at"] = (datetime.now(UTC) + SNOOZE_DURATIONS[duration]).isoformat()
+    snoozes.append(snooze)
     _save_snoozes(snoozes)
-    return jsonify({"status": "snoozed"}), 200
+    response = {"status": "snoozed"}
+    if duration is not None:
+        response["expires_at"] = snooze["expires_at"]
+    return jsonify(response), 200
 
 
 @app.route("/alarms", methods=["GET"])
@@ -230,6 +259,12 @@ def get_alarm_detail(alarmid: int):
             return jsonify({"error": "not found"}), 404
 
         result = _alarm_to_dict(alarm)
+        snooze = _snooze_for_alarm(alarm.rule_id, alarm.agentid, alarm.pluginid, alarm.metric)
+        result["snooze"] = {
+            "active": snooze is not None,
+            "snoozed_at": snooze.get("snoozed_at") if snooze else None,
+            "expires_at": snooze.get("expires_at") if snooze else None,
+        }
 
         # 5 alarms before and after (same rule+agent+plugin+metric), ordered by id
         before = session.query(Alarm).filter(

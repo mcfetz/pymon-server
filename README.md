@@ -320,7 +320,7 @@ The `plugins/_template.py` file provides a starting skeleton.
 | GET | `/alarms/open` | agent/JWT | List open (unacknowledged) alarms |
 | GET | `/alarms/<id>/ack` | agent/JWT | Acknowledge an alarm |
 | GET | `/alarms/snoozed` | agent/JWT | List active snoozes |
-| POST | `/alarms/snooze/toggle` | agent/JWT | Toggle snooze for a rule+agent+metric combo |
+| POST | `/alarms/snooze/toggle` | agent/JWT | Toggle snooze; optional `duration`: `1h`, `6h`, `1d`, or `1w` |
 
 ### Admin (Config CRUD)
 
