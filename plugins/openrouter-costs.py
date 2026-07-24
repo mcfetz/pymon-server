@@ -7,11 +7,12 @@ import urllib.error
 import urllib.request
 
 
+OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits"
 OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key"
 
 __schema__ = {
     "label": "OpenRouter Costs",
-    "description": "Remaining budget for a regular OpenRouter API key",
+    "description": "Remaining OpenRouter account budget for a regular API key",
     "fields": [
         {
             "key": "sleep",
@@ -37,24 +38,30 @@ __schema__ = {
 }
 
 
-def _remaining_budget(data: dict) -> float:
+def _account_remaining(data: dict) -> float | None:
+    total_credits = data.get("total_credits")
+    total_usage = data.get("total_usage")
+    if total_credits is None or total_usage is None:
+        return None
+    try:
+        return float(total_credits) - float(total_usage)
+    except (TypeError, ValueError):
+        return None
+
+
+def _key_remaining(data: dict) -> float | None:
     remaining = data.get("limit_remaining")
     if remaining is None:
-        limit = data.get("limit")
-        usage = data.get("usage")
-        if limit is not None and usage is not None:
-            try:
-                remaining = float(limit) - float(usage)
-            except (TypeError, ValueError):
-                remaining = None
-
-    # OpenRouter returns null when the key has no finite credit limit.
-    return -1.0 if remaining is None else float(remaining)
+        return None
+    try:
+        return float(remaining)
+    except (TypeError, ValueError):
+        return None
 
 
-def fetch_budget(api_key: str, timeout: int) -> float:
+def _fetch_json(url: str, api_key: str, timeout: int) -> dict:
     request = urllib.request.Request(
-        OPENROUTER_KEY_URL,
+        url,
         headers={
             "Accept": "application/json",
             "Authorization": f"Bearer {api_key}",
@@ -69,10 +76,32 @@ def fetch_budget(api_key: str, timeout: int) -> float:
     except (urllib.error.URLError, TimeoutError, OSError, ValueError) as error:
         raise RuntimeError("OpenRouter API request failed") from error
 
-    data = payload.get("data") if isinstance(payload, dict) else None
-    if not isinstance(data, dict):
+    if not isinstance(payload, dict):
         raise RuntimeError("OpenRouter API returned an invalid response")
-    return _remaining_budget(data)
+    return payload
+
+
+def fetch_budget(api_key: str, timeout: int) -> float:
+    """Return account credits remaining, constrained by a key limit if set."""
+    credits_payload = _fetch_json(OPENROUTER_CREDITS_URL, api_key, timeout)
+    credits_data = credits_payload.get("data")
+    account_remaining = _account_remaining(credits_data) if isinstance(credits_data, dict) else None
+
+    # A regular key may also have its own spending cap. Null means unlimited.
+    try:
+        key_payload = _fetch_json(OPENROUTER_KEY_URL, api_key, timeout)
+        key_data = key_payload.get("data")
+        key_remaining = _key_remaining(key_data) if isinstance(key_data, dict) else None
+    except RuntimeError:
+        key_remaining = None
+
+    if account_remaining is not None and key_remaining is not None:
+        return min(account_remaining, key_remaining)
+    if account_remaining is not None:
+        return account_remaining
+    if key_remaining is not None:
+        return key_remaining
+    raise RuntimeError("OpenRouter API returned no remaining budget")
 
 
 if __name__ == "__main__":
