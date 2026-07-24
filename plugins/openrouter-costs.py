@@ -24,7 +24,7 @@ __schema__ = {
         {
             "key": "api_key",
             "label": "OpenRouter API key (not management key)",
-            "type": "string",
+            "type": "password",
         },
         {
             "key": "timeout",
