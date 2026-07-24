@@ -25,14 +25,8 @@ __schema__ = {
         },
         {
             "key": "sid",
-            "label": "Twilio SID (AC... account or SK... API key)",
+            "label": "Twilio Account SID",
             "type": "string",
-        },
-        {
-            "key": "account_sid",
-            "label": "Account SID (required for SK... API key)",
-            "type": "string",
-            "optional": True,
         },
         {
             "key": "client_secret",
@@ -51,17 +45,10 @@ __schema__ = {
 }
 
 
-def fetch_balance(sid: str, client_secret: str, timeout: int, account_sid: str = "") -> float:
+def fetch_balance(sid: str, client_secret: str, timeout: int) -> float:
     sid = sid.strip()
-    account_sid = account_sid.strip()
-    api_key_sid = sid if sid.startswith("SK") else ""
-    target_account_sid = account_sid or (sid if sid.startswith("AC") else "")
-    if not target_account_sid:
-        raise RuntimeError("Account SID (AC...) is required when sid is an API key SID (SK...)")
-
-    account_path = urllib.parse.quote(target_account_sid, safe="")
-    username = api_key_sid or target_account_sid
-    credentials = base64.b64encode(f"{username}:{client_secret}".encode("utf-8")).decode("ascii")
+    account_path = urllib.parse.quote(sid, safe="")
+    credentials = base64.b64encode(f"{sid}:{client_secret}".encode("utf-8")).decode("ascii")
     request = urllib.request.Request(
         TWILIO_BALANCE_URL.format(sid=account_path),
         headers={
@@ -93,7 +80,6 @@ def fetch_balance(sid: str, client_secret: str, timeout: int, account_sid: str =
 if __name__ == "__main__":
     config = json.load(sys.stdin)
     sid = str(config.get("sid") or "").strip()
-    account_sid = str(config.get("account_sid") or "").strip()
     client_secret = str(config.get("client_secret") or "").strip()
     if not sid or not client_secret:
         print("Twilio SID and client secret are required", file=sys.stderr)
@@ -105,7 +91,7 @@ if __name__ == "__main__":
         timeout = 10
 
     try:
-        balance = fetch_balance(sid, client_secret, timeout, account_sid)
+        balance = fetch_balance(sid, client_secret, timeout)
     except RuntimeError as error:
         print(str(error), file=sys.stderr)
         sys.exit(1)
