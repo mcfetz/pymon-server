@@ -44,7 +44,7 @@ class Rule:
     pluginid: str
     metric: str
     condition: Condition
-    threshold: float
+    threshold: float | str   # float or "$VARNAME" reference
     scope: Scope
     window_size: int | None = None
     min_violations: int | None = None
@@ -56,9 +56,14 @@ class Rule:
     agents_mode: AgentsMode = "exclude"
 
 
-def _safe_float(val) -> float:
-    try: return float(val)
-    except (ValueError, TypeError): return 0.0
+def _safe_float(val) -> float | str:
+    """Return val as float, or as-is if it's a variable reference ($VARNAME)."""
+    if isinstance(val, str) and val.startswith("$"):
+        return val  # preserve variable reference
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return 0.0
 
 
 @timed_cache(ttl_seconds=5)
@@ -132,6 +137,49 @@ def has_open_alarm(session: Session, agentid: str, rule: Rule) -> bool:
 
 SNOOZE_FILE    = os.path.join(CONF_DIR, "snoozes.json")
 BLACKOUTS_FILE = os.path.join(CONF_DIR, "blackouts.json")
+VARIABLES_FILE = os.path.join(CONF_DIR, "variables.json")
+
+
+def _load_variables_fresh() -> dict:
+    try:
+        with open(VARIABLES_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _resolve_threshold(threshold: float | str, agentid: str) -> float:
+    """Resolve a threshold value: return float directly, or resolve $VARNAME.
+
+    Priority for variable exceptions:
+      1. Explicit agent exception
+      2. Group exception (first matching group)
+      3. Default variable value
+    """
+    if not isinstance(threshold, str) or not threshold.startswith("$"):
+        return float(threshold)
+
+    variables = _load_variables_fresh()
+    var = next((v for v in variables.values() if v.get("name") == threshold), None)
+    if var is None:
+        logger.error("Variable '%s' not found — using 0 as threshold", threshold)
+        return 0.0
+
+    exceptions = var.get("exceptions", [])
+
+    # 1. Agent-level exception (highest priority)
+    for exc in exceptions:
+        if exc.get("type") == "agent" and exc.get("id") == agentid:
+            return float(exc["value"])
+
+    # 2. Group-level exception
+    agent_groups = _get_agent_groups(agentid)
+    for exc in exceptions:
+        if exc.get("type") == "group" and exc.get("id") in agent_groups:
+            return float(exc["value"])
+
+    # 3. Default value
+    return float(var.get("value", 0))
 
 
 def _is_snoozed(rule_id: str, agentid: str, pluginid: str, metric: str) -> bool:
@@ -335,7 +383,8 @@ def evaluate_single_rule(
     if rule.scope == "single":
         try:
             v = float(value)
-            if compare(v, rule.condition, rule.threshold):
+            threshold = _resolve_threshold(rule.threshold, agentid)
+            if compare(v, rule.condition, threshold):
                 _maybe_create_alarm(session, agentid, rule, metric, v, trigger_metric.id)
         except (ValueError, TypeError) as e:
             logger.warning("rule '%s' skipped: cannot convert metric='%s' value=%r to float: %s", rule.id, metric, value, e)
@@ -348,7 +397,8 @@ def evaluate_single_rule(
             return
         try:
             v = float(avg_value)
-            if compare(v, rule.condition, rule.threshold):
+            threshold = _resolve_threshold(rule.threshold, agentid)
+            if compare(v, rule.condition, threshold):
                 _maybe_create_alarm(session, agentid, rule, metric, v, trigger_metric.id)
         except (ValueError, TypeError) as e:
             logger.warning("rule '%s' moving_avg: cannot convert avg=%r to float: %s", rule.id, avg_value, e)
@@ -361,7 +411,8 @@ def evaluate_single_rule(
         if not values:
             return
         try:
-            violations = sum(1 for v in values if compare(float(v), rule.condition, rule.threshold))
+            threshold = _resolve_threshold(rule.threshold, agentid)
+            violations = sum(1 for v in values if compare(float(v), rule.condition, threshold))
         except (ValueError, TypeError) as e:
             logger.warning("rule '%s' count_ratio: cannot convert value to float: %s", rule.id, e)
             return

@@ -18,12 +18,13 @@ from core import app, logger
 from config import CONF_DIR, PLUGINS_DIR
 
 CONF_DIR    = CONF_DIR   # re-export for local use (keeps existing references)
-CONFIG_JSON = os.path.join(CONF_DIR, "agents.json")
-RULES_JSON  = os.path.join(CONF_DIR, "rules.json")
+CONFIG_JSON    = os.path.join(CONF_DIR, "agents.json")
+RULES_JSON     = os.path.join(CONF_DIR, "rules.json")
 EXECUTORS_JSON = os.path.join(CONF_DIR, "executors.json")
-NOTIFY_JSON = os.path.join(CONF_DIR, "notifications.json")
-PLUGIN_DIR  = PLUGINS_DIR
+NOTIFY_JSON    = os.path.join(CONF_DIR, "notifications.json")
+PLUGIN_DIR     = PLUGINS_DIR
 BLACKOUTS_JSON = os.path.join(CONF_DIR, "blackouts.json")
+VARIABLES_JSON = os.path.join(CONF_DIR, "variables.json")
 
 _SAFE_NAME_RE = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
 
@@ -1007,4 +1008,65 @@ def admin_delete_blackout(blackout_id: str):
         if blackout_id in blackouts:
             del blackouts[blackout_id]
             _save_blackouts(blackouts)
+    return jsonify({"status": "deleted"})
+
+
+# ── Variables CRUD ──
+
+_variables_lock = threading.Lock()
+_VARNAME_RE = re.compile(r'^\$[A-Z0-9]+$')
+
+
+def _load_variables() -> dict:
+    if os.path.exists(VARIABLES_JSON):
+        try:
+            with open(VARIABLES_JSON, encoding="utf-8") as f:
+                return json.load(f)
+        except json.JSONDecodeError as e:
+            logger.error("Corrupt config file %s: %s", VARIABLES_JSON, e)
+            return {}
+    return {}
+
+
+def _save_variables(data: dict) -> None:
+    _atomic_write_json(VARIABLES_JSON, data)
+
+
+@app.route("/admin/variables", methods=["GET"])
+@require_agent_apikey
+def admin_list_variables():
+    return jsonify(_load_variables())
+
+
+@app.route("/admin/variables/<var_id>", methods=["PUT"])
+@require_agent_apikey
+def admin_save_variable(var_id: str):
+    data = request.get_json(silent=True) or {}
+    name = data.get("name", "").strip().upper()
+    if not _VARNAME_RE.match(name):
+        return jsonify({"error": "name must match $[A-Z0-9]+ (e.g. $CPU_THRESHOLD)"}), 400
+
+    data["id"] = var_id
+    data["name"] = name
+
+    with _variables_lock:
+        variables = _load_variables()
+        # Enforce unique name (ignore own entry)
+        for vid, v in variables.items():
+            if v.get("name") == name and vid != var_id:
+                return jsonify({"error": f"variable name {name} already exists"}), 409
+        variables[var_id] = data
+        _save_variables(variables)
+    return jsonify({"status": "saved", "variable": data})
+
+
+@app.route("/admin/variables/<var_id>", methods=["DELETE"])
+@require_agent_apikey
+def admin_delete_variable(var_id: str):
+    with _variables_lock:
+        variables = _load_variables()
+        if var_id not in variables:
+            return jsonify({"error": "not found"}), 404
+        del variables[var_id]
+        _save_variables(variables)
     return jsonify({"status": "deleted"})
