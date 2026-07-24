@@ -170,6 +170,33 @@ def _save_json_config(cfg: dict) -> None:
     _atomic_write_json(CONFIG_JSON, cfg)
 
 
+def touch_agent_last_seen(agentid: str, timestamp: datetime | None = None) -> None:
+    """Store the newest accepted metric timestamp in agent metadata."""
+    seen_at = timestamp or datetime.now(UTC)
+    if seen_at.tzinfo is None:
+        seen_at = seen_at.replace(tzinfo=UTC)
+
+    with _locked(CONFIG_JSON):
+        cfg = _load_json_config()
+        agent = cfg.get("agents", {}).get(agentid)
+        if agent is None:
+            return
+
+        current_value = agent.get("last_seen")
+        try:
+            current = datetime.fromisoformat(current_value) if current_value else None
+        except (TypeError, ValueError):
+            current = None
+        if current is not None:
+            if current.tzinfo is None:
+                current = current.replace(tzinfo=UTC)
+            if current >= seen_at:
+                return
+
+        agent["last_seen"] = seen_at.isoformat()
+        _save_json_config(cfg)
+
+
 # ── Routes ──
 
 @app.route("/admin/plugins/schemas", methods=["GET"])
@@ -198,34 +225,20 @@ def admin_plugin_schemas():
 @require_agent_apikey
 def admin_list_agents():
     """List all agents with groups, plugin configs, and online status."""
-    from datetime import datetime, timezone
-    from sqlalchemy import func
-    from core import SessionLocal
-    from db_models import Metrics
-
     cfg = _load_json_config()
     agents = cfg.get("agents", {})
-
-    # Query last_seen per agent from Metrics
-    session = SessionLocal()
-    try:
-        last_seen_rows = (
-            session.query(Metrics.agentid, func.max(Metrics.timestamp).label("last_seen"))
-            .group_by(Metrics.agentid)
-            .all()
-        )
-    except Exception:
-        last_seen_rows = []
-    finally:
-        session.close()
-
-    last_seen_map = {row.agentid: row.last_seen for row in last_seen_rows}
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     result = {}
     for agent_id, agent_data in agents.items():
         data = dict(agent_data)
-        last_seen = last_seen_map.get(agent_id)
+        last_seen_value = data.get("last_seen")
+        try:
+            last_seen = datetime.fromisoformat(last_seen_value) if last_seen_value else None
+        except (TypeError, ValueError):
+            last_seen = None
+        if last_seen is not None and last_seen.tzinfo is None:
+            last_seen = last_seen.replace(tzinfo=UTC)
         data["last_seen"] = last_seen.isoformat() if last_seen else None
 
         # Compute offline threshold: min sleep across all configured plugins
@@ -243,9 +256,6 @@ def admin_list_agents():
         if last_seen is None:
             data["online"] = False
         else:
-            # Make last_seen timezone-aware for comparison
-            if last_seen.tzinfo is None:
-                last_seen = last_seen.replace(tzinfo=timezone.utc)
             elapsed = (now - last_seen).total_seconds()
             data["online"] = elapsed < threshold * 2  # 2x sleep as grace period
         result[agent_id] = data

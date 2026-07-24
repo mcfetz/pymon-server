@@ -1,7 +1,7 @@
 import logging
 import os
 
-from flask import Flask
+from flask import Flask, request
 from flask_cors import CORS
 from flasgger import Swagger
 from sqlalchemy import create_engine
@@ -34,3 +34,10 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, futu
 
 # Create all tables if they do not exist yet
 Base.metadata.create_all(bind=engine)
+
+@app.after_request
+def disable_api_caching(response):
+    """Configuration and monitoring responses must always reflect current state."""
+    if request.path.startswith(("/admin/", "/agents", "/groups", "/plugins", "/metrics", "/alarms")):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+    return response

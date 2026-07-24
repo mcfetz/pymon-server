@@ -375,13 +375,14 @@ def collect_metrics():
     """
     # /metrics endpoint: store payload and authenticated agentid
     agentid = request.agentid
+    received_at = datetime.now(UTC)
     payload = request.get_json(silent=True)
 
     logger.info(f"Received data from agentid: {agentid}")
     logger.debug("Received payload: %s", payload)
 
     # Check if agent is enabled
-    from routes.admin import _load_json_config
+    from routes.admin import _load_json_config, touch_agent_last_seen
     cfg = _load_json_config()
     agent_cfg = cfg.get("agents", {}).get(agentid)
     if agent_cfg is not None and not agent_cfg.get("enabled", True):
@@ -442,6 +443,11 @@ def collect_metrics():
 
         evaluate_rules_for_payload(session, agentid_payload, pluginid, db_metrics)
         session.commit()
+        if db_metrics:
+            try:
+                touch_agent_last_seen(agentid_payload, received_at)
+            except Exception:
+                logger.error("Error updating last_seen for agent '%s'", agentid_payload, exc_info=True)
         agent_execs = get_pending_agent_executors()
     except Exception as e:
         logger.error("Error while storing metrics or evaluating rules: %s", e)
