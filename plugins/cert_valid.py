@@ -27,7 +27,7 @@ MAX_PLUGIN_RUNTIME = 25
 
 def metric_name(hostname: str) -> str:
     """Use the certificate target's domain as the metric identifier."""
-    return hostname
+    return f'{hostname}:remaining_days'
 
 
 def check_certificate(url: str, timeout: int) -> tuple[str, float | None]:
