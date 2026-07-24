@@ -25,6 +25,11 @@ MAX_PARALLEL_CHECKS = 10
 MAX_PLUGIN_RUNTIME = 25
 
 
+def metric_name(hostname: str) -> str:
+    """Use the certificate target's domain as the metric identifier."""
+    return hostname
+
+
 def check_certificate(url: str, timeout: int) -> tuple[str, float | None]:
     if not isinstance(url, str) or not url.startswith('https://'):
         return url, None
@@ -55,7 +60,7 @@ def check_certificate(url: str, timeout: int) -> tuple[str, float | None]:
         return url, None
 
     days = (expires - datetime.now(timezone.utc)).total_seconds() / 86400.0
-    return url, round(days, 1)
+    return metric_name(hostname), round(days, 1)
 
 if __name__ == "__main__":
     config = json.load(sys.stdin)
@@ -72,8 +77,8 @@ if __name__ == "__main__":
     batches = (len(urls) + workers - 1) // workers
     effective_timeout = min(timeout, max(1, MAX_PLUGIN_RUNTIME // batches - 1)) if urls else timeout
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        for url, days in executor.map(lambda target: check_certificate(str(target), effective_timeout), urls):
+        for metric, days in executor.map(lambda target: check_certificate(str(target), effective_timeout), urls):
             if days is not None:
-                metrics[url] = days
+                metrics[metric] = days
 
     print(json.dumps(metrics))
