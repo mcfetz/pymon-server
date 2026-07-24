@@ -126,6 +126,9 @@ Files are created automatically on first write if they do not exist.
 
 **Conditions:** `gt`, `ge`, `lt`, `le`, `eq`, `ne`
 
+The `metric` field accepts an exact metric name, a full-match regular expression
+(for example `temperature_.*`), or `*` to match all metrics.
+
 **Fire modes**
 
 | Mode | Behaviour |

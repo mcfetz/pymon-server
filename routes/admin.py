@@ -412,7 +412,7 @@ RULE_SCHEMA = {
         {"key": "enabled", "label": "Enabled", "type": "boolean", "default": True},
         {"key": "description", "label": "Description", "type": "string", "default": ""},
         {"key": "pluginid", "label": "Plugin", "type": "string"},
-        {"key": "metric", "label": "Metric", "type": "string"},
+        {"key": "metric", "label": "Metric or regex", "type": "string", "description": "Exact metric name, full-match regex, or * for all metrics"},
         {"key": "condition", "label": "Condition", "type": "select", "options": ["gt", "ge", "lt", "le", "eq", "ne"]},
         {"key": "threshold", "label": "Threshold", "type": "number"},
         {"key": "scope", "label": "Scope", "type": "select", "options": ["single", "moving_avg", "count_ratio"]},

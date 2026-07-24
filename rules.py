@@ -1,9 +1,11 @@
 import json
 import logging
 import os
+import re
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Literal
 
 from sqlalchemy import desc, func, select
@@ -121,6 +123,25 @@ def compare(value: float, condition: Condition, threshold: float) -> bool:
         return value != threshold
     logger.error("compare: unknown condition '%s' in rule evaluation", condition)
     return False
+
+
+@lru_cache(maxsize=256)
+def _compile_metric_pattern(pattern: str) -> re.Pattern[str] | None:
+    try:
+        return re.compile(pattern)
+    except re.error as e:
+        logger.warning("invalid metric regex '%s': %s", pattern, e)
+        return None
+
+
+def metric_matches(pattern: str, metric: str) -> bool:
+    """Match an exact metric name, wildcard, or full-name regex pattern."""
+    if pattern == "*" or pattern == metric:
+        return True
+    if not isinstance(pattern, str) or not pattern:
+        return False
+    compiled = _compile_metric_pattern(pattern)
+    return compiled is not None and compiled.fullmatch(metric) is not None
 
 
 def has_open_alarm(session: Session, agentid: str, rule: Rule) -> bool:
@@ -424,6 +445,6 @@ def evaluate_rules_for_payload(
 
     for metric_obj in saved_metrics:
         for rule in relevant_rules:
-            if rule.metric not in (metric_obj.metric, "*"):
+            if not metric_matches(rule.metric, metric_obj.metric):
                 continue
             evaluate_single_rule(session, agentid, pluginid, metric_obj.metric, rule, metric_obj)
