@@ -57,6 +57,7 @@ class Rule:
     executors: list[str] | None = None
     agents: list[str] | None = None
     agents_mode: AgentsMode = "exclude"
+    auto_close: bool = False
 
 
 def _safe_float(val) -> float | str:
@@ -97,6 +98,7 @@ def load_rules(path: str = "") -> list[Rule]:
                 executors=r.get("executors", []),
                 agents=r.get("agents", []),
                 agents_mode=r.get("agents_mode", "exclude"),
+                auto_close=r.get("auto_close", False),
             )
         )
     return rules
@@ -294,6 +296,7 @@ def _maybe_create_alarm(
 
 
 def _ack_open_alarms(session: Session, agentid: str, rule: Rule, metric: str) -> None:
+    now = datetime.now(timezone.utc)
     q = (
         select(Alarm)
         .where(
@@ -306,6 +309,8 @@ def _ack_open_alarms(session: Session, agentid: str, rule: Rule, metric: str) ->
     )
     for alarm in session.execute(q).scalars().all():
         alarm.acknowledged = True
+        alarm.acknowledged_at = now
+        alarm.ack_method = "auto_close"
 
 
 def create_alarm(
@@ -399,6 +404,8 @@ def evaluate_single_rule(
             threshold = _resolve_threshold(rule.threshold, agentid)
             if compare(v, rule.condition, threshold):
                 _maybe_create_alarm(session, agentid, rule, metric, v, trigger_metric.id)
+            elif rule.auto_close:
+                _ack_open_alarms(session, agentid, rule, metric)
         except (ValueError, TypeError) as e:
             logger.warning("rule '%s' skipped: cannot convert metric='%s' value=%r to float: %s", rule.id, metric, value, e)
 
@@ -413,6 +420,8 @@ def evaluate_single_rule(
             threshold = _resolve_threshold(rule.threshold, agentid)
             if compare(v, rule.condition, threshold):
                 _maybe_create_alarm(session, agentid, rule, metric, v, trigger_metric.id)
+            elif rule.auto_close:
+                _ack_open_alarms(session, agentid, rule, metric)
         except (ValueError, TypeError) as e:
             logger.warning("rule '%s' moving_avg: cannot convert avg=%r to float: %s", rule.id, avg_value, e)
 
@@ -431,6 +440,8 @@ def evaluate_single_rule(
             return
         if violations >= min_violations:
             _maybe_create_alarm(session, agentid, rule, metric, float(violations), trigger_metric.id)
+        elif rule.auto_close:
+            _ack_open_alarms(session, agentid, rule, metric)
 
 
 def evaluate_rules_for_payload(

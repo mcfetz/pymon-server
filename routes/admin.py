@@ -449,6 +449,7 @@ RULE_SCHEMA = {
         {"key": "min_violations", "label": "Violations", "type": "number", "default": 1, "optional": True},
         {"key": "severity", "label": "Severity", "type": "select", "options": ["warning", "critical"]},
         {"key": "fire", "label": "Fire mode", "type": "select", "options": ["single", "multi", "replace"]},
+        {"key": "auto_close", "label": "Auto-close open alarms when rule recovers", "type": "boolean", "default": False},
         {"key": "notifications", "label": "Notifications", "type": "array:string", "default": []},
         {"key": "executors", "label": "Executors", "type": "array:string", "default": []},
         {"key": "agents_mode", "label": "Mode", "type": "select", "options": ["exclude", "include"], "default": "exclude"},

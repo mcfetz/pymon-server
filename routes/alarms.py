@@ -30,6 +30,8 @@ def _alarm_to_dict(a: Alarm) -> dict:
         "created_at": a.created_at.isoformat(),
         "message": a.message,
         "acknowledged": a.acknowledged,
+        "acknowledged_at": a.acknowledged_at.isoformat() if a.acknowledged_at else None,
+        "ack_method": a.ack_method,
         "metrics_id": a.metrics_id,
     }
 
@@ -377,6 +379,8 @@ def acknowledge_alarm(alarmid: int):
             return jsonify({"error": f"Alarm with id {alarmid} not found"}), 404
 
         alarm.acknowledged = True
+        alarm.acknowledged_at = datetime.now(UTC)
+        alarm.ack_method = "manual"
         session.flush()
 
         # Auto-unsnooze when no more open alarms for this combo

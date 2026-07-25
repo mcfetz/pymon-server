@@ -4,7 +4,7 @@ import os
 from flask import Flask, request
 from flask_cors import CORS
 from flasgger import Swagger
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from db_models import Base
@@ -34,6 +34,16 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, futu
 
 # Create all tables if they do not exist yet
 Base.metadata.create_all(bind=engine)
+
+# Add columns that may be missing from existing databases (SQLite migration)
+with engine.begin() as connection:
+    existing_cols = {row[1] for row in connection.execute(text(
+        "PRAGMA table_info(alarms)"
+    ))}
+    if 'acknowledged_at' not in existing_cols:
+        connection.execute(text("ALTER TABLE alarms ADD COLUMN acknowledged_at DATETIME"))
+    if 'ack_method' not in existing_cols:
+        connection.execute(text("ALTER TABLE alarms ADD COLUMN ack_method VARCHAR"))
 
 @app.after_request
 def disable_api_caching(response):

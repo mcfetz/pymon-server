@@ -137,6 +137,9 @@ The `metric` field accepts an exact metric name, a full-match regular expression
 | `multi` | New alarm on every violation |
 | `replace` | Acknowledge all open alarms for this combo, then create one new alarm |
 
+**Auto-close** (`auto_close: true`) — when a rule no longer triggers, all open alarms
+for that rule are automatically acknowledged. Works with all fire modes.
+
 **Agent filter**
 
 - `agents_mode: "exclude"` + empty `agents` → rule applies to all agents (default)
