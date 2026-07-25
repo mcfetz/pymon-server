@@ -449,7 +449,7 @@ def evaluate_single_rule(
         ).where(
             *base_filter,
             Metrics.id < trigger_metric.id,
-        ).order_by(desc(Metrics.timestamp)).scalar()
+        ).order_by(desc(Metrics.timestamp)).limit(1).scalar()
 
         if previous is None:
             return
