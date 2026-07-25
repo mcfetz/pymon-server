@@ -123,6 +123,7 @@ Files are created automatically on first write if they do not exist.
 | `single` | Evaluate each individual measurement |
 | `moving_avg` | Average of the last `window_size` measurements |
 | `count_ratio` | Number of the last `window_size` measurements that violate the threshold; fires when ≥ `min_violations` |
+| `change` | Delta between current and previous measurement; threshold is compared against the delta |
 
 **Conditions:** `gt`, `ge`, `lt`, `le`, `eq`, `ne`
 

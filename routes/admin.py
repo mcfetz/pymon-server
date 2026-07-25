@@ -444,7 +444,7 @@ RULE_SCHEMA = {
         {"key": "metric", "label": "Metric or regex", "type": "string", "description": "Exact metric name, full-match regex, or * for all metrics"},
         {"key": "condition", "label": "Condition", "type": "select", "options": ["gt", "ge", "lt", "le", "eq", "ne"]},
         {"key": "threshold", "label": "Threshold", "type": "number"},
-        {"key": "scope", "label": "Scope", "type": "select", "options": ["single", "moving_avg", "count_ratio"]},
+        {"key": "scope", "label": "Scope", "type": "select", "options": ["single", "moving_avg", "count_ratio", "change"]},
         {"key": "window_size", "label": "Window (N measurements)", "type": "number", "default": 10, "optional": True},
         {"key": "min_violations", "label": "Violations", "type": "number", "default": 1, "optional": True},
         {"key": "severity", "label": "Severity", "type": "select", "options": ["warning", "critical"]},

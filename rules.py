@@ -33,7 +33,7 @@ def get_pending_agent_executors() -> list[dict]:
         return result
 
 Condition = Literal["gt", "lt", "ge", "le", "eq", "ne"]
-Scope = Literal["single", "moving_avg", "count_ratio"]
+Scope = Literal["single", "moving_avg", "count_ratio", "change"]
 FireMode = Literal["single", "multi", "replace"]
 AgentsMode = Literal["exclude", "include"]
 
@@ -442,6 +442,28 @@ def evaluate_single_rule(
             _maybe_create_alarm(session, agentid, rule, metric, float(violations), trigger_metric.id)
         elif rule.auto_close:
             _ack_open_alarms(session, agentid, rule, metric)
+
+    elif rule.scope == "change":
+        previous = session.query(
+            func.coalesce(Metrics.value_float, Metrics.value_int)
+        ).where(
+            *base_filter,
+            Metrics.id < trigger_metric.id,
+        ).order_by(desc(Metrics.timestamp)).scalar()
+
+        if previous is None:
+            return
+        try:
+            v = float(value)
+            prev = float(previous)
+            delta = v - prev
+            threshold = _resolve_threshold(rule.threshold, agentid)
+            if compare(delta, rule.condition, threshold):
+                _maybe_create_alarm(session, agentid, rule, metric, delta, trigger_metric.id)
+            elif rule.auto_close:
+                _ack_open_alarms(session, agentid, rule, metric)
+        except (ValueError, TypeError) as e:
+            logger.warning("rule '%s' change: cannot compute delta: %s", rule.id, e)
 
 
 def evaluate_rules_for_payload(
