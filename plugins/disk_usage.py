@@ -28,12 +28,14 @@ if __name__ == "__main__":
     for mp in sorted(set(mountpoints)):
         if any(re.search(ex, mp) for ex in excludes):
             continue
+        if not os.path.isdir(mp):
+            continue
         try:
             st = os.statvfs(mp)
             total = st.f_frsize * st.f_blocks
             free = st.f_frsize * st.f_bfree
             percent = round(100.0 * (1.0 - free / total), 1) if total else 0.0
-            metrics[mp] = percent
+            metrics[f"{mp}:usage"] = percent
         except OSError:
             pass
 

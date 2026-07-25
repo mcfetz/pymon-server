@@ -283,7 +283,7 @@ The `plugins/_template.py` file provides a starting skeleton.
 |--------|-------------|
 | `cpu` | `percent` |
 | `ram` | `virtual_pct`, `swap_pct` |
-| `disk_usage` | `/<mountpoint>` (percent per partition) |
+| `disk_usage` | `<mountpoint>:usage` (percent per partition) |
 | `network` | `<iface>:bytes_sent`, `<iface>:bytes_recv`, `<iface>:tx_bytes_per_sec`, `<iface>:rx_bytes_per_sec`, `tcp_open_connections` |
 | `openrouter-costs` | `budget_remaining` (account credits minus usage; can be negative) |
 | `twilio-costs` | `budget_remaining` (Twilio account balance; can be negative) |
