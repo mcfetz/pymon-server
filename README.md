@@ -294,7 +294,7 @@ The `plugins/_template.py` file provides a starting skeleton.
 | `services` | `<service>` (string: `running` / `stopped` / `failed`) |
 | `temperature` | `<sensor>:<label>` (°C) |
 | `cert_valid` | `<url>` (days until certificate expiry) |
-| `docker_host` | `containers_running`, `containers_stopped`, `images_total`, `volumes_total` |
+| `docker_host` | `containers_running`, `containers_stopped`, `images_total`, `volumes_total`, `container:<name>:running`, `service:<name>:replicas` |
 
 ## API Endpoints
 
