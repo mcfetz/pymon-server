@@ -3,7 +3,7 @@ import os
 from datetime import UTC, datetime, timedelta
 
 from flask import jsonify, request
-from core import app, logger, SessionLocal
+from core import DB_WRITE_LOCK, app, logger, SessionLocal
 from db_models import Alarm, Metrics
 from auth import require_agent_apikey
 from sqlalchemy import desc, asc
@@ -374,30 +374,32 @@ def acknowledge_alarm(alarmid: int):
     """
     session = SessionLocal()
     try:
-        alarm = session.get(Alarm, alarmid)
-        if alarm is None:
-            return jsonify({"error": f"Alarm with id {alarmid} not found"}), 404
+        with DB_WRITE_LOCK:
+            alarm = session.get(Alarm, alarmid)
+            if alarm is None:
+                return jsonify({"error": f"Alarm with id {alarmid} not found"}), 404
 
-        alarm.acknowledged = True
-        alarm.acknowledged_at = datetime.now(UTC)
-        alarm.ack_method = "manual"
-        session.flush()
+            alarm.acknowledged = True
+            alarm.acknowledged_at = datetime.now(UTC)
+            alarm.ack_method = "manual"
+            session.flush()
 
-        # Auto-unsnooze when no more open alarms for this combo
-        remaining = session.query(Alarm).filter(
-            Alarm.rule_id == alarm.rule_id,
-            Alarm.agentid == alarm.agentid,
-            Alarm.pluginid == alarm.pluginid,
-            Alarm.metric == alarm.metric,
-            Alarm.acknowledged == False,  # noqa: E712
-        ).count()
-        if remaining == 0:
-            clear_snooze_for_alarm(alarm.rule_id, alarm.agentid, alarm.pluginid, alarm.metric)
+            # Auto-unsnooze when no more open alarms for this combo
+            remaining = session.query(Alarm).filter(
+                Alarm.rule_id == alarm.rule_id,
+                Alarm.agentid == alarm.agentid,
+                Alarm.pluginid == alarm.pluginid,
+                Alarm.metric == alarm.metric,
+                Alarm.acknowledged == False,  # noqa: E712
+            ).count()
+            if remaining == 0:
+                clear_snooze_for_alarm(alarm.rule_id, alarm.agentid, alarm.pluginid, alarm.metric)
 
-        session.commit()
-        return jsonify({"status": "acknowledged", "alarmid": alarmid}), 200
+            session.commit()
+            return jsonify({"status": "acknowledged", "alarmid": alarmid}), 200
     except Exception as e:
-        session.rollback()
+        with DB_WRITE_LOCK:
+            session.rollback()
         logger.error("Error while acknowledging alarm %s: %s", alarmid, e)
         return jsonify({"error": "internal error"}), 500
     finally:

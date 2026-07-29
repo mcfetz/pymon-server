@@ -1,10 +1,11 @@
 import logging
 import os
+import threading
 
 from flask import Flask, request
 from flask_cors import CORS
 from flasgger import Swagger
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker
 
 from db_models import Base
@@ -29,7 +30,34 @@ swagger = Swagger(app)
 # SQLAlchemy ORM Setup — absolute path so it works from any working directory
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 DATABASE_URL = f"sqlite:///{DB_PATH}"
-engine = create_engine(DATABASE_URL, echo=False, future=True)
+SQLITE_BUSY_TIMEOUT_MS = 30_000
+
+# SQLite still permits only one writer at a time. Serialize writes within the
+# server process and let other processes wait instead of failing immediately.
+DB_WRITE_LOCK = threading.RLock()
+
+engine = create_engine(
+    DATABASE_URL,
+    echo=False,
+    future=True,
+    connect_args={"timeout": SQLITE_BUSY_TIMEOUT_MS / 1000},
+)
+
+
+@event.listens_for(engine, "connect")
+def _configure_sqlite(dbapi_connection, _connection_record):
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+        except Exception as exc:
+            logger.warning("Unable to enable SQLite WAL mode: %s", exc)
+        cursor.execute("PRAGMA synchronous=NORMAL")
+    finally:
+        cursor.close()
+
+
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
 # Create all tables if they do not exist yet

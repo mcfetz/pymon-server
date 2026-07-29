@@ -10,9 +10,10 @@ from sqlalchemy.orm import joinedload
 
 from db_models import Alarm, Metrics
 from functions import _parse_time_param, dict_value_to_metric, get_value_from_row
-from rules import evaluate_rules_for_payload, get_pending_agent_executors
-from core import SessionLocal, app, logger
+from rules import evaluate_rules_for_payload
+from core import DB_WRITE_LOCK, SessionLocal, app, logger
 from auth import require_agent_apikey
+from routes.admin import _load_json_config, touch_agent_last_seen
 
 
 def _query_metrics(
@@ -382,7 +383,6 @@ def collect_metrics():
     logger.debug("Received payload: %s", payload)
 
     # Check if agent is enabled
-    from routes.admin import _load_json_config, touch_agent_last_seen
     cfg = _load_json_config()
     agent_cfg = cfg.get("agents", {}).get(agentid)
     if agent_cfg is not None and not agent_cfg.get("enabled", True):
@@ -392,69 +392,84 @@ def collect_metrics():
     # Open a SQLAlchemy session
     session = SessionLocal()
     agent_execs = []
+    post_commit_actions = []
+    agentid_payload = agentid
+    pluginid = None
+    db_metrics = []
     try:
-        if not isinstance(payload, dict):
-            return jsonify({"error": "invalid payload: only dict is allowed."}), 400
-        # Expect payload structure: pluginid, agentid, timestamp, metrics (as list)
-        pluginid = payload.get("pluginid")
-        if not pluginid:
-            return jsonify({"error": "no plugin id found."}), 400
-        # Always use authenticated agentid from header
-        agentid_payload = agentid
+        try:
+            with DB_WRITE_LOCK:
+                if not isinstance(payload, dict):
+                    return jsonify({"error": "invalid payload: only dict is allowed."}), 400
+                # Expect payload structure: pluginid, agentid, timestamp, metrics (as list)
+                pluginid = payload.get("pluginid")
+                if not pluginid:
+                    return jsonify({"error": "no plugin id found."}), 400
 
-        timestamp = payload.get("timestamp")
-        # Convert timestamp: accept ISO 8601 string, Unix float, or datetime
-        if isinstance(timestamp, str):
-            try:
-                timestamp = datetime.fromisoformat(timestamp)
-            except ValueError as e:
-                logger.error("invalid timestamp format: %s", e)
-                timestamp = datetime.now(UTC)
-        elif isinstance(timestamp, (int, float)):
-            # Unix timestamp (seconds since epoch) from agent
-            timestamp = datetime.fromtimestamp(timestamp, tz=UTC)
-        elif not isinstance(timestamp, datetime):
-            # If no valid timestamp was provided, use the current time
-            timestamp = datetime.now(UTC)
-
-        metrics_list = payload.get("metrics", [])
-        db_metrics = []
-
-        for metric_dict in metrics_list:
-            if isinstance(metric_dict, dict):
-                for metric_name, value in metric_dict.items():
+                timestamp = payload.get("timestamp")
+                # Convert timestamp: accept ISO 8601 string, Unix float, or datetime
+                if isinstance(timestamp, str):
                     try:
-                        metric_entry = Metrics(
-                            agentid=agentid_payload,
-                            pluginid=pluginid,
-                            timestamp=timestamp,
-                            metric=metric_name,
-                        )
-                        metric_entry = dict_value_to_metric(value, metric_entry)
-                        session.add(metric_entry)
-                        db_metrics.append(metric_entry)
-                    except Exception as e:
-                        logger.error("Error storing metric '%s' from plugin '%s': value=%r, error=%s", metric_name, pluginid, value, e)
-                        raise
+                        timestamp = datetime.fromisoformat(timestamp)
+                    except ValueError as e:
+                        logger.error("invalid timestamp format: %s", e)
+                        timestamp = datetime.now(UTC)
+                elif isinstance(timestamp, (int, float)):
+                    # Unix timestamp (seconds since epoch) from agent
+                    timestamp = datetime.fromtimestamp(timestamp, tz=UTC)
+                elif not isinstance(timestamp, datetime):
+                    # If no valid timestamp was provided, use the current time
+                    timestamp = datetime.now(UTC)
 
-        # Flush to get IDs for new metrics, then evaluate rules.
-        # This is all one transaction.
-        session.flush()
+                metrics_list = payload.get("metrics", [])
 
-        evaluate_rules_for_payload(session, agentid_payload, pluginid, db_metrics)
-        session.commit()
+                for metric_dict in metrics_list:
+                    if isinstance(metric_dict, dict):
+                        for metric_name, value in metric_dict.items():
+                            try:
+                                metric_entry = Metrics(
+                                    agentid=agentid_payload,
+                                    pluginid=pluginid,
+                                    timestamp=timestamp,
+                                    metric=metric_name,
+                                )
+                                metric_entry = dict_value_to_metric(value, metric_entry)
+                                session.add(metric_entry)
+                                db_metrics.append(metric_entry)
+                            except Exception as e:
+                                logger.error("Error storing metric '%s' from plugin '%s': value=%r, error=%s", metric_name, pluginid, value, e)
+                                raise
+
+                # Flush to get IDs for new metrics, then evaluate rules.
+                session.flush()
+                post_commit_actions = evaluate_rules_for_payload(
+                    session,
+                    agentid_payload,
+                    pluginid,
+                    db_metrics,
+                )
+                session.commit()
+        except Exception as e:
+            with DB_WRITE_LOCK:
+                session.rollback()
+            logger.error("Error while storing metrics or evaluating rules: %s", e)
+            logger.error("Failed payload detail: agent=%s plugin=%s metrics_count=%d", agentid_payload, pluginid, len(db_metrics))
+            logger.error("Traceback:", exc_info=True)
+            return jsonify({"status": "error", "message": str(e)}), 500
+
         if db_metrics:
             try:
                 touch_agent_last_seen(agentid_payload, received_at)
             except Exception:
                 logger.error("Error updating last_seen for agent '%s'", agentid_payload, exc_info=True)
-        agent_execs = get_pending_agent_executors()
-    except Exception as e:
-        logger.error("Error while storing metrics or evaluating rules: %s", e)
-        logger.error("Failed payload detail: agent=%s plugin=%s metrics_count=%d", agentid_payload, pluginid, len(db_metrics))
-        logger.error("Traceback:", exc_info=True)
-        session.rollback()
-        return jsonify({"status": "error", "message": str(e)}), 500
+
+        for action in post_commit_actions:
+            try:
+                action_result = action()
+                if action_result:
+                    agent_execs.extend(action_result)
+            except Exception:
+                logger.error("Error running post-commit alarm action", exc_info=True)
     finally:
         session.close()
 

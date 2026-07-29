@@ -2,11 +2,10 @@ import json
 import logging
 import os
 import re
-import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
-from typing import Literal
+from typing import Callable, Literal
 
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
@@ -21,16 +20,7 @@ from snooze import is_snoozed
 
 logger = logging.getLogger(__name__)
 
-# Agent-side executor commands collected during rule evaluation, returned in the response
-_pending_agent_executors: list[dict] = []
-_pending_lock = threading.Lock()
-
-
-def get_pending_agent_executors() -> list[dict]:
-    with _pending_lock:
-        result = list(_pending_agent_executors)
-        _pending_agent_executors.clear()
-        return result
+PostCommitAction = Callable[[], list[dict[str, str]]]
 
 Condition = Literal["gt", "lt", "ge", "le", "eq", "ne"]
 Scope = Literal["single", "moving_avg", "count_ratio", "change"]
@@ -286,13 +276,31 @@ def _maybe_create_alarm(
     metric: str,
     value: float,
     metric_id: int,
+    post_commit_actions: list[PostCommitAction] | None = None,
 ) -> None:
     blocked, mode = _check_blackout(agentid, rule.id)
     if blocked:
         if mode == "no_notifications":
-            create_alarm(session, agentid, rule, metric, value, metric_id, suppress_notifications=True)
+            create_alarm(
+                session,
+                agentid,
+                rule,
+                metric,
+                value,
+                metric_id,
+                suppress_notifications=True,
+                post_commit_actions=post_commit_actions,
+            )
         return
-    create_alarm(session, agentid, rule, metric, value, metric_id)
+    create_alarm(
+        session,
+        agentid,
+        rule,
+        metric,
+        value,
+        metric_id,
+        post_commit_actions=post_commit_actions,
+    )
 
 
 def _ack_open_alarms(session: Session, agentid: str, rule: Rule, metric: str) -> None:
@@ -321,6 +329,7 @@ def create_alarm(
     value: float,
     metric_id: int,
     suppress_notifications: bool = False,
+    post_commit_actions: list[PostCommitAction] | None = None,
 ) -> None:
     # fire=single: nur einen offenen Alarm pro (agentid, rule)
     if rule.fire == "single" and has_open_alarm(session, agentid, rule):
@@ -348,21 +357,26 @@ def create_alarm(
     )
     session.add(alarm)
     session.flush()  # ensure alarm.id is available before commit
+    alarm_id = alarm.id
 
-    # Notifications auslösen (Fehler hier sollen die DB-Transaktion nicht verhindern)
-    if not suppress_notifications:
+    def run_post_commit_actions() -> list[dict[str, str]]:
+        # Do not hold the SQLite write transaction during network or shell I/O.
+        if not suppress_notifications:
+            try:
+                notify_targets(rule, agentid, metric, value, message, alarm_id)
+            except Exception as e:
+                logger.error("Notification failed for rule '%s', agent '%s': %s", rule.id, agentid, e)
+
         try:
-            notify_targets(rule, agentid, metric, value, message, alarm.id)
+            return run_executors(rule, agentid, metric, value, message)
         except Exception as e:
-            logger.error("Notification failed for rule '%s', agent '%s': %s", rule.id, agentid, e)
+            logger.error("Executor failed for rule '%s', agent '%s': %s", rule.id, agentid, e)
+            return []
 
-    try:
-        agent_execs = run_executors(rule, agentid, metric, value, message)
-        if agent_execs:
-            with _pending_lock:
-                _pending_agent_executors.extend(agent_execs)
-    except Exception as e:
-        logger.error("Executor failed for rule '%s', agent '%s': %s", rule.id, agentid, e)
+    if post_commit_actions is None:
+        run_post_commit_actions()
+    else:
+        post_commit_actions.append(run_post_commit_actions)
 
 
 def _rule_applies_to_agent(rule: Rule, agentid: str) -> bool:
@@ -381,6 +395,7 @@ def evaluate_single_rule(
     metric: str,
     rule: Rule,
     trigger_metric: Metrics,
+    post_commit_actions: list[PostCommitAction] | None = None,
 ) -> None:
     if not _rule_applies_to_agent(rule, agentid):
         return
@@ -403,7 +418,15 @@ def evaluate_single_rule(
             v = float(value)
             threshold = _resolve_threshold(rule.threshold, agentid)
             if compare(v, rule.condition, threshold):
-                _maybe_create_alarm(session, agentid, rule, metric, v, trigger_metric.id)
+                _maybe_create_alarm(
+                    session,
+                    agentid,
+                    rule,
+                    metric,
+                    v,
+                    trigger_metric.id,
+                    post_commit_actions,
+                )
             elif rule.auto_close:
                 _ack_open_alarms(session, agentid, rule, metric)
         except (ValueError, TypeError) as e:
@@ -419,7 +442,15 @@ def evaluate_single_rule(
             v = float(avg_value)
             threshold = _resolve_threshold(rule.threshold, agentid)
             if compare(v, rule.condition, threshold):
-                _maybe_create_alarm(session, agentid, rule, metric, v, trigger_metric.id)
+                _maybe_create_alarm(
+                    session,
+                    agentid,
+                    rule,
+                    metric,
+                    v,
+                    trigger_metric.id,
+                    post_commit_actions,
+                )
             elif rule.auto_close:
                 _ack_open_alarms(session, agentid, rule, metric)
         except (ValueError, TypeError) as e:
@@ -439,7 +470,15 @@ def evaluate_single_rule(
             logger.warning("rule '%s' count_ratio: cannot convert value to float: %s", rule.id, e)
             return
         if violations >= min_violations:
-            _maybe_create_alarm(session, agentid, rule, metric, float(violations), trigger_metric.id)
+            _maybe_create_alarm(
+                session,
+                agentid,
+                rule,
+                metric,
+                float(violations),
+                trigger_metric.id,
+                post_commit_actions,
+            )
         elif rule.auto_close:
             _ack_open_alarms(session, agentid, rule, metric)
 
@@ -459,7 +498,15 @@ def evaluate_single_rule(
             delta = v - prev
             threshold = _resolve_threshold(rule.threshold, agentid)
             if compare(delta, rule.condition, threshold):
-                _maybe_create_alarm(session, agentid, rule, metric, delta, trigger_metric.id)
+                _maybe_create_alarm(
+                    session,
+                    agentid,
+                    rule,
+                    metric,
+                    delta,
+                    trigger_metric.id,
+                    post_commit_actions,
+                )
             elif rule.auto_close:
                 _ack_open_alarms(session, agentid, rule, metric)
         except (ValueError, TypeError) as e:
@@ -471,13 +518,24 @@ def evaluate_rules_for_payload(
     agentid: str,
     pluginid: str,
     saved_metrics: list[Metrics],
-) -> None:
+) -> list[PostCommitAction]:
+    post_commit_actions: list[PostCommitAction] = []
     relevant_rules = [r for r in load_rules() if r.enabled and r.pluginid == pluginid]
     if not relevant_rules:
-        return
+        return post_commit_actions
 
     for metric_obj in saved_metrics:
         for rule in relevant_rules:
             if not metric_matches(rule.metric, metric_obj.metric):
                 continue
-            evaluate_single_rule(session, agentid, pluginid, metric_obj.metric, rule, metric_obj)
+            evaluate_single_rule(
+                session,
+                agentid,
+                pluginid,
+                metric_obj.metric,
+                rule,
+                metric_obj,
+                post_commit_actions,
+            )
+
+    return post_commit_actions

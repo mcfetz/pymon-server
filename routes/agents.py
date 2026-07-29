@@ -1,4 +1,4 @@
-from core import app, logger, SessionLocal
+from core import DB_WRITE_LOCK, app, logger, SessionLocal
 from flask import request, jsonify
 from datetime import UTC, datetime
 from dateutil import parser as dateutil_parser
@@ -76,18 +76,20 @@ def status():
 
     session = SessionLocal()
     try:
-        session.add(
-            Metrics(
-                agentid=agentid,
-                pluginid="agent",
-                timestamp=datetime.now(UTC),
-                metric="online",
-                value_int=status_value,
+        with DB_WRITE_LOCK:
+            session.add(
+                Metrics(
+                    agentid=agentid,
+                    pluginid="agent",
+                    timestamp=datetime.now(UTC),
+                    metric="online",
+                    value_int=status_value,
+                )
             )
-        )
-        session.commit()
+            session.commit()
     except Exception as e:
-        session.rollback()
+        with DB_WRITE_LOCK:
+            session.rollback()
         logger.error("Error storing status metric for agent '%s': %s", agentid, e)
         return jsonify({"error": "Error while storing agent status"}), 500
     finally:

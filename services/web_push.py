@@ -6,7 +6,7 @@ import os
 
 from pywebpush import WebPushException, webpush
 
-from core import SessionLocal
+from core import DB_WRITE_LOCK, SessionLocal
 from db_models import PushSubscription
 
 logger = logging.getLogger(__name__)
@@ -86,9 +86,10 @@ def send_push_notification(
 
     if expired:
         try:
-            for sub in expired:
-                session.delete(sub)
-            session.commit()
+            with DB_WRITE_LOCK:
+                for sub in expired:
+                    session.delete(sub)
+                session.commit()
         except Exception as e:
             logger.error("Error cleaning up expired subs: %s", e)
 

@@ -7,7 +7,7 @@ from flask import jsonify, request
 from sqlalchemy import desc
 
 from auth import require_agent_apikey
-from core import SessionLocal, app, logger
+from core import DB_WRITE_LOCK, SessionLocal, app, logger
 from db_models import Alarm, PushSubscription
 
 logger = logging.getLogger(__name__)
@@ -37,17 +37,19 @@ def subscribe_push():
 
     session = SessionLocal()
     try:
-        existing = session.query(PushSubscription).filter_by(endpoint=endpoint).first()
-        if existing:
-            session.delete(existing)
-            session.flush()
+        with DB_WRITE_LOCK:
+            existing = session.query(PushSubscription).filter_by(endpoint=endpoint).first()
+            if existing:
+                session.delete(existing)
+                session.flush()
 
-        sub = PushSubscription(endpoint=endpoint, p256dh_key=p256dh, auth_key=auth)
-        session.add(sub)
-        session.commit()
+            sub = PushSubscription(endpoint=endpoint, p256dh_key=p256dh, auth_key=auth)
+            session.add(sub)
+            session.commit()
         return jsonify({"status": "subscribed"}), 201
     except Exception as e:
-        session.rollback()
+        with DB_WRITE_LOCK:
+            session.rollback()
         logger.error("Error saving subscription: %s", e)
         return jsonify({"error": "internal error"}), 500
     finally:
@@ -63,16 +65,18 @@ def unsubscribe_push():
 
     session = SessionLocal()
     try:
-        sub = None
-        if endpoint:
-            sub = session.query(PushSubscription).filter_by(endpoint=endpoint).first()
-        if sub:
-            session.delete(sub)
-            session.commit()
-            return jsonify({"status": "unsubscribed"}), 200
-        return jsonify({"error": "not found"}), 404
+        with DB_WRITE_LOCK:
+            sub = None
+            if endpoint:
+                sub = session.query(PushSubscription).filter_by(endpoint=endpoint).first()
+            if sub:
+                session.delete(sub)
+                session.commit()
+                return jsonify({"status": "unsubscribed"}), 200
+            return jsonify({"error": "not found"}), 404
     except Exception as e:
-        session.rollback()
+        with DB_WRITE_LOCK:
+            session.rollback()
         logger.error("Error removing subscription: %s", e)
         return jsonify({"error": "internal error"}), 500
     finally:
