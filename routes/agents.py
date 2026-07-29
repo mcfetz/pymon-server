@@ -1,6 +1,6 @@
 from core import app, logger, SessionLocal
 from flask import request, jsonify
-from datetime import datetime
+from datetime import UTC, datetime
 from dateutil import parser as dateutil_parser
 from auth import require_agent_apikey
 from db_models import Metrics, Alarm
@@ -70,7 +70,30 @@ def status():
     data = request.get_json(silent=True) or {}
     status = data.get("status", "undefined")
 
-    logger.info(f"AgentID: {agentid}, Status: {status}")
+    status_value = {"online": 1, "offline": 0}.get(status) if isinstance(status, str) else None
+    if status_value is None:
+        return jsonify({"error": "status must be either online or offline"}), 400
+
+    session = SessionLocal()
+    try:
+        session.add(
+            Metrics(
+                agentid=agentid,
+                pluginid="agent",
+                timestamp=datetime.now(UTC),
+                metric="online",
+                value_int=status_value,
+            )
+        )
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        logger.error("Error storing status metric for agent '%s': %s", agentid, e)
+        return jsonify({"error": "Error while storing agent status"}), 500
+    finally:
+        session.close()
+
+    logger.info("AgentID: %s, Status: %s", agentid, status)
     return jsonify({"agentid": agentid, "status": status}), 200
 
 

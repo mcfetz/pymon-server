@@ -368,6 +368,9 @@ SQLite file `metrics.db` is created automatically.
 | `metrics` | All metric data points (agentid, pluginid, metric, timestamp, value) |
 | `alarms` | Triggered alarms with severity, ack status, link to triggering metric |
 
+Agent status updates are stored in `metrics` with the dummy plugin ID `agent`,
+metric name `online`, and value `1` for online or `0` for offline.
+
 ## Security
 
 - Frontend authentication uses JWT (HS256, 30-day TTL)
