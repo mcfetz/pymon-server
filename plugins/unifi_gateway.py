@@ -2,8 +2,10 @@
 """unifi_gateway.py — UniFi Cloud Gateway monitoring via local API."""
 import http.cookiejar
 import json
+import random
 import sys
 import ssl
+import time
 import urllib.request
 
 __schema__ = {
@@ -36,12 +38,21 @@ def _opener(verify):
 def _login(opener, host, username, password):
     url = f'https://{host}/api/auth/login'
     body = json.dumps({'username': username, 'password': password, 'remember': True}).encode()
-    req = urllib.request.Request(url, data=body, headers={'Content-Type': 'application/json'})
-    with opener.open(req, timeout=15) as resp:
-        data = json.loads(resp.read().decode())
-    if data.get('meta', {}).get('rc') != 'ok':
-        return data.get('meta', {}).get('msg', 'login failed')
-    return None
+    for attempt in range(4):
+        try:
+            req = urllib.request.Request(url, data=body, headers={'Content-Type': 'application/json'})
+            with opener.open(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode())
+            if data.get('meta', {}).get('rc') != 'ok':
+                return data.get('meta', {}).get('msg', 'login failed')
+            return None
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < 3:
+                delay = (2 ** attempt) + random.uniform(0, 1)
+                time.sleep(delay)
+                continue
+            raise
+    return 'rate limited after retries'
 
 
 def _api_get(opener, host, site, path):
