@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 PostCommitAction = Callable[[], list[dict[str, str]]]
 
-Condition = Literal["gt", "lt", "ge", "le", "eq", "ne"]
+Condition = Literal["gt", "lt", "ge", "le", "eq", "ne", "between", "outside"]
 Scope = Literal["single", "moving_avg", "count_ratio", "change"]
 FireMode = Literal["single", "multi", "replace"]
 AgentsMode = Literal["exclude", "include"]
@@ -48,6 +48,8 @@ class Rule:
     agents: list[str] | None = None
     agents_mode: AgentsMode = "exclude"
     auto_close: bool = False
+    threshold_min: float | str | None = None
+    threshold_max: float | str | None = None
 
 
 def _safe_float(val) -> float | str:
@@ -58,6 +60,12 @@ def _safe_float(val) -> float | str:
         return float(val)
     except (ValueError, TypeError):
         return 0.0
+
+
+def _safe_range_threshold(val) -> float | str | None:
+    if val is None or val == "":
+        return None
+    return _safe_float(val)
 
 
 @timed_cache(ttl_seconds=5)
@@ -89,12 +97,19 @@ def load_rules(path: str = "") -> list[Rule]:
                 agents=r.get("agents", []),
                 agents_mode=r.get("agents_mode", "exclude"),
                 auto_close=r.get("auto_close", False),
+                threshold_min=_safe_range_threshold(r.get("threshold_min")),
+                threshold_max=_safe_range_threshold(r.get("threshold_max")),
             )
         )
     return rules
 
 
-def compare(value: float, condition: Condition, threshold: float) -> bool:
+def compare(
+    value: float,
+    condition: Condition,
+    threshold: float,
+    threshold_max: float | None = None,
+) -> bool:
     if isinstance(value, str):
         try:
             value = float(value)
@@ -113,8 +128,29 @@ def compare(value: float, condition: Condition, threshold: float) -> bool:
         return value == threshold
     if condition == "ne":
         return value != threshold
+    if condition == "between":
+        return threshold_max is not None and threshold <= value <= threshold_max
+    if condition == "outside":
+        return threshold_max is not None and (value < threshold or value > threshold_max)
     logger.error("compare: unknown condition '%s' in rule evaluation", condition)
     return False
+
+
+def compare_rule_value(value: float, rule: Rule, agentid: str) -> bool:
+    """Compare a value using a single threshold or an inclusive range."""
+    if rule.condition in ("between", "outside"):
+        if rule.threshold_min is None or rule.threshold_max is None:
+            logger.warning("rule '%s' has incomplete range thresholds", rule.id)
+            return False
+        threshold_min = _resolve_threshold(rule.threshold_min, agentid)
+        threshold_max = _resolve_threshold(rule.threshold_max, agentid)
+        if threshold_min > threshold_max:
+            logger.warning("rule '%s' has threshold_min greater than threshold_max", rule.id)
+            return False
+        return compare(value, rule.condition, threshold_min, threshold_max)
+
+    threshold = _resolve_threshold(rule.threshold, agentid)
+    return compare(value, rule.condition, threshold)
 
 
 @lru_cache(maxsize=256)
@@ -416,8 +452,7 @@ def evaluate_single_rule(
     if rule.scope == "single":
         try:
             v = float(value)
-            threshold = _resolve_threshold(rule.threshold, agentid)
-            if compare(v, rule.condition, threshold):
+            if compare_rule_value(v, rule, agentid):
                 _maybe_create_alarm(
                     session,
                     agentid,
@@ -440,8 +475,7 @@ def evaluate_single_rule(
             return
         try:
             v = float(avg_value)
-            threshold = _resolve_threshold(rule.threshold, agentid)
-            if compare(v, rule.condition, threshold):
+            if compare_rule_value(v, rule, agentid):
                 _maybe_create_alarm(
                     session,
                     agentid,
@@ -464,8 +498,7 @@ def evaluate_single_rule(
         if not values:
             return
         try:
-            threshold = _resolve_threshold(rule.threshold, agentid)
-            violations = sum(1 for v in values if compare(float(v), rule.condition, threshold))
+            violations = sum(1 for v in values if compare_rule_value(float(v), rule, agentid))
         except (ValueError, TypeError) as e:
             logger.warning("rule '%s' count_ratio: cannot convert value to float: %s", rule.id, e)
             return
@@ -496,8 +529,7 @@ def evaluate_single_rule(
             v = float(value)
             prev = float(previous)
             delta = v - prev
-            threshold = _resolve_threshold(rule.threshold, agentid)
-            if compare(delta, rule.condition, threshold):
+            if compare_rule_value(delta, rule, agentid):
                 _maybe_create_alarm(
                     session,
                     agentid,

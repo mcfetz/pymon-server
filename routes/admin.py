@@ -442,8 +442,10 @@ RULE_SCHEMA = {
         {"key": "description", "label": "Description", "type": "string", "default": ""},
         {"key": "pluginid", "label": "Plugin", "type": "string"},
         {"key": "metric", "label": "Metric or regex", "type": "string", "description": "Exact metric name, full-match regex, or * for all metrics"},
-        {"key": "condition", "label": "Condition", "type": "select", "options": ["gt", "ge", "lt", "le", "eq", "ne"]},
+        {"key": "condition", "label": "Condition", "type": "select", "options": ["gt", "ge", "lt", "le", "eq", "ne", "between", "outside"]},
         {"key": "threshold", "label": "Threshold", "type": "number"},
+        {"key": "threshold_min", "label": "Minimum threshold", "type": "string", "optional": True},
+        {"key": "threshold_max", "label": "Maximum threshold", "type": "string", "optional": True},
         {"key": "scope", "label": "Scope", "type": "select", "options": ["single", "moving_avg", "count_ratio", "change"]},
         {"key": "window_size", "label": "Window (N measurements)", "type": "number", "default": 10, "optional": True},
         {"key": "min_violations", "label": "Violations", "type": "number", "default": 1, "optional": True},
@@ -456,6 +458,37 @@ RULE_SCHEMA = {
         {"key": "agents", "label": "Agents", "type": "agents", "default": [], "optional": True},
     ],
 }
+
+RULE_CONDITIONS = {"gt", "ge", "lt", "le", "eq", "ne", "between", "outside"}
+
+
+def _validate_rule_thresholds(data: dict) -> str | None:
+    condition = data.get("condition", "gt")
+    if condition not in RULE_CONDITIONS:
+        return f"invalid condition: {condition}"
+    if condition not in {"between", "outside"}:
+        return None
+
+    minimum = data.get("threshold_min")
+    maximum = data.get("threshold_max")
+    if minimum is None or minimum == "" or maximum is None or maximum == "":
+        return "threshold_min and threshold_max are required for range conditions"
+
+    def parse_threshold(value):
+        if isinstance(value, str) and value.startswith("$"):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return "invalid"
+
+    parsed_min = parse_threshold(minimum)
+    parsed_max = parse_threshold(maximum)
+    if parsed_min == "invalid" or parsed_max == "invalid":
+        return "range thresholds must be numbers or $VARIABLE references"
+    if parsed_min is not None and parsed_max is not None and parsed_min > parsed_max:
+        return "threshold_min must be less than or equal to threshold_max"
+    return None
 
 
 def _load_rules() -> dict:
@@ -496,6 +529,9 @@ def admin_update_rule(rule_id: str):
     data = request.get_json(silent=True) or {}
     if data.get("id") and data["id"] != rule_id:
         return jsonify({"error": "cannot change ID of existing entity"}), 400
+    threshold_error = _validate_rule_thresholds(data)
+    if threshold_error:
+        return jsonify({"error": threshold_error}), 400
     data["id"] = rule_id
     with _locked(RULES_JSON):
         rules_map = _load_rules()

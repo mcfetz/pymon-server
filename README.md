@@ -125,7 +125,12 @@ Files are created automatically on first write if they do not exist.
 | `count_ratio` | Number of the last `window_size` measurements that violate the threshold; fires when ≥ `min_violations` |
 | `change` | Delta between current and previous measurement; threshold is compared against the delta |
 
-**Conditions:** `gt`, `ge`, `lt`, `le`, `eq`, `ne`
+**Conditions:** `gt`, `ge`, `lt`, `le`, `eq`, `ne`, `between`, `outside`
+
+Range conditions use `threshold_min` and `threshold_max`:
+
+- `between`: `threshold_min <= value <= threshold_max`
+- `outside`: `value < threshold_min` or `value > threshold_max`
 
 The `metric` field accepts an exact metric name, a full-match regular expression
 (for example `temperature_.*`), or `*` to match all metrics.
