@@ -46,6 +46,8 @@ def _login(opener, host, username, password):
                 data = json.loads(raw)
             if 'csrf_token' in data:
                 return None, data['csrf_token']
+            if 'unique_id' in data or 'unique_ids' in data:
+                return None, None
             if 'meta' in data:
                 rc = data['meta'].get('rc', '?')
                 msg = data['meta'].get('msg', data['meta'].get('description', ''))
