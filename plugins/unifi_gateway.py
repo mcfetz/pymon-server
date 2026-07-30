@@ -101,14 +101,66 @@ def _collect(opener, host, site):
     metrics['devices_offline'] = sum(1 for d in device_list if d.get('state') != 1)
     for d in device_list:
         name = d.get('name', d.get('mac', 'unknown')).replace('.', '_')
+        dtype = d.get('type', '')
         metrics[f'device:{name}:state'] = d.get('state', -1)
-        metrics[f'device:{name}:type'] = d.get('type', 'unknown')
+        metrics[f'device:{name}:type'] = dtype
         num_sta = d.get('num_sta')
         if num_sta is not None:
             metrics[f'device:{name}:clients'] = num_sta
         uptime = d.get('uptime')
         if uptime is not None:
             metrics[f'device:{name}:uptime'] = uptime
+        is_switch = any(x in dtype for x in ('usw', 'us-', 'us_', 'sw'))
+        is_ap = any(x in dtype for x in ('uap', 'u7', 'uw', 'ap-'))
+        if is_switch or 'switch' in dtype.lower():
+            sys_stats = d.get('sys_stats', {}) or {}
+            mem = sys_stats.get('mem')
+            if mem is not None:
+                metrics[f'switch:{name}:mem_pct'] = round(mem, 1)
+            cpu = sys_stats.get('cpu')
+            if cpu is not None:
+                metrics[f'switch:{name}:cpu_pct'] = round(cpu, 1)
+            total_max_power = d.get('total_max_power')
+            if total_max_power is not None:
+                metrics[f'switch:{name}:poe_budget'] = total_max_power
+            mac_table = d.get('mac_table', [])
+            if mac_table is not None:
+                metrics[f'switch:{name}:mac_entries'] = len(mac_table)
+            for port in d.get('port_table', []):
+                port_idx = port.get('port_idx', '?')
+                metrics[f'switch:{name}:port:{port_idx}:enable'] = 1 if port.get('enable') else 0
+                speed = port.get('speed')
+                if speed is not None:
+                    metrics[f'switch:{name}:port:{port_idx}:speed'] = speed
+                poe_enable = port.get('poe_enable')
+                if poe_enable is not None:
+                    metrics[f'switch:{name}:port:{port_idx}:poe_enable'] = 1 if poe_enable else 0
+                poe_power = port.get('poe_power')
+                if poe_power is not None:
+                    metrics[f'switch:{name}:port:{port_idx}:poe_power'] = round(poe_power, 3)
+        if is_ap:
+            for radio in d.get('radio_table', []):
+                band = radio.get('radio', 'unknown')
+                chan = radio.get('channel')
+                if chan is not None:
+                    metrics[f'ap:{name}:radio:{band}:channel'] = chan
+                cu = radio.get('channel_utilization')
+                if cu is not None:
+                    metrics[f'ap:{name}:radio:{band}:utilization_pct'] = cu
+                tx_power = radio.get('tx_power')
+                if tx_power is not None:
+                    metrics[f'ap:{name}:radio:{band}:tx_power'] = tx_power
+            vap_clients_2g = 0
+            vap_clients_5g = 0
+            for vap in d.get('vap_table', []):
+                if vap.get('band') in ('ng', '2g'):
+                    vap_clients_2g += vap.get('num_sta', 0)
+                elif vap.get('band') in ('na', '5g', '5ghz'):
+                    vap_clients_5g += vap.get('num_sta', 0)
+            if vap_clients_2g:
+                metrics[f'ap:{name}:clients_2g'] = vap_clients_2g
+            if vap_clients_5g:
+                metrics[f'ap:{name}:clients_5g'] = vap_clients_5g
 
     clients = _api_get(opener, host, site, '/stat/sta')
     sta_list = clients.get('data', [])
