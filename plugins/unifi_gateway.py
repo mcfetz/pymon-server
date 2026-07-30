@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """unifi_gateway.py — UniFi Cloud Gateway monitoring via local API."""
+import base64
 import http.cookiejar
 import json
 import random
@@ -35,24 +36,32 @@ def _opener(verify):
     return opener, jar
 
 
-def _login(opener, host, username, password):
+def _extract_csrf_from_jar(jar):
+    for cookie in jar:
+        if cookie.name == 'TOKEN':
+            parts = cookie.value.split('.')
+            if len(parts) >= 2:
+                padded = parts[1] + '=' * (-len(parts[1]) % 4)
+                try:
+                    payload = json.loads(base64.b64decode(padded))
+                    return payload.get('csrfToken')
+                except Exception:
+                    return None
+    return None
+
+
+def _login(opener, host, username, password, jar):
     url = f'https://{host}/api/auth/login'
     body = json.dumps({'username': username, 'password': password, 'remember': True}).encode()
     for attempt in range(4):
         try:
             req = urllib.request.Request(url, data=body, headers={'Content-Type': 'application/json'})
             with opener.open(req, timeout=15) as resp:
-                raw = resp.read().decode()
-                data = json.loads(raw)
-            if 'csrf_token' in data:
-                return None, data['csrf_token']
-            if 'unique_id' in data or 'unique_ids' in data:
-                return None, None
-            if 'meta' in data:
-                rc = data['meta'].get('rc', '?')
-                msg = data['meta'].get('msg', data['meta'].get('description', ''))
-                return msg or f'rc={rc}', None
-            return f'unexpected response: {raw[:300]}', None
+                resp.read()
+            csrf = _extract_csrf_from_jar(jar)
+            if csrf:
+                return None, csrf
+            return 'no TOKEN cookie found after login', None
         except urllib.error.HTTPError as e:
             if e.code == 429 and attempt < 3:
                 delay = (2 ** attempt) + random.uniform(0, 1)
@@ -203,9 +212,9 @@ if __name__ == '__main__':
         print(json.dumps({'error': 'api_host and password required'}))
         sys.exit(1)
 
-    opener, _ = _opener(verify)
+    opener, jar = _opener(verify)
 
-    err, csrf = _login(opener, host, username, password)
+    err, csrf = _login(opener, host, username, password, jar)
     if err:
         print(json.dumps({'error': f'unifi login failed: {err}'}))
         sys.exit(1)
