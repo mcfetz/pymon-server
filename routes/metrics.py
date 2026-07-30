@@ -138,6 +138,27 @@ def get_metrics_all():
         session.close()
 
 
+@app.route("/metrics/names/<pluginid>", methods=["GET"])
+@require_agent_apikey
+def list_metric_names(pluginid: str):
+    """List distinct stored metric names for a plugin across all agents."""
+    session = SessionLocal()
+    try:
+        rows = (
+            session.query(Metrics.metric)
+            .filter(Metrics.pluginid == pluginid)
+            .distinct()
+            .order_by(Metrics.metric.asc())
+            .all()
+        )
+        return jsonify([metric for (metric,) in rows if metric is not None]), 200
+    except Exception as e:
+        logger.error("Error listing metric names for plugin '%s': %s", pluginid, e)
+        return jsonify({"error": "internal error"}), 500
+    finally:
+        session.close()
+
+
 @app.route("/metrics/<agentid>", methods=["GET"])
 @require_agent_apikey
 def get_metrics_for_agent(agentid: str):

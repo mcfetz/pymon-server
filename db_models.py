@@ -40,6 +40,11 @@ class Metrics(Base):
             "pluginid",
             "timestamp",
         ),
+        Index(
+            "idx_metrics_plugin_metric",
+            "pluginid",
+            "metric",
+        ),
     )
 
 

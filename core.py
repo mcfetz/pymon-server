@@ -76,6 +76,10 @@ with engine.begin() as connection:
         "CREATE INDEX IF NOT EXISTS idx_metrics_agent_plugin_ts "
         "ON metrics (agentid, pluginid, timestamp)"
     ))
+    connection.execute(text(
+        "CREATE INDEX IF NOT EXISTS idx_metrics_plugin_metric "
+        "ON metrics (pluginid, metric)"
+    ))
 
 @app.after_request
 def disable_api_caching(response):
