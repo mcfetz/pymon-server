@@ -452,6 +452,7 @@ def collect_metrics():
                                     agentid=agentid_payload,
                                     pluginid=pluginid,
                                     timestamp=timestamp,
+                                    received_at=received_at,
                                     metric=metric_name,
                                 )
                                 metric_entry = dict_value_to_metric(value, metric_entry)

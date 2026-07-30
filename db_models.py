@@ -21,6 +21,7 @@ class Metrics(Base):
     agentid = Column(String, nullable=False)
     pluginid = Column(String, nullable=False)
     timestamp = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
+    received_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=True)
     metric = Column(String, nullable=False)
     value_float = Column(Float, nullable=True)
     value_int = Column(Integer, nullable=True)

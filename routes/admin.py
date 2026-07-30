@@ -442,7 +442,7 @@ RULE_SCHEMA = {
         {"key": "description", "label": "Description", "type": "string", "default": ""},
         {"key": "pluginid", "label": "Plugin", "type": "string", "required": True},
         {"key": "metric", "label": "Metric or regex", "type": "string", "required": True, "description": "Exact metric name, full-match regex, or * for all metrics"},
-        {"key": "condition", "label": "Condition", "type": "select", "options": ["gt", "ge", "lt", "le", "eq", "ne", "between", "outside"], "default": "gt", "required": True},
+        {"key": "condition", "label": "Condition", "type": "select", "options": ["gt", "ge", "lt", "le", "eq", "ne", "between", "outside", "no_data"], "default": "gt", "required": True},
         {"key": "threshold", "label": "Threshold", "type": "number", "required": True},
         {"key": "threshold_min", "label": "Minimum threshold", "type": "string", "optional": True},
         {"key": "threshold_max", "label": "Maximum threshold", "type": "string", "optional": True},
@@ -459,7 +459,7 @@ RULE_SCHEMA = {
     ],
 }
 
-RULE_CONDITIONS = {"gt", "ge", "lt", "le", "eq", "ne", "between", "outside"}
+RULE_CONDITIONS = {"gt", "ge", "lt", "le", "eq", "ne", "between", "outside", "no_data"}
 RULE_SCOPES = {"single", "moving_avg", "count_ratio", "change"}
 RULE_SEVERITIES = {"warning", "critical", "info"}
 RULE_FIRE_MODES = {"single", "multi", "replace"}
@@ -490,6 +490,24 @@ def _validate_rule_thresholds(data: dict) -> str | None:
         return "fire is required"
     if fire not in RULE_FIRE_MODES:
         return f"invalid fire mode: {fire}"
+
+    if condition == "no_data":
+        if scope != "single":
+            return "no_data rules must use the single scope"
+        threshold = data.get("threshold")
+        if threshold is None or threshold == "":
+            return "threshold is required for no_data rules"
+        if isinstance(threshold, str) and threshold.startswith("$"):
+            if len(threshold) == 1:
+                return "threshold must be seconds or a $VARIABLE reference"
+            return None
+        try:
+            if float(threshold) <= 0:
+                return "threshold must be greater than 0 seconds"
+        except (TypeError, ValueError):
+            return "threshold must be seconds or a $VARIABLE reference"
+        return None
+
     if scope in {"moving_avg", "count_ratio"}:
         try:
             window_size = int(data.get("window_size"))

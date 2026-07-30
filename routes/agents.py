@@ -74,6 +74,7 @@ def status():
     if status_value is None:
         return jsonify({"error": "status must be either online or offline"}), 400
 
+    received_at = datetime.now(UTC)
     session = SessionLocal()
     try:
         with DB_WRITE_LOCK:
@@ -81,7 +82,8 @@ def status():
                 Metrics(
                     agentid=agentid,
                     pluginid="agent",
-                    timestamp=datetime.now(UTC),
+                    timestamp=received_at,
+                    received_at=received_at,
                     metric="online",
                     value_int=status_value,
                 )

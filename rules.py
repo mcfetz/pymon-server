@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 PostCommitAction = Callable[[], list[dict[str, str]]]
 
-Condition = Literal["gt", "lt", "ge", "le", "eq", "ne", "between", "outside"]
+Condition = Literal["gt", "lt", "ge", "le", "eq", "ne", "between", "outside", "no_data"]
 Scope = Literal["single", "moving_avg", "count_ratio", "change"]
 FireMode = Literal["single", "multi", "replace"]
 AgentsMode = Literal["exclude", "include"]
@@ -552,7 +552,10 @@ def evaluate_rules_for_payload(
     saved_metrics: list[Metrics],
 ) -> list[PostCommitAction]:
     post_commit_actions: list[PostCommitAction] = []
-    relevant_rules = [r for r in load_rules() if r.enabled and r.pluginid == pluginid]
+    relevant_rules = [
+        r for r in load_rules()
+        if r.enabled and r.pluginid == pluginid and r.condition != "no_data"
+    ]
     if not relevant_rules:
         return post_commit_actions
 

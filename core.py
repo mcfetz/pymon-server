@@ -72,6 +72,16 @@ with engine.begin() as connection:
         connection.execute(text("ALTER TABLE alarms ADD COLUMN acknowledged_at DATETIME"))
     if 'ack_method' not in existing_cols:
         connection.execute(text("ALTER TABLE alarms ADD COLUMN ack_method VARCHAR"))
+    existing_metric_cols = {row[1] for row in connection.execute(text(
+        "PRAGMA table_info(metrics)"
+    ))}
+    if 'received_at' not in existing_metric_cols:
+        connection.execute(text("ALTER TABLE metrics ADD COLUMN received_at DATETIME"))
+    # Existing rows predate received_at; their metric timestamp is the best
+    # available receive-time approximation for no-data rules.
+    connection.execute(text(
+        "UPDATE metrics SET received_at = timestamp WHERE received_at IS NULL"
+    ))
     connection.execute(text(
         "CREATE INDEX IF NOT EXISTS idx_metrics_agent_plugin_ts "
         "ON metrics (agentid, pluginid, timestamp)"
@@ -79,6 +89,10 @@ with engine.begin() as connection:
     connection.execute(text(
         "CREATE INDEX IF NOT EXISTS idx_metrics_plugin_metric "
         "ON metrics (pluginid, metric)"
+    ))
+    connection.execute(text(
+        "CREATE INDEX IF NOT EXISTS idx_metrics_plugin_metric_agent_received "
+        "ON metrics (pluginid, metric, agentid, received_at)"
     ))
 
 @app.after_request
