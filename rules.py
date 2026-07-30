@@ -475,7 +475,7 @@ def evaluate_single_rule(
                 agentid,
                 rule,
                 metric,
-                float(violations),
+                float(value),
                 trigger_metric.id,
                 post_commit_actions,
             )

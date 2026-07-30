@@ -1,3 +1,4 @@
+import ast
 import json
 import os
 import smtplib
@@ -9,7 +10,7 @@ if TYPE_CHECKING:
     import rules
 
 from core import logger
-from config import CONF_DIR
+from config import CONF_DIR, PLUGINS_DIR
 from services.web_push import send_push_notification
 
 # Frontend base URL for direct alarm links — set via PYMON_FRONTEND_URL env var
@@ -83,6 +84,56 @@ def _get_notify_config(target_name: str) -> dict:
         return {}
 
 
+def _load_agents_config() -> dict[str, Any]:
+    try:
+        with open(os.path.join(CONF_DIR, "agents.json"), encoding="utf-8") as f:
+            config = json.load(f)
+            return config if isinstance(config, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _get_agent_title(agentid: str) -> str:
+    agents = _load_agents_config().get("agents", {})
+    agent = agents.get(agentid, {}) if isinstance(agents, dict) else {}
+    title = agent.get("title") if isinstance(agent, dict) else None
+    return title.strip() if isinstance(title, str) and title.strip() else agentid
+
+
+def _get_plugin_title(pluginid: str) -> str:
+    try:
+        metadata_path = os.path.join(CONF_DIR, "plugins.json")
+        with open(metadata_path, encoding="utf-8") as f:
+            metadata = json.load(f)
+        plugin_metadata = metadata.get(pluginid, {}) if isinstance(metadata, dict) else {}
+        label = plugin_metadata.get("label") if isinstance(plugin_metadata, dict) else None
+        if isinstance(label, str) and label.strip():
+            return label.strip()
+    except (FileNotFoundError, json.JSONDecodeError, AttributeError):
+        pass
+
+    if pluginid == "agent":
+        return "Agent status"
+
+    plugin_path = os.path.join(PLUGINS_DIR, f"{pluginid}.py")
+    try:
+        with open(plugin_path, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            if not any(isinstance(target, ast.Name) and target.id == "__schema__" for target in node.targets):
+                continue
+            schema = ast.literal_eval(node.value)
+            label = schema.get("label") if isinstance(schema, dict) else None
+            if isinstance(label, str) and label.strip():
+                return label.strip()
+            break
+    except (FileNotFoundError, SyntaxError, ValueError, TypeError):
+        pass
+    return pluginid
+
+
 def notify_targets(
     rule: "rules.Rule",
     agentid: str,
@@ -93,6 +144,17 @@ def notify_targets(
 ) -> None:
     if not rule.notifications:
         return
+
+    rule_title = rule.title.strip() if isinstance(rule.title, str) and rule.title.strip() else rule.id
+    agent_title = _get_agent_title(agentid)
+    plugin_title = _get_plugin_title(rule.pluginid)
+    notification_title = f"[{rule.severity}] {rule_title}"
+    notification_body = (
+        f"Agent: {agent_title}\n"
+        f"Plugin: {plugin_title}\n"
+        f"Metric: {metric}\n"
+        f"Value: {value}"
+    )
 
     for target_name in rule.notifications:
         if not _is_notify_enabled(target_name):
@@ -106,31 +168,20 @@ def notify_targets(
             target_conf = NOTIFICATION_TARGETS.get(target_name)
             if not target_conf:
                 continue
-            subject = f"[pymon] Alarm {rule.severity}: {rule.id} on {agentid}"
-            body = (
-                "Alarm triggered\n\n"
-                f"Rule:     {rule.id}\n"
-                f"Agent:    {agentid}\n"
-                f"Plugin:   {rule.pluginid}\n"
-                f"Metric:   {metric}\n"
-                f"Value:    {value}\n"
-                f"Severity: {rule.severity}\n\n"
-                f"Message: {message}\n"
-            )
+            subject = f"[pymon] {notification_title}"
+            body = notification_body
             detail_url = _alarm_url(alarm_id)
             if detail_url:
-                body += f"\nView alarm details: {detail_url}\n"
+                body += f"\n\nView alarm details: {detail_url}\n"
             elif alarm_id is not None:
-                body += f"\nAcknowledge: http://localhost:5000/alarms/{alarm_id}/ack\n"
+                body += f"\n\nAcknowledge: http://localhost:5000/alarms/{alarm_id}/ack\n"
             send_email_notification(target_conf, subject, body)
 
         elif target_type == "web_push":
-            push_title = f"[{rule.severity}] {rule.id}"
-            push_body = f"Agent: {agentid} | {rule.pluginid}/{metric} = {value}"
             detail_url = _alarm_url(alarm_id)
             send_push_notification(
-                push_title,
-                push_body,
+                notification_title,
+                notification_body,
                 tag=f"pymon-{rule.id}",
                 url=detail_url,
                 private_key=cfg.get("vapid_private_key") or None,
@@ -147,11 +198,8 @@ def notify_targets(
             detail_url = _alarm_url(alarm_id)
             ntfy_payload: dict[str, Any] = {
                 "topic": topic,
-                "title": f"[{rule.severity}] {rule.id}",
-                "message": (
-                    f"Agent: {agentid} | {rule.pluginid}/{metric} = {value}\n"
-                    f"Rule: {rule.id}\n{message}"
-                ),
+                "title": notification_title,
+                "message": notification_body,
                 "tags": [rule.severity],
                 "priority": 4 if rule.severity == "critical" else 3,
             }
