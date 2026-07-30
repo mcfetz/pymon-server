@@ -64,36 +64,35 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, futu
 Base.metadata.create_all(bind=engine)
 
 # Add columns that may be missing from existing databases (SQLite migration)
+logger.info("Starting DB migration")
 with engine.begin() as connection:
     existing_cols = {row[1] for row in connection.execute(text(
         "PRAGMA table_info(alarms)"
     ))}
     if 'acknowledged_at' not in existing_cols:
+        logger.info("Migration: adding alarms.acknowledged_at")
         connection.execute(text("ALTER TABLE alarms ADD COLUMN acknowledged_at DATETIME"))
     if 'ack_method' not in existing_cols:
+        logger.info("Migration: adding alarms.ack_method")
         connection.execute(text("ALTER TABLE alarms ADD COLUMN ack_method VARCHAR"))
     existing_metric_cols = {row[1] for row in connection.execute(text(
         "PRAGMA table_info(metrics)"
     ))}
     if 'received_at' not in existing_metric_cols:
+        logger.info("Migration: adding metrics.received_at + backfill")
         connection.execute(text("ALTER TABLE metrics ADD COLUMN received_at DATETIME"))
-    # Existing rows predate received_at; their metric timestamp is the best
-    # available receive-time approximation for no-data rules.
-    connection.execute(text(
-        "UPDATE metrics SET received_at = timestamp WHERE received_at IS NULL"
-    ))
-    connection.execute(text(
-        "CREATE INDEX IF NOT EXISTS idx_metrics_agent_plugin_ts "
-        "ON metrics (agentid, pluginid, timestamp)"
-    ))
-    connection.execute(text(
-        "CREATE INDEX IF NOT EXISTS idx_metrics_plugin_metric "
-        "ON metrics (pluginid, metric)"
-    ))
+        # Existing rows predate received_at; their metric timestamp is the best
+        # available receive-time approximation for no-data rules.
+        connection.execute(text(
+            "UPDATE metrics SET received_at = timestamp WHERE received_at IS NULL"
+        ))
+    # Index only needed by no_data_monitor, not in the ORM model definition
     connection.execute(text(
         "CREATE INDEX IF NOT EXISTS idx_metrics_plugin_metric_agent_received "
         "ON metrics (pluginid, metric, agentid, received_at)"
     ))
+
+logger.info("DB migration finished")
 
 @app.after_request
 def disable_api_caching(response):
