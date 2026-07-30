@@ -43,8 +43,11 @@ def _login(opener, host, username, password):
             req = urllib.request.Request(url, data=body, headers={'Content-Type': 'application/json'})
             with opener.open(req, timeout=15) as resp:
                 data = json.loads(resp.read().decode())
-            if data.get('meta', {}).get('rc') != 'ok':
-                return data.get('meta', {}).get('msg', 'login failed')
+            rc = data.get('meta', {}).get('rc', '?')
+            msg = data.get('meta', {}).get('msg', data.get('meta', {}).get('description', ''))
+            if rc != 'ok':
+                err = msg or f'rc={rc}'
+                return err
             return None
         except urllib.error.HTTPError as e:
             if e.code == 429 and attempt < 3:
@@ -204,7 +207,8 @@ if __name__ == '__main__':
         metrics = _collect(opener, host, site)
         print(json.dumps(metrics))
     except urllib.error.HTTPError as e:
-        print(json.dumps({'error': f'unifi api error {e.code}: {e.reason}'}))
+        body = e.read().decode(errors='replace')[:200]
+        print(json.dumps({'error': f'unifi api error {e.code}: {e.reason}', 'detail': body}))
         sys.exit(1)
     except Exception as e:
         print(json.dumps({'error': str(e)}))
