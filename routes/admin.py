@@ -440,17 +440,17 @@ RULE_SCHEMA = {
         {"key": "title", "label": "Title", "type": "string", "default": ""},
         {"key": "enabled", "label": "Enabled", "type": "boolean", "default": True},
         {"key": "description", "label": "Description", "type": "string", "default": ""},
-        {"key": "pluginid", "label": "Plugin", "type": "string"},
-        {"key": "metric", "label": "Metric or regex", "type": "string", "description": "Exact metric name, full-match regex, or * for all metrics"},
-        {"key": "condition", "label": "Condition", "type": "select", "options": ["gt", "ge", "lt", "le", "eq", "ne", "between", "outside"]},
-        {"key": "threshold", "label": "Threshold", "type": "number"},
+        {"key": "pluginid", "label": "Plugin", "type": "string", "required": True},
+        {"key": "metric", "label": "Metric or regex", "type": "string", "required": True, "description": "Exact metric name, full-match regex, or * for all metrics"},
+        {"key": "condition", "label": "Condition", "type": "select", "options": ["gt", "ge", "lt", "le", "eq", "ne", "between", "outside"], "default": "gt", "required": True},
+        {"key": "threshold", "label": "Threshold", "type": "number", "required": True},
         {"key": "threshold_min", "label": "Minimum threshold", "type": "string", "optional": True},
         {"key": "threshold_max", "label": "Maximum threshold", "type": "string", "optional": True},
-        {"key": "scope", "label": "Scope", "type": "select", "options": ["single", "moving_avg", "count_ratio", "change"]},
+        {"key": "scope", "label": "Scope", "type": "select", "options": ["single", "moving_avg", "count_ratio", "change"], "default": "single", "required": True},
         {"key": "window_size", "label": "Window (N measurements)", "type": "number", "default": 10, "optional": True},
         {"key": "min_violations", "label": "Violations", "type": "number", "default": 1, "optional": True},
-        {"key": "severity", "label": "Severity", "type": "select", "options": ["warning", "critical"]},
-        {"key": "fire", "label": "Fire mode", "type": "select", "options": ["single", "multi", "replace"]},
+        {"key": "severity", "label": "Severity", "type": "select", "options": ["warning", "critical"], "default": "warning", "required": True},
+        {"key": "fire", "label": "Fire mode", "type": "select", "options": ["single", "multi", "replace"], "default": "single", "required": True},
         {"key": "auto_close", "label": "Auto-close open alarms when rule recovers", "type": "boolean", "default": False},
         {"key": "notifications", "label": "Notifications", "type": "array:string", "default": []},
         {"key": "executors", "label": "Executors", "type": "array:string", "default": []},
@@ -460,13 +460,55 @@ RULE_SCHEMA = {
 }
 
 RULE_CONDITIONS = {"gt", "ge", "lt", "le", "eq", "ne", "between", "outside"}
+RULE_SCOPES = {"single", "moving_avg", "count_ratio", "change"}
+RULE_SEVERITIES = {"warning", "critical", "info"}
+RULE_FIRE_MODES = {"single", "multi", "replace"}
 
 
 def _validate_rule_thresholds(data: dict) -> str | None:
-    condition = data.get("condition", "gt")
+    condition = data.get("condition")
+    if not condition:
+        return "condition is required"
     if condition not in RULE_CONDITIONS:
         return f"invalid condition: {condition}"
+    if not isinstance(data.get("pluginid"), str) or not data["pluginid"].strip():
+        return "pluginid is required"
+    if not isinstance(data.get("metric"), str) or not data["metric"].strip():
+        return "metric is required"
+    scope = data.get("scope")
+    if not scope:
+        return "scope is required"
+    if scope not in RULE_SCOPES:
+        return f"invalid scope: {scope}"
+    severity = data.get("severity")
+    if not severity:
+        return "severity is required"
+    if severity not in RULE_SEVERITIES:
+        return f"invalid severity: {severity}"
+    fire = data.get("fire")
+    if not fire:
+        return "fire is required"
+    if fire not in RULE_FIRE_MODES:
+        return f"invalid fire mode: {fire}"
+    if scope in {"moving_avg", "count_ratio"}:
+        try:
+            window_size = int(data.get("window_size"))
+        except (TypeError, ValueError):
+            return "window_size is required and must be at least 1"
+        if window_size < 1:
+            return "window_size must be at least 1"
+    if scope == "count_ratio":
+        try:
+            min_violations = int(data.get("min_violations"))
+        except (TypeError, ValueError):
+            return "min_violations is required and must be at least 1"
+        if min_violations < 1:
+            return "min_violations must be at least 1"
+        if min_violations > window_size:
+            return "min_violations cannot exceed window_size"
     if condition not in {"between", "outside"}:
+        if data.get("threshold") is None or data.get("threshold") == "":
+            return "threshold is required"
         return None
 
     minimum = data.get("threshold_min")
