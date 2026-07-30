@@ -567,14 +567,21 @@ def query_metrics():
     time_from = _parse_time_param(time_from_param)
     time_to = _parse_time_param(time_to_param)
 
-    # Resolve group → agents
+    # Resolve group → agents. If both filters are present, keep their
+    # intersection instead of silently ignoring the explicit agent filter.
+    requested_agentids = [a.strip() for a in agentid_raw.split(",") if a.strip()] if agentid_raw else []
     agentids: list[str] | None = None
     if group_param:
-        agentids = _resolve_group_agents(group_param)
+        group_agentids = _resolve_group_agents(group_param)
+        if requested_agentids:
+            group_agent_set = set(group_agentids)
+            agentids = [agentid for agentid in requested_agentids if agentid in group_agent_set]
+        else:
+            agentids = group_agentids
         if not agentids:
             return jsonify([]), 200
-    elif agentid_raw:
-        agentids = [a.strip() for a in agentid_raw.split(",") if a.strip()]
+    elif requested_agentids:
+        agentids = requested_agentids
 
     session = SessionLocal()
     try:

@@ -34,6 +34,12 @@ class Metrics(Base):
             "metric",
             "timestamp",
         ),
+        Index(
+            "idx_metrics_agent_plugin_ts",
+            "agentid",
+            "pluginid",
+            "timestamp",
+        ),
     )
 
 

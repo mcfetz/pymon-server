@@ -72,6 +72,10 @@ with engine.begin() as connection:
         connection.execute(text("ALTER TABLE alarms ADD COLUMN acknowledged_at DATETIME"))
     if 'ack_method' not in existing_cols:
         connection.execute(text("ALTER TABLE alarms ADD COLUMN ack_method VARCHAR"))
+    connection.execute(text(
+        "CREATE INDEX IF NOT EXISTS idx_metrics_agent_plugin_ts "
+        "ON metrics (agentid, pluginid, timestamp)"
+    ))
 
 @app.after_request
 def disable_api_caching(response):
