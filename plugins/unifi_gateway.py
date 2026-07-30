@@ -72,7 +72,7 @@ def _login(opener, host, username, password, jar):
 
 
 def _api_get(opener, host, site, path, csrf=None):
-    url = f'https://{host}/api/s/{site}{path}'
+    url = f'https://{host}/proxy/network/api/s/{site}{path}'
     headers = {}
     if csrf:
         headers['X-CSRF-Token'] = csrf
@@ -83,30 +83,6 @@ def _api_get(opener, host, site, path, csrf=None):
 
 def _collect(opener, host, site, csrf):
     metrics = {}
-
-    gw = _api_get(opener, host, site, '/stat/gateway', csrf)
-    gw_data = gw.get('data', [{}])[0] if gw.get('data') else {}
-    if gw_data:
-        metrics['gateway_status'] = 'online'
-        cpu = gw_data.get('system_stats', {}).get('cpu')
-        if cpu is not None:
-            metrics['gateway_cpu_pct'] = round(cpu, 1)
-        mem = gw_data.get('system_stats', {}).get('mem')
-        if mem is not None:
-            metrics['gateway_mem_pct'] = round(mem, 1)
-        uptime = gw_data.get('uptime')
-        if uptime is not None:
-            metrics['gateway_uptime'] = uptime
-        wan = gw_data.get('wan1')
-        if wan:
-            rx = wan.get('rx_bytes')
-            tx = wan.get('tx_bytes')
-            if rx is not None:
-                metrics['wan_rx_bytes'] = rx
-            if tx is not None:
-                metrics['wan_tx_bytes'] = tx
-    else:
-        metrics['gateway_status'] = 'offline'
 
     health = _api_get(opener, host, site, '/stat/health', csrf)
     for h in health.get('data', []):
@@ -129,6 +105,7 @@ def _collect(opener, host, site, csrf):
     metrics['devices_total'] = len(device_list)
     metrics['devices_online'] = sum(1 for d in device_list if d.get('state') == 1)
     metrics['devices_offline'] = sum(1 for d in device_list if d.get('state') != 1)
+
     for d in device_list:
         name = d.get('name', d.get('mac', 'unknown')).replace('.', '_')
         dtype = d.get('type', '')
@@ -140,6 +117,27 @@ def _collect(opener, host, site, csrf):
         uptime = d.get('uptime')
         if uptime is not None:
             metrics[f'device:{name}:uptime'] = uptime
+
+        gtypes = ('ugw', 'udm', 'ufg', 'usg')
+        if dtype.lower().startswith(gtypes):
+            sys_stats = d.get('system_stats', {}) or {}
+            cpu = sys_stats.get('cpu')
+            if cpu is not None:
+                metrics['gateway_cpu_pct'] = round(cpu, 1)
+            mem = sys_stats.get('mem')
+            if mem is not None:
+                metrics['gateway_mem_pct'] = round(mem, 1)
+            metrics['gateway_uptime'] = uptime if uptime is not None else -1
+            metrics['gateway_status'] = 'online' if d.get('state') == 1 else 'offline'
+            wan1 = d.get('wan1')
+            if wan1:
+                rx = wan1.get('rx_bytes')
+                tx = wan1.get('tx_bytes')
+                if rx is not None:
+                    metrics['wan_rx_bytes'] = rx
+                if tx is not None:
+                    metrics['wan_tx_bytes'] = tx
+
         is_switch = any(x in dtype for x in ('usw', 'us-', 'us_', 'sw'))
         is_ap = any(x in dtype for x in ('uap', 'u7', 'uw', 'ap-'))
         if is_switch or 'switch' in dtype.lower():
