@@ -72,7 +72,7 @@ def _login(opener, host, username, password, jar):
 
 
 def _api_get(opener, host, site, path, csrf=None):
-    url = f'https://{host}/proxy/network/api/s/{site}{path}'
+    url = f'https://{host}/api/s/{site}{path}'
     headers = {}
     if csrf:
         headers['X-CSRF-Token'] = csrf
