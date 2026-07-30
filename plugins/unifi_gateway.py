@@ -42,33 +42,38 @@ def _login(opener, host, username, password):
         try:
             req = urllib.request.Request(url, data=body, headers={'Content-Type': 'application/json'})
             with opener.open(req, timeout=15) as resp:
-                data = json.loads(resp.read().decode())
-            rc = data.get('meta', {}).get('rc', '?')
-            msg = data.get('meta', {}).get('msg', data.get('meta', {}).get('description', ''))
-            if rc != 'ok':
-                err = msg or f'rc={rc}'
-                return err
-            return None
+                raw = resp.read().decode()
+                data = json.loads(raw)
+            if 'csrf_token' in data:
+                return None, data['csrf_token']
+            if 'meta' in data:
+                rc = data['meta'].get('rc', '?')
+                msg = data['meta'].get('msg', data['meta'].get('description', ''))
+                return msg or f'rc={rc}', None
+            return f'unexpected response: {raw[:300]}', None
         except urllib.error.HTTPError as e:
             if e.code == 429 and attempt < 3:
                 delay = (2 ** attempt) + random.uniform(0, 1)
                 time.sleep(delay)
                 continue
             raise
-    return 'rate limited after retries'
+    return 'rate limited after retries', None
 
 
-def _api_get(opener, host, site, path):
+def _api_get(opener, host, site, path, csrf=None):
     url = f'https://{host}/proxy/network/api/s/{site}{path}'
-    req = urllib.request.Request(url)
+    headers = {}
+    if csrf:
+        headers['X-CSRF-Token'] = csrf
+    req = urllib.request.Request(url, headers=headers)
     with opener.open(req, timeout=15) as resp:
         return json.loads(resp.read().decode())
 
 
-def _collect(opener, host, site):
+def _collect(opener, host, site, csrf):
     metrics = {}
 
-    gw = _api_get(opener, host, site, '/stat/gateway')
+    gw = _api_get(opener, host, site, '/stat/gateway', csrf)
     gw_data = gw.get('data', [{}])[0] if gw.get('data') else {}
     if gw_data:
         metrics['gateway_status'] = 'online'
@@ -92,7 +97,7 @@ def _collect(opener, host, site):
     else:
         metrics['gateway_status'] = 'offline'
 
-    health = _api_get(opener, host, site, '/stat/health')
+    health = _api_get(opener, host, site, '/stat/health', csrf)
     for h in health.get('data', []):
         subsystem = h.get('subsystem', '')
         status = h.get('status', 'unknown')
@@ -108,7 +113,7 @@ def _collect(opener, host, site):
             if num_sta is not None:
                 metrics['clients_wireless'] = num_sta
 
-    devices = _api_get(opener, host, site, '/stat/device')
+    devices = _api_get(opener, host, site, '/stat/device', csrf)
     device_list = devices.get('data', [])
     metrics['devices_total'] = len(device_list)
     metrics['devices_online'] = sum(1 for d in device_list if d.get('state') == 1)
@@ -176,7 +181,7 @@ def _collect(opener, host, site):
             if vap_clients_5g:
                 metrics[f'ap:{name}:clients_5g'] = vap_clients_5g
 
-    clients = _api_get(opener, host, site, '/stat/sta')
+    clients = _api_get(opener, host, site, '/stat/sta', csrf)
     sta_list = clients.get('data', [])
     metrics['clients_total'] = len(sta_list)
     metrics['clients_wired'] = sum(1 for c in sta_list if c.get('is_wired', False))
@@ -198,13 +203,13 @@ if __name__ == '__main__':
 
     opener, _ = _opener(verify)
 
-    err = _login(opener, host, username, password)
+    err, csrf = _login(opener, host, username, password)
     if err:
         print(json.dumps({'error': f'unifi login failed: {err}'}))
         sys.exit(1)
 
     try:
-        metrics = _collect(opener, host, site)
+        metrics = _collect(opener, host, site, csrf)
         print(json.dumps(metrics))
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors='replace')[:200]
