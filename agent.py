@@ -453,7 +453,7 @@ if __name__ == "__main__":
         logging.info("No plugins assigned; waiting for server configuration.")
 
     send_status("online")
-    logging.info("Agent online.")
+    logging.info("Agent online (version %s).", agent_hash()[:8])
 
     last_plugin_refresh = time.time()
     last_version_check = 0.0
