@@ -249,12 +249,23 @@ def sync_plugins(plugins: list[str]) -> bool:
 # Plugin execution (subprocess model)
 # ---------------------------------------------------------------------------
 
-def run_plugin(plugin: str, config: dict) -> Optional[dict]:
+ERR_OK = 0
+ERR_EXIT = 1
+ERR_TIMEOUT = 2
+ERR_NO_OUTPUT = 3
+ERR_INVALID_JSON = 4
+ERR_NOT_FOUND = 5
+ERR_NO_INTERPRETER = 6
+
+
+def run_plugin(plugin: str, config: dict) -> tuple[Optional[dict], float, int]:
+    """Run a plugin and return (metrics, runtime_seconds, error_code)."""
     path = plugin_path(plugin)
     if not os.path.exists(path):
         logging.error("Plugin file not found: %s", path)
-        return None
+        return None, 0.0, ERR_NOT_FOUND
 
+    start = time.time()
     try:
         proc = subprocess.run(
             [sys.executable, path],
@@ -264,26 +275,28 @@ def run_plugin(plugin: str, config: dict) -> Optional[dict]:
         )
     except FileNotFoundError:
         logging.error("Python interpreter not found for plugin '%s'", plugin)
-        return None
+        return None, time.time() - start, ERR_NO_INTERPRETER
     except subprocess.TimeoutExpired:
         logging.warning("Plugin '%s' timed out after %ss; continuing", plugin, PLUGIN_TIMEOUT)
-        return None
+        return None, time.time() - start, ERR_TIMEOUT
+
+    runtime = time.time() - start
 
     if proc.returncode != 0:
         stderr = proc.stderr.strip()
         if stderr:
             logging.warning("Plugin '%s' stderr: %s", plugin, stderr)
-        return None
+        return None, runtime, ERR_EXIT
 
     output = proc.stdout.strip()
     if not output:
-        return None
+        return None, runtime, ERR_NO_OUTPUT
 
     try:
-        return json.loads(output)
+        return json.loads(output), runtime, ERR_OK
     except json.JSONDecodeError as e:
         logging.error("Plugin '%s' returned invalid JSON: %s", plugin, e)
-        return None
+        return None, runtime, ERR_INVALID_JSON
 
 
 # ---------------------------------------------------------------------------
@@ -475,15 +488,18 @@ if __name__ == "__main__":
             if last_ts and now - last_ts < plugin_sleep:
                 continue
 
-            metrics = run_plugin(plugin, cfg)
-            if metrics is None:
-                continue
+            metrics, runtime, err_code = run_plugin(plugin, cfg)
 
             # Normalize: plugin returns dict -> list of {key: value}
             if isinstance(metrics, dict):
                 metrics_list = [{k: v} for k, v in metrics.items()]
-            else:
+            elif isinstance(metrics, list):
                 metrics_list = metrics  # already a list
+            else:
+                metrics_list = []
+
+            metrics_list.append({"agent:runtime": round(runtime, 3)})
+            metrics_list.append({"agent:error": err_code})
 
             post_metrics(plugin, metrics_list, ts)
             last_run[plugin] = now
