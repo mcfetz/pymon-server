@@ -1,5 +1,6 @@
 """Admin routes — Agent & Plugin configuration via JSON storage."""
 
+import hashlib
 import ipaddress
 import json
 import os
@@ -14,8 +15,9 @@ from datetime import UTC, datetime
 from flask import jsonify, request
 
 from auth import require_agent_apikey
-from core import app, logger
+from core import app, logger, SessionLocal
 from config import CONF_DIR, PLUGINS_DIR
+from db_models import Metrics
 
 CONF_DIR    = CONF_DIR   # re-export for local use (keeps existing references)
 CONFIG_JSON    = os.path.join(CONF_DIR, "agents.json")
@@ -170,6 +172,16 @@ def _save_json_config(cfg: dict) -> None:
     _atomic_write_json(CONFIG_JSON, cfg)
 
 
+def _agent_script_hash() -> str:
+    """SHA256 of the canonical agent.py the server distributes to agents."""
+    agent_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "agent.py")
+    try:
+        with open(agent_file, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        return ""
+
+
 def touch_agent_last_seen(agentid: str, timestamp: datetime | None = None) -> None:
     """Store the newest accepted metric timestamp in agent metadata."""
     seen_at = timestamp or datetime.now(UTC)
@@ -229,9 +241,33 @@ def admin_list_agents():
     agents = cfg.get("agents", {})
     now = datetime.now(UTC)
 
+    # Latest reported agent.py hash per agent (stored as metric by the agent)
+    latest_versions: dict[str, str] = {}
+    session = SessionLocal()
+    try:
+        rows = (
+            session.query(Metrics.agentid, Metrics.value_str)
+            .filter(Metrics.pluginid == "agent", Metrics.metric == "version", Metrics.value_str.isnot(None))
+            .order_by(Metrics.timestamp.desc())
+            .all()
+        )
+        seen = set()
+        for agent_id, version in rows:
+            if agent_id not in seen:
+                latest_versions[agent_id] = version
+                seen.add(agent_id)
+    except Exception as e:
+        logger.error("Error loading agent versions: %s", e)
+    finally:
+        session.close()
+
+    server_agent_hash = _agent_script_hash()
+
     result = {}
     for agent_id, agent_data in agents.items():
         data = dict(agent_data)
+        data["agent_version"] = latest_versions.get(agent_id)
+        data["server_agent_hash"] = server_agent_hash
         last_seen_value = data.get("last_seen")
         try:
             last_seen = datetime.fromisoformat(last_seen_value) if last_seen_value else None

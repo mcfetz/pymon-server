@@ -120,7 +120,11 @@ parser.add_argument("--agentid",   default=cfg_file.get("agentid"), help="Agent 
 parser.add_argument("--api-key",   default=cfg_file.get("api_key"), type=str, help="API key for server auth")
 parser.add_argument("--install",   action="store_true", help="Install as system-wide systemd service and exit")
 parser.add_argument("--uninstall", action="store_true", help="Remove system-wide systemd service and exit")
+parser.add_argument("--no-self-update", action="store_true",
+                    help="Disable automatic self-update (overrides config)")
 args = parser.parse_args()
+
+self_update_enabled = not args.no_self_update and bool(cfg_file.get("self_update", True))
 
 if args.install:
     if not args.agentid:
@@ -303,11 +307,20 @@ def run_plugin(plugin: str, config: dict) -> tuple[Optional[dict], float, int]:
 # Agent lifecycle
 # ---------------------------------------------------------------------------
 
+def agent_hash() -> str:
+    """SHA256 of the running agent script, used as a version identifier."""
+    try:
+        with open(__file__, "rb") as f:
+            return sha256(f.read()).hexdigest()
+    except OSError:
+        return ""
+
+
 def send_status(status: str):
     try:
         requests.post(
             f"{args.server}/agents/status",
-            json={"status": status},
+            json={"status": status, "version": agent_hash()},
             headers=_build_headers(),
             timeout=10,
         )
@@ -395,10 +408,7 @@ def self_update():
     except Exception:
         return
 
-    with open(__file__, "rb") as f:
-        local_hash = sha256(f.read()).hexdigest()
-
-    if local_hash == remote_hash:
+    if agent_hash() == remote_hash:
         return
 
     logging.info("New agent version detected, downloading...")
@@ -461,9 +471,10 @@ if __name__ == "__main__":
                     plugin_sleeps.pop(stale, None)
             last_plugin_refresh = now
 
-        # Periodic self-update check -- disabled in dev
-        # self_update()
-        # last_version_check = now
+        # Periodic self-update check
+        if self_update_enabled and now - last_version_check >= VERSION_CHECK_INTERVAL:
+            self_update()
+            last_version_check = now
 
         # Run plugins respecting per-plugin sleep interval
         ts = datetime.now(timezone.utc).isoformat()

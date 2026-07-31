@@ -69,6 +69,7 @@ def status():
     agentid = request.agentid
     data = request.get_json(silent=True) or {}
     status = data.get("status", "undefined")
+    version = data.get("version")
 
     status_value = {"online": 1, "offline": 0}.get(status) if isinstance(status, str) else None
     if status_value is None:
@@ -88,6 +89,17 @@ def status():
                     value_int=status_value,
                 )
             )
+            if isinstance(version, str) and version:
+                session.add(
+                    Metrics(
+                        agentid=agentid,
+                        pluginid="agent",
+                        timestamp=received_at,
+                        received_at=received_at,
+                        metric="version",
+                        value_str=version,
+                    )
+                )
             session.commit()
     except Exception as e:
         with DB_WRITE_LOCK:
