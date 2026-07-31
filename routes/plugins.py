@@ -41,7 +41,11 @@ def get_assigned_plugins_for_agentid(agentid: str) -> list:
                     assigned.add(p)
             for p in agent.get("plugins", {}):
                 assigned.add(p)
-            return sorted(assigned - _disabled_plugins())
+            # Only plugins with an active agent config are considered running.
+            # Group-assigned plugins that are toggled off on the agent have no
+            # config entry and must be excluded from the assignment.
+            active_config = set(agent.get("plugins", {}))
+            return sorted((assigned - _disabled_plugins()) & active_config)
     except Exception as e:
         logger.error("error loading agent config: %s", e)
     return []
