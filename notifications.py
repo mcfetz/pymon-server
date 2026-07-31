@@ -141,13 +141,15 @@ def notify_targets(
     value: float,
     message: str,
     alarm_id: int | None = None,
+    pluginid: str | None = None,
 ) -> None:
     if not rule.notifications:
         return
 
+    effective_pluginid = pluginid or rule.pluginid
     rule_title = rule.title.strip() if isinstance(rule.title, str) and rule.title.strip() else rule.id
     agent_title = _get_agent_title(agentid)
-    plugin_title = _get_plugin_title(rule.pluginid)
+    plugin_title = _get_plugin_title(effective_pluginid)
     notification_title = f"[{rule.severity}] {rule_title}"
     notification_body = (
         f"Agent: {agent_title}\n"

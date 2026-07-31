@@ -72,6 +72,9 @@ def evaluate_no_data_rules(
     for rule in load_rules():
         if not rule.enabled or rule.condition != "no_data" or rule.scope != "single":
             continue
+        if not rule.pluginid or rule.pluginid == "*":
+            logger.warning("rule '%s': no-data not supported for wildcard plugin selector", rule.id)
+            continue
 
         for latest_metric in _latest_metrics_for_rule(session, rule):
             if not _rule_applies_to_agent(rule, latest_metric.agentid):

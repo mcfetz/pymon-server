@@ -25,6 +25,7 @@ def run_executors(
     metric: str,
     value: float,
     message: str,
+    pluginid: str | None = None,
 ) -> list[dict[str, str]]:
     agent_executors: list[dict[str, str]] = []
 
@@ -32,6 +33,8 @@ def run_executors(
         return agent_executors
 
     config = _load_executors_fresh()
+
+    effective_pluginid = pluginid or rule.pluginid
 
     for executor_id in rule.executors:
         conf = config.get(executor_id)
@@ -50,7 +53,7 @@ def run_executors(
         command = command_template.format(
             rule_id=rule.id,
             agentid=agentid,
-            pluginid=rule.pluginid,
+            pluginid=effective_pluginid,
             metric=metric,
             value=value,
             message=message,

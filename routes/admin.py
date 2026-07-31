@@ -485,7 +485,7 @@ RULE_SCHEMA = {
         {"key": "enabled", "label": "Enabled", "type": "boolean", "default": True},
         {"key": "description", "label": "Description", "type": "string", "default": ""},
         {"key": "notes", "label": "Notes", "type": "string", "default": "", "optional": True},
-        {"key": "pluginid", "label": "Plugin", "type": "string", "required": True},
+        {"key": "pluginid", "label": "Plugin", "type": "string", "required": True, "description": "Exact plugin name, full-match regex, or * for all plugins"},
         {"key": "metric", "label": "Metric or regex", "type": "string", "required": True, "description": "Exact metric name, full-match regex, or * for all metrics"},
         {"key": "condition", "label": "Condition", "type": "select", "options": ["gt", "ge", "lt", "le", "eq", "ne", "between", "outside", "no_data"], "default": "gt", "required": True},
         {"key": "threshold", "label": "Threshold", "type": "number", "required": True},

@@ -172,6 +172,14 @@ def metric_matches(pattern: str, metric: str) -> bool:
     return compiled is not None and compiled.fullmatch(metric) is not None
 
 
+def _rule_applies_to_plugin(rule: Rule, pluginid: str) -> bool:
+    """True if the rule's plugin selector matches this plugin ('*' or empty = all plugins)."""
+    pattern = rule.pluginid
+    if not pattern or pattern == "*":
+        return True
+    return metric_matches(pattern, pluginid)
+
+
 def has_open_alarm(session: Session, agentid: str, rule: Rule) -> bool:
     q = (
         select(Alarm)
@@ -313,6 +321,7 @@ def _maybe_create_alarm(
     value: float,
     metric_id: int,
     post_commit_actions: list[PostCommitAction] | None = None,
+    pluginid: str | None = None,
 ) -> None:
     blocked, mode = _check_blackout(agentid, rule.id)
     if blocked:
@@ -326,6 +335,7 @@ def _maybe_create_alarm(
                 metric_id,
                 suppress_notifications=True,
                 post_commit_actions=post_commit_actions,
+                pluginid=pluginid,
             )
         return
     create_alarm(
@@ -336,17 +346,19 @@ def _maybe_create_alarm(
         value,
         metric_id,
         post_commit_actions=post_commit_actions,
+        pluginid=pluginid,
     )
 
 
-def _ack_open_alarms(session: Session, agentid: str, rule: Rule, metric: str) -> None:
+def _ack_open_alarms(session: Session, agentid: str, rule: Rule, metric: str, pluginid: str | None = None) -> None:
+    effective_pluginid = pluginid or rule.pluginid
     now = datetime.now(timezone.utc)
     q = (
         select(Alarm)
         .where(
             Alarm.agentid == agentid,
             Alarm.rule_id == rule.id,
-            Alarm.pluginid == rule.pluginid,
+            Alarm.pluginid == effective_pluginid,
             Alarm.metric == metric,
             Alarm.acknowledged == False,
         )
@@ -366,25 +378,28 @@ def create_alarm(
     metric_id: int,
     suppress_notifications: bool = False,
     post_commit_actions: list[PostCommitAction] | None = None,
+    pluginid: str | None = None,
 ) -> None:
+    effective_pluginid = pluginid or rule.pluginid
+
     # fire=single: nur einen offenen Alarm pro (agentid, rule)
     if rule.fire == "single" and has_open_alarm(session, agentid, rule):
         return
 
     # fire=replace: bestehende offene Alarme acknoledgen, dann neuen auslösen
     if rule.fire == "replace":
-        _ack_open_alarms(session, agentid, rule, metric)
+        _ack_open_alarms(session, agentid, rule, metric, effective_pluginid)
 
     # snoozed: skip alarm creation for this combo
-    if _is_snoozed(rule.id, agentid, rule.pluginid, metric):
+    if _is_snoozed(rule.id, agentid, effective_pluginid, metric):
         return
 
-    message = f"Rule '{rule.id}' triggered for agent '{agentid}', plugin '{rule.pluginid}', metric '{metric}': value={value}"
+    message = f"Rule '{rule.id}' triggered for agent '{agentid}', plugin '{effective_pluginid}', metric '{metric}': value={value}"
     logger.info("%s", message)
     alarm = Alarm(
         agentid=agentid,
         rule_id=rule.id,
-        pluginid=rule.pluginid,
+        pluginid=effective_pluginid,
         metric=metric,
         severity=rule.severity,
         value=value,
@@ -399,12 +414,12 @@ def create_alarm(
         # Do not hold the SQLite write transaction during network or shell I/O.
         if not suppress_notifications:
             try:
-                notify_targets(rule, agentid, metric, value, message, alarm_id)
+                notify_targets(rule, agentid, metric, value, message, alarm_id, effective_pluginid)
             except Exception as e:
                 logger.error("Notification failed for rule '%s', agent '%s': %s", rule.id, agentid, e)
 
         try:
-            return run_executors(rule, agentid, metric, value, message)
+            return run_executors(rule, agentid, metric, value, message, effective_pluginid)
         except Exception as e:
             logger.error("Executor failed for rule '%s', agent '%s': %s", rule.id, agentid, e)
             return []
@@ -461,9 +476,10 @@ def evaluate_single_rule(
                     v,
                     trigger_metric.id,
                     post_commit_actions,
+                    pluginid,
                 )
             elif rule.auto_close:
-                _ack_open_alarms(session, agentid, rule, metric)
+                _ack_open_alarms(session, agentid, rule, metric, pluginid)
         except (ValueError, TypeError) as e:
             logger.warning("rule '%s' skipped: cannot convert metric='%s' value=%r to float: %s", rule.id, metric, value, e)
 
@@ -484,9 +500,10 @@ def evaluate_single_rule(
                     v,
                     trigger_metric.id,
                     post_commit_actions,
+                    pluginid,
                 )
             elif rule.auto_close:
-                _ack_open_alarms(session, agentid, rule, metric)
+                _ack_open_alarms(session, agentid, rule, metric, pluginid)
         except (ValueError, TypeError) as e:
             logger.warning("rule '%s' moving_avg: cannot convert avg=%r to float: %s", rule.id, avg_value, e)
 
@@ -503,15 +520,16 @@ def evaluate_single_rule(
             logger.warning("rule '%s' count_ratio: cannot convert value to float: %s", rule.id, e)
             return
         if violations >= min_violations:
-            _maybe_create_alarm(
-                session,
-                agentid,
-                rule,
-                metric,
-                float(value),
-                trigger_metric.id,
-                post_commit_actions,
-            )
+                _maybe_create_alarm(
+                    session,
+                    agentid,
+                    rule,
+                    metric,
+                    float(value),
+                    trigger_metric.id,
+                    post_commit_actions,
+                    pluginid,
+                )
         elif rule.auto_close:
             _ack_open_alarms(session, agentid, rule, metric)
 
@@ -538,9 +556,10 @@ def evaluate_single_rule(
                     delta,
                     trigger_metric.id,
                     post_commit_actions,
+                    pluginid,
                 )
             elif rule.auto_close:
-                _ack_open_alarms(session, agentid, rule, metric)
+                _ack_open_alarms(session, agentid, rule, metric, pluginid)
         except (ValueError, TypeError) as e:
             logger.warning("rule '%s' change: cannot compute delta: %s", rule.id, e)
 
@@ -554,7 +573,7 @@ def evaluate_rules_for_payload(
     post_commit_actions: list[PostCommitAction] = []
     relevant_rules = [
         r for r in load_rules()
-        if r.enabled and r.pluginid == pluginid and r.condition != "no_data"
+        if r.enabled and _rule_applies_to_plugin(r, pluginid) and r.condition != "no_data"
     ]
     if not relevant_rules:
         return post_commit_actions
