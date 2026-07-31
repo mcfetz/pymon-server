@@ -41,11 +41,16 @@ def get_assigned_plugins_for_agentid(agentid: str) -> list:
                     assigned.add(p)
             for p in agent.get("plugins", {}):
                 assigned.add(p)
-            # Only plugins with an active agent config are considered running.
-            # Group-assigned plugins that are toggled off on the agent have no
-            # config entry and must be excluded from the assignment.
-            active_config = set(agent.get("plugins", {}))
-            return sorted((assigned - _disabled_plugins()) & active_config)
+            assigned -= _disabled_plugins()
+            # Only active plugins are considered running: they must have a
+            # config entry and must not be explicitly disabled on the agent.
+            agent_plugins = agent.get("plugins", {}) or {}
+            return sorted(
+                p
+                for p in assigned
+                if p in agent_plugins
+                and (agent_plugins.get(p, {}) or {}).get("enabled", True) is not False
+            )
     except Exception as e:
         logger.error("error loading agent config: %s", e)
     return []
@@ -264,7 +269,11 @@ def get_plugin_config(name):
 
         # Return plugin config from the agent's plugin config
         plugin_config = agent.get("plugins", {}).get(name, {})
-        return jsonify(plugin_config), 200
+        if (plugin_config or {}).get("enabled", True) is False:
+            return jsonify({"error": "plugin disabled on this agent"}), 403
+
+        # The enabled flag is runtime state, not part of the plugin config
+        return jsonify({k: v for k, v in plugin_config.items() if k != "enabled"}), 200
     except Exception as e:
         logger.error("Error loading plugin config: %s", e)
         return jsonify({"error": "error loading config"}), 500

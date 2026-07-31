@@ -403,9 +403,17 @@ def admin_set_plugin_config(agentid: str, pluginid: str):
     clean = _validate_against_schema(data, schema)
     with _locked(CONFIG_JSON):
         cfg = _load_json_config()
-        if agentid not in cfg.get("agents", {}):
+        agent = cfg.get("agents", {}).get(agentid)
+        if agent is None:
             return jsonify({"error": "agent not found"}), 404
-        cfg["agents"][agentid].setdefault("plugins", {})[pluginid] = clean
+        # The enabled flag is explicit per-plugin runtime state, independent of
+        # the plugin schema. Preserve the existing value when not provided.
+        existing = agent.get("plugins", {}).get(pluginid, {})
+        if "enabled" in data:
+            clean["enabled"] = bool(data["enabled"])
+        elif isinstance(existing, dict) and "enabled" in existing:
+            clean["enabled"] = existing["enabled"]
+        agent.setdefault("plugins", {})[pluginid] = clean
         _save_json_config(cfg)
     return jsonify({"status": "updated", "config": clean})
 
