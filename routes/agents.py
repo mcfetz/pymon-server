@@ -5,6 +5,7 @@ from dateutil import parser as dateutil_parser
 from auth import require_agent_apikey
 from db_models import Metrics, Alarm
 from config import CONF_DIR, PLUGINS_DIR
+import hashlib
 import json
 import os
 
