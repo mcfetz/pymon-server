@@ -272,8 +272,12 @@ def get_plugin_config(name):
         if (plugin_config or {}).get("enabled", True) is False:
             return jsonify({"error": "plugin disabled on this agent"}), 403
 
-        # The enabled flag is runtime state, not part of the plugin config
-        return jsonify({k: v for k, v in plugin_config.items() if k != "enabled"}), 200
+        # The enabled flag and server-side post-processing options are runtime
+        # state, not part of the plugin config sent to the agent
+        return jsonify({
+            k: v for k, v in plugin_config.items()
+            if k != "enabled" and k not in ("discard_with_heartbeat", "heartbeat")
+        }), 200
     except Exception as e:
         logger.error("Error loading plugin config: %s", e)
         return jsonify({"error": "error loading config"}), 500

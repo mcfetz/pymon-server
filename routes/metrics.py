@@ -16,6 +16,98 @@ from auth import require_agent_apikey
 from routes.admin import _load_json_config, touch_agent_last_seen
 
 
+# Keys that configure server-side post-processing and must never reach the agent.
+POST_PROCESS_CONFIG_KEYS = ("discard_with_heartbeat", "heartbeat")
+
+
+def _to_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
+
+def _as_utc(dt) -> datetime:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt
+
+
+def _load_plugin_post_config(agentid: str, pluginid: str) -> dict:
+    """Return the server-side post-processing config for an agent's plugin."""
+    try:
+        cfg = _load_json_config()
+        agent = cfg.get("agents", {}).get(agentid)
+        if agent is None:
+            return {}
+        plugin_config = agent.get("plugins", {}) or {}
+        entry = plugin_config.get(pluginid, {})
+        return entry if isinstance(entry, dict) else {}
+    except Exception as e:
+        logger.error("Error loading post-processing config for agent '%s' plugin '%s': %s", agentid, pluginid, e)
+        return {}
+
+
+def _values_equal(a, b) -> bool:
+    """Compare two metric values for discard purposes (float-tolerant)."""
+    if a is None or b is None:
+        return a is b
+    if isinstance(a, float) or isinstance(b, float):
+        try:
+            af, bf = float(a), float(b)
+            return abs(af - bf) <= 1e-9 * max(1.0, abs(af), abs(bf))
+        except (ValueError, TypeError):
+            return a == b
+    return a == b
+
+
+def _should_discard(
+    session,
+    agentid: str,
+    pluginid: str,
+    metric_name: str,
+    value,
+    timestamp: datetime,
+    heartbeat_minutes: float,
+) -> bool:
+    """Return True when the incoming metric value should not be stored.
+
+    heartbeat <= 0: discard when the value equals the last stored value.
+    heartbeat > 0: discard when equal AND the time since the last stored value
+    is less than the heartbeat. Otherwise store (keeps at most one value per
+    heartbeat interval for unchanged values).
+    """
+    last_row = (
+        session.query(Metrics)
+        .filter(
+            Metrics.agentid == agentid,
+            Metrics.pluginid == pluginid,
+            Metrics.metric == metric_name,
+        )
+        .order_by(Metrics.timestamp.desc(), Metrics.id.desc())
+        .first()
+    )
+    if last_row is None:
+        return False
+
+    if not _values_equal(get_value_from_row(last_row), value):
+        return False
+
+    if heartbeat_minutes <= 0:
+        return True
+
+    last_ts = _as_utc(last_row.timestamp)
+    if last_ts is None:
+        return False
+    current_ts = _as_utc(timestamp)
+    if current_ts is None:
+        return False
+    delta_seconds = (current_ts - last_ts).total_seconds()
+    return delta_seconds < heartbeat_minutes * 60
+
+
 def _query_metrics(
     session,
     agentid: str | None = None,
@@ -444,10 +536,24 @@ def collect_metrics():
 
                 metrics_list = payload.get("metrics", [])
 
+                # Post-processing: discard values that haven't changed (optionally
+                # keeping at least one value per heartbeat interval).
+                post_cfg = _load_plugin_post_config(agentid_payload, pluginid)
+                discard_enabled = bool(post_cfg.get("discard_with_heartbeat"))
+                heartbeat_minutes = _to_float(post_cfg.get("heartbeat"), 0.0)
+
                 for metric_dict in metrics_list:
                     if isinstance(metric_dict, dict):
                         for metric_name, value in metric_dict.items():
                             try:
+                                if discard_enabled and _should_discard(
+                                    session, agentid_payload, pluginid, metric_name, value, timestamp, heartbeat_minutes
+                                ):
+                                    logger.debug(
+                                        "discarding unchanged metric '%s' for agent '%s' plugin '%s'",
+                                        metric_name, agentid_payload, pluginid,
+                                    )
+                                    continue
                                 metric_entry = Metrics(
                                     agentid=agentid_payload,
                                     pluginid=pluginid,

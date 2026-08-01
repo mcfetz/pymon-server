@@ -442,13 +442,24 @@ def admin_set_plugin_config(agentid: str, pluginid: str):
         agent = cfg.get("agents", {}).get(agentid)
         if agent is None:
             return jsonify({"error": "agent not found"}), 404
-        # The enabled flag is explicit per-plugin runtime state, independent of
-        # the plugin schema. Preserve the existing value when not provided.
+        # Common per-plugin settings independent of the plugin schema. These are
+        # runtime/server-side state (enabled flag, post-processing options).
         existing = agent.get("plugins", {}).get(pluginid, {})
-        if "enabled" in data:
-            clean["enabled"] = bool(data["enabled"])
-        elif isinstance(existing, dict) and "enabled" in existing:
-            clean["enabled"] = existing["enabled"]
+        common = {
+            "enabled": (bool, True),
+            "discard_with_heartbeat": (bool, False),
+            "heartbeat": (float, 0),
+        }
+        for key, (coerce, default) in common.items():
+            if key in data:
+                try:
+                    clean[key] = coerce(data[key])
+                except (ValueError, TypeError):
+                    clean[key] = default
+            elif isinstance(existing, dict) and key in existing:
+                clean[key] = existing[key]
+            else:
+                clean[key] = default
         agent.setdefault("plugins", {})[pluginid] = clean
         _save_json_config(cfg)
     return jsonify({"status": "updated", "config": clean})
