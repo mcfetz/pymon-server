@@ -10,14 +10,14 @@ import tempfile
 import threading
 import urllib.parse
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from flask import jsonify, request
 
 from auth import require_agent_apikey
-from core import app, logger, SessionLocal
+from core import app, logger, SessionLocal, DB_WRITE_LOCK
 from config import CONF_DIR, PLUGINS_DIR
-from db_models import Metrics
+from db_models import Alarm, Metrics
 
 CONF_DIR    = CONF_DIR   # re-export for local use (keeps existing references)
 CONFIG_JSON    = os.path.join(CONF_DIR, "agents.json")
@@ -326,6 +326,64 @@ def admin_maintenance_stats():
         session.close()
 
     return jsonify(resources)
+
+
+@app.route("/admin/maintenance/metrics", methods=["DELETE"])
+@require_agent_apikey
+def admin_cleanup_metrics():
+    """Delete stored metrics older than the given age in days, optionally
+    filtered by agent, plugin and/or metric name. Alarms referencing deleted
+    metrics are removed as well."""
+    data = request.get_json(silent=True) or {}
+    try:
+        days = int(data.get("days", 0))
+    except (TypeError, ValueError):
+        return jsonify({"error": "days must be an integer"}), 400
+    if days < 0:
+        return jsonify({"error": "days must be >= 0"}), 400
+
+    agent = (data.get("agent") or "").strip() or None
+    plugin = (data.get("plugin") or "").strip() or None
+    metric = (data.get("metric") or "").strip() or None
+
+    cutoff = datetime.now(UTC) - timedelta(days=days)
+
+    filters = [Metrics.timestamp < cutoff]
+    if agent:
+        filters.append(Metrics.agentid == agent)
+    if plugin:
+        filters.append(Metrics.pluginid == plugin)
+    if metric:
+        filters.append(Metrics.metric == metric)
+
+    session = SessionLocal()
+    try:
+        with DB_WRITE_LOCK:
+            from sqlalchemy import select
+            metric_ids = select(Metrics.id).where(*filters)
+            deleted_alarms = (
+                session.query(Alarm)
+                .filter(Alarm.metrics_id.in_(metric_ids))
+                .delete(synchronize_session=False)
+            )
+            deleted_metrics = (
+                session.query(Metrics)
+                .filter(*filters)
+                .delete(synchronize_session=False)
+            )
+            session.commit()
+    except Exception as e:
+        session.rollback()
+        logger.error("Metric cleanup failed: %s", e)
+        return jsonify({"error": "Metric cleanup failed"}), 500
+    finally:
+        session.close()
+
+    logger.info(
+        "Metric cleanup: deleted %d metrics and %d alarms (days=%d, agent=%s, plugin=%s, metric=%s)",
+        deleted_metrics, deleted_alarms, days, agent, plugin, metric,
+    )
+    return jsonify({"status": "deleted", "metrics": deleted_metrics, "alarms": deleted_alarms})
 
 
 @app.route("/admin/agents", methods=["POST"])
