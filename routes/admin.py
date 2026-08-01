@@ -16,7 +16,7 @@ from flask import jsonify, request
 
 from auth import require_agent_apikey
 from core import app, logger, SessionLocal, DB_WRITE_LOCK
-from config import CONF_DIR, PLUGINS_DIR
+from config import CONF_DIR, PLUGINS_DIR, DB_PATH
 from db_models import Alarm, Metrics
 
 CONF_DIR    = CONF_DIR   # re-export for local use (keeps existing references)
@@ -317,7 +317,6 @@ def admin_maintenance_stats():
 
     from sqlalchemy import text
     from core import SessionLocal
-    from db_models import Metrics
 
     session = SessionLocal()
     try:
@@ -328,7 +327,32 @@ def admin_maintenance_stats():
     finally:
         session.close()
 
+    resources["db_size"] = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
+
     return jsonify(resources)
+
+
+@app.route("/admin/maintenance/vacuum", methods=["POST"])
+@require_agent_apikey
+def admin_vacuum_db():
+    """Rebuild the SQLite database file to reclaim space freed by deletes."""
+    import sqlite3
+
+    before = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
+    conn = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("VACUUM")
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except Exception as e:
+        logger.error("Database vacuum failed: %s", e)
+        return jsonify({"error": "Database vacuum failed"}), 500
+    finally:
+        conn.close()
+
+    after = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
+    logger.info("Database vacuumed: %d -> %d bytes", before, after)
+    return jsonify({"status": "vacuumed", "before": before, "after": after})
 
 
 @app.route("/admin/maintenance/metrics", methods=["DELETE"])
