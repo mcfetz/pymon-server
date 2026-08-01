@@ -91,6 +91,26 @@ with engine.begin() as connection:
         "CREATE INDEX IF NOT EXISTS idx_metrics_plugin_metric_agent_received "
         "ON metrics (pluginid, metric, agentid, received_at)"
     ))
+    # Persistent, trigger-maintained metric counter so maintenance stats
+    # never have to scan the (potentially huge) metrics table.
+    connection.execute(text(
+        "CREATE TABLE IF NOT EXISTS _db_stats (name TEXT PRIMARY KEY, value INTEGER NOT NULL DEFAULT 0)"
+    ))
+    if not connection.execute(text(
+        "SELECT 1 FROM _db_stats WHERE name = 'metrics'"
+    )).scalar():
+        logger.info("Migration: initialising metric counter")
+        connection.execute(text(
+            "INSERT INTO _db_stats (name, value) SELECT 'metrics', COUNT(*) FROM metrics"
+        ))
+    connection.execute(text(
+        "CREATE TRIGGER IF NOT EXISTS trg_metrics_insert AFTER INSERT ON metrics "
+        "BEGIN UPDATE _db_stats SET value = value + 1 WHERE name = 'metrics'; END"
+    ))
+    connection.execute(text(
+        "CREATE TRIGGER IF NOT EXISTS trg_metrics_delete AFTER DELETE ON metrics "
+        "BEGIN UPDATE _db_stats SET value = value - 1 WHERE name = 'metrics'; END"
+    ))
 
 logger.info("DB migration finished")
 

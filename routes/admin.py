@@ -315,13 +315,16 @@ def admin_maintenance_stats():
         "plugins": len(_get_all_plugin_names()),
     }
 
-    from sqlalchemy import func
+    from sqlalchemy import text
     from core import SessionLocal
     from db_models import Metrics
 
     session = SessionLocal()
     try:
-        resources["metrics"] = session.query(func.count(Metrics.id)).scalar() or 0
+        row = session.execute(
+            text("SELECT value FROM _db_stats WHERE name = 'metrics'")
+        ).first()
+        resources["metrics"] = row[0] if row else 0
     finally:
         session.close()
 
