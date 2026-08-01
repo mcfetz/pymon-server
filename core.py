@@ -54,6 +54,10 @@ def _configure_sqlite(dbapi_connection, _connection_record):
         except Exception as exc:
             logger.warning("Unable to enable SQLite WAL mode: %s", exc)
         cursor.execute("PRAGMA synchronous=NORMAL")
+        # Keep the WAL file bounded (~1 MB of uncheckpointed pages). Checkpoints
+        # are skipped whenever any connection holds an open read transaction, so
+        # db_maintenance also runs a periodic checkpoint on top of this.
+        cursor.execute("PRAGMA wal_autocheckpoint=1000")
     finally:
         cursor.close()
 

@@ -39,16 +39,15 @@ def send_push_notification(
         logger.warning("VAPID private key not set, skipping push")
         return
 
-    session = SessionLocal()
+    subscriptions = []
     try:
-        subscriptions = session.query(PushSubscription).all()
+        with SessionLocal() as session:
+            subscriptions = session.query(PushSubscription).all()
     except Exception as e:
         logger.error("Error querying push subscriptions: %s", e)
-        session.close()
         return
 
     if not subscriptions:
-        session.close()
         return
 
     payload = json.dumps({
@@ -85,12 +84,12 @@ def send_push_notification(
             logger.error("Push error: %s", exc)
 
     if expired:
+        endpoints = [sub.endpoint for sub in expired]
         try:
-            with DB_WRITE_LOCK:
-                for sub in expired:
-                    session.delete(sub)
+            with DB_WRITE_LOCK, SessionLocal() as session:
+                session.query(PushSubscription).filter(
+                    PushSubscription.endpoint.in_(endpoints)
+                ).delete(synchronize_session=False)
                 session.commit()
         except Exception as e:
             logger.error("Error cleaning up expired subs: %s", e)
-
-    session.close()
