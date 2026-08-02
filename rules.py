@@ -255,6 +255,84 @@ def _get_agent_groups(agentid: str) -> list[str]:
         return []
 
 
+def _get_plugin_sleep(agentid: str, pluginid: str) -> float:
+    """Return the plugin's configured poll interval (sleep seconds). 0 if unknown."""
+    try:
+        agents_file = os.path.join(CONF_DIR, "agents.json")
+        with open(agents_file, encoding="utf-8") as f:
+            cfg = json.load(f)
+        sleep = (
+            cfg.get("agents", {})
+            .get(agentid, {})
+            .get("plugins", {})
+            .get(pluginid, {})
+            .get("sleep")
+        )
+        return float(sleep or 0.0)
+    except Exception as e:
+        logger.warning("cannot resolve poll interval for agent '%s' plugin '%s': %s", agentid, pluginid, e)
+        return 0.0
+
+
+def _count_ratio_violations(
+    session: Session,
+    base_filter,
+    rule: Rule,
+    agentid: str,
+    window: int,
+    sleep_seconds: float,
+    now: datetime,
+) -> int:
+    """Count violations across the last ``window`` polls.
+
+    Stored rows are sparse when unchanged values are discarded. A discarded
+    value always equals the last stored value, so each stored row represents
+    the polls back to the previous stored row. Walk the newest rows and
+    attribute the virtual polls to the row's value.
+    """
+    rows = (
+        session.query(Metrics)
+        .where(*base_filter)
+        .order_by(Metrics.timestamp.desc(), Metrics.id.desc())
+        .limit(window)
+        .all()
+    )
+    if not rows:
+        return 0
+
+    def _utc(dt):
+        return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+    total_polls = 0
+    violations = 0
+    prev_ts = _utc(now)
+    for index, row in enumerate(rows):
+        ts = _utc(row.timestamp)
+        if ts is None:
+            continue
+        delta = max(0, (prev_ts - ts).total_seconds())
+        if index == 0:
+            covered = 1 + int(delta / sleep_seconds)
+        else:
+            covered = max(1, int(delta / sleep_seconds))
+        prev_ts = ts
+        if covered <= 0:
+            continue
+        remaining = window - total_polls
+        if covered > remaining:
+            covered = remaining
+        total_polls += covered
+        try:
+            v = float(get_value_from_row(row))
+        except (TypeError, ValueError):
+            continue
+        if compare_rule_value(v, rule, agentid):
+            violations += covered
+        if total_polls >= window:
+            break
+    return violations
+
+
 def _load_blackouts() -> list[dict]:
     try:
         with open(BLACKOUTS_FILE, encoding="utf-8") as f:
@@ -510,15 +588,34 @@ def evaluate_single_rule(
     elif rule.scope == "count_ratio":
         window = rule.window_size or 10
         min_violations = rule.min_violations or 1
-        q = select(func.coalesce(Metrics.value_float, Metrics.value_int).label("v")).where(*base_filter).order_by(desc(Metrics.timestamp)).limit(window)
-        values = [row.v for row in session.execute(q) if row.v is not None]
-        if not values:
-            return
-        try:
-            violations = sum(1 for v in values if compare_rule_value(float(v), rule, agentid))
-        except (ValueError, TypeError) as e:
-            logger.warning("rule '%s' count_ratio: cannot convert value to float: %s", rule.id, e)
-            return
+        sleep_seconds = _get_plugin_sleep(agentid, pluginid)
+        if sleep_seconds > 0:
+            # Reconstruct the polls represented by the sparse stored rows so the
+            # window reflects the real poll cadence even when unchanged values
+            # are discarded.
+            try:
+                violations = _count_ratio_violations(
+                    session,
+                    base_filter,
+                    rule,
+                    agentid,
+                    window,
+                    sleep_seconds,
+                    datetime.now(timezone.utc),
+                )
+            except (ValueError, TypeError) as e:
+                logger.warning("rule '%s' count_ratio: cannot evaluate value: %s", rule.id, e)
+                return
+        else:
+            q = select(func.coalesce(Metrics.value_float, Metrics.value_int).label("v")).where(*base_filter).order_by(desc(Metrics.timestamp)).limit(window)
+            values = [row.v for row in session.execute(q) if row.v is not None]
+            if not values:
+                return
+            try:
+                violations = sum(1 for v in values if compare_rule_value(float(v), rule, agentid))
+            except (ValueError, TypeError) as e:
+                logger.warning("rule '%s' count_ratio: cannot convert value to float: %s", rule.id, e)
+                return
         if violations >= min_violations:
                 _maybe_create_alarm(
                     session,
@@ -569,11 +666,15 @@ def evaluate_rules_for_payload(
     agentid: str,
     pluginid: str,
     saved_metrics: list[Metrics],
+    only_scopes: tuple[str, ...] | None = None,
 ) -> list[PostCommitAction]:
     post_commit_actions: list[PostCommitAction] = []
     relevant_rules = [
         r for r in load_rules()
-        if r.enabled and _rule_applies_to_plugin(r, pluginid) and r.condition != "no_data"
+        if r.enabled
+        and (only_scopes is None or r.scope in only_scopes)
+        and _rule_applies_to_plugin(r, pluginid)
+        and r.condition != "no_data"
     ]
     if not relevant_rules:
         return post_commit_actions

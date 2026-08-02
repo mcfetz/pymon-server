@@ -6,9 +6,10 @@ import logging
 
 from flask import jsonify, request
 from sqlalchemy import and_
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import joinedload
 
-from db_models import Alarm, Metrics
+from db_models import Alarm, MetricLastSeen, Metrics
 from functions import _parse_time_param, dict_value_to_metric, get_value_from_row
 from rules import evaluate_rules_for_payload
 from core import DB_WRITE_LOCK, SessionLocal, app, logger
@@ -71,13 +72,17 @@ def _should_discard(
     value,
     timestamp: datetime,
     heartbeat_minutes: float,
-) -> bool:
-    """Return True when the incoming metric value should not be stored.
+) -> tuple[bool, Metrics | None]:
+    """Return (discard, last_stored_row) for an incoming metric value.
 
+    discard is True when the incoming value should not be stored.
     heartbeat <= 0: discard when the value equals the last stored value.
     heartbeat > 0: discard when equal AND the time since the last stored value
     is less than the heartbeat. Otherwise store (keeps at most one value per
     heartbeat interval for unchanged values).
+
+    The last stored row is returned so callers can reference it (its id) when
+    building rule-evaluation records for discarded values.
     """
     last_row = (
         session.query(Metrics)
@@ -90,22 +95,46 @@ def _should_discard(
         .first()
     )
     if last_row is None:
-        return False
+        return False, None
 
     if not _values_equal(get_value_from_row(last_row), value):
-        return False
+        return False, last_row
 
     if heartbeat_minutes <= 0:
-        return True
+        return True, last_row
 
     last_ts = _as_utc(last_row.timestamp)
     if last_ts is None:
-        return False
+        return False, last_row
     current_ts = _as_utc(timestamp)
     if current_ts is None:
-        return False
+        return False, last_row
     delta_seconds = (current_ts - last_ts).total_seconds()
-    return delta_seconds < heartbeat_minutes * 60
+    return delta_seconds < heartbeat_minutes * 60, last_row
+
+
+def _in_memory_metric(
+    last_row: Metrics,
+    metric_name: str,
+    value,
+    timestamp: datetime,
+    received_at,
+) -> Metrics:
+    """Build a non-persisted Metrics record for a discarded poll.
+
+    A discarded value is identical to the last stored value, so the record can
+    safely reuse the last stored row's id (alarm.metrics_id is NOT NULL and
+    references a persisted row).
+    """
+    m = Metrics(
+        id=last_row.id,
+        agentid=last_row.agentid,
+        pluginid=last_row.pluginid,
+        timestamp=timestamp,
+        received_at=received_at,
+        metric=metric_name,
+    )
+    return dict_value_to_metric(value, m)
 
 
 def _query_metrics(
@@ -542,17 +571,52 @@ def collect_metrics():
                 discard_enabled = bool(post_cfg.get("discard_with_heartbeat"))
                 heartbeat_minutes = _to_float(post_cfg.get("heartbeat"), 0.0)
 
+                discarded_metrics: list[Metrics] = []
                 for metric_dict in metrics_list:
                     if isinstance(metric_dict, dict):
                         for metric_name, value in metric_dict.items():
                             try:
-                                if discard_enabled and _should_discard(
-                                    session, agentid_payload, pluginid, metric_name, value, timestamp, heartbeat_minutes
-                                ):
+                                # Track the latest receipt time per metric even when
+                                # the value is discarded, so no-data rules do not
+                                # false-alarm for stable metrics.
+                                session.execute(
+                                    sqlite_insert(MetricLastSeen)
+                                    .values(
+                                        agentid=agentid_payload,
+                                        pluginid=pluginid,
+                                        metric=metric_name,
+                                        last_received_at=received_at,
+                                    )
+                                    .on_conflict_do_update(
+                                        index_elements=[
+                                            MetricLastSeen.agentid,
+                                            MetricLastSeen.pluginid,
+                                            MetricLastSeen.metric,
+                                        ],
+                                        set_={"last_received_at": sqlite_insert(MetricLastSeen).excluded.last_received_at},
+                                    )
+                                )
+                                if discard_enabled:
+                                    should_discard, last_row = _should_discard(
+                                        session, agentid_payload, pluginid, metric_name, value, timestamp, heartbeat_minutes
+                                    )
+                                else:
+                                    should_discard, last_row = False, None
+                                if should_discard:
                                     logger.debug(
                                         "discarding unchanged metric '%s' for agent '%s' plugin '%s'",
                                         metric_name, agentid_payload, pluginid,
                                     )
+                                    # Discarded values are not persisted, but rules must still
+                                    # "see" every poll. Build an in-memory record referencing
+                                    # the last stored row (its value is identical) so window/
+                                    # violation counting works while storage stays compact.
+                                    if last_row is not None:
+                                        discarded_metrics.append(
+                                            _in_memory_metric(
+                                                last_row, metric_name, value, timestamp, received_at
+                                            )
+                                        )
                                     continue
                                 metric_entry = Metrics(
                                     agentid=agentid_payload,
@@ -576,6 +640,19 @@ def collect_metrics():
                     pluginid,
                     db_metrics,
                 )
+                if discarded_metrics:
+                    # Count/ratio rules need every poll (discarded ones included) so
+                    # windows fill up at the real poll cadence. Other scopes keep their
+                    # existing stored-row behaviour.
+                    post_commit_actions.extend(
+                        evaluate_rules_for_payload(
+                            session,
+                            agentid_payload,
+                            pluginid,
+                            discarded_metrics,
+                            only_scopes=("count_ratio",),
+                        )
+                    )
                 session.commit()
         except Exception as e:
             with DB_WRITE_LOCK:

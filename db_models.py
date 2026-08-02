@@ -65,3 +65,18 @@ class Alarm(Base):
     acknowledged_at = Column(DateTime, nullable=True)
     ack_method = Column(String, nullable=True)
     metrics_id = Column(Integer, ForeignKey("metrics.id"), nullable=False, index=True)
+
+
+class MetricLastSeen(Base):
+    """Tracks the most recent server receipt time per metric.
+
+    Updated on every ingest (including discarded unchanged values) so no-data
+    rules do not false-alarm when a metric keeps arriving but stops changing.
+    """
+
+    __tablename__ = "_metric_last_seen"
+
+    agentid = Column(String, primary_key=True, nullable=False)
+    pluginid = Column(String, primary_key=True, nullable=False)
+    metric = Column(String, primary_key=True, nullable=False)
+    last_received_at = Column(DateTime, nullable=True)

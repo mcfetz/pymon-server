@@ -4,10 +4,10 @@ import logging
 import threading
 from datetime import UTC, datetime
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import func
 
 from core import DB_WRITE_LOCK, SessionLocal
-from db_models import Metrics
+from db_models import MetricLastSeen, Metrics
 from rules import (
     PostCommitAction,
     _ack_open_alarms,
@@ -23,42 +23,48 @@ logger = logging.getLogger(__name__)
 CHECK_INTERVAL_SECONDS = 30
 
 
-def _latest_metrics_for_rule(session, rule) -> list[Metrics]:
-    """Return one latest received metric row per agent for an exact rule metric."""
-    latest = (
-        select(
-            Metrics.agentid,
-            func.max(Metrics.received_at).label("last_received_at"),
+def _latest_metrics_for_rule(session, rule) -> list[dict]:
+    """Return one latest received metric per agent for an exact rule metric.
+
+    Uses the per-metric last-received tracker, which is updated on every ingest
+    (including discarded unchanged values), so no-data rules keep working when
+    the discard feature suppresses writes for stable metrics.
+    """
+    rows = (
+        session.query(
+            MetricLastSeen.agentid,
+            func.max(MetricLastSeen.last_received_at).label("last_received_at"),
         )
         .where(
-            Metrics.pluginid == rule.pluginid,
-            Metrics.metric == rule.metric,
-            Metrics.received_at.is_not(None),
+            MetricLastSeen.pluginid == rule.pluginid,
+            MetricLastSeen.metric == rule.metric,
+            MetricLastSeen.last_received_at.is_not(None),
         )
-        .group_by(Metrics.agentid)
-        .subquery()
-    )
-    rows = (
-        session.query(Metrics)
-        .join(
-            latest,
-            and_(
-                Metrics.agentid == latest.c.agentid,
-                Metrics.received_at == latest.c.last_received_at,
-                Metrics.pluginid == rule.pluginid,
-                Metrics.metric == rule.metric,
-            ),
-        )
+        .group_by(MetricLastSeen.agentid)
         .all()
     )
 
-    # A timestamp collision can produce more than one row; keep the newest ID.
-    latest_by_agent: dict[str, Metrics] = {}
-    for row in rows:
-        current = latest_by_agent.get(row.agentid)
-        if current is None or row.id > current.id:
-            latest_by_agent[row.agentid] = row
-    return list(latest_by_agent.values())
+    result = []
+    for agentid, last_received_at in rows:
+        # Alarm.metrics_id must reference a persisted row; every metric has at
+        # least one stored value (the first poll is never discarded).
+        metric_id = (
+            session.query(func.max(Metrics.id))
+            .where(
+                Metrics.agentid == agentid,
+                Metrics.pluginid == rule.pluginid,
+                Metrics.metric == rule.metric,
+            )
+            .scalar()
+        )
+        result.append(
+            {
+                "agentid": agentid,
+                "last_received_at": last_received_at,
+                "metric_id": metric_id,
+            }
+        )
+    return result
 
 
 def evaluate_no_data_rules(
@@ -77,16 +83,20 @@ def evaluate_no_data_rules(
             continue
 
         for latest_metric in _latest_metrics_for_rule(session, rule):
-            if not _rule_applies_to_agent(rule, latest_metric.agentid):
+            agentid = latest_metric["agentid"]
+            if not _rule_applies_to_agent(rule, agentid):
                 continue
-            received_at = latest_metric.received_at
+            received_at = latest_metric["last_received_at"]
             if received_at is None:
                 continue
             if received_at.tzinfo is None:
                 received_at = received_at.replace(tzinfo=UTC)
+            metric_id = latest_metric["metric_id"]
+            if metric_id is None:
+                continue
 
             try:
-                threshold_seconds = _resolve_threshold(rule.threshold, latest_metric.agentid)
+                threshold_seconds = _resolve_threshold(rule.threshold, agentid)
             except (TypeError, ValueError):
                 logger.warning("rule '%s' has an invalid no-data threshold", rule.id)
                 continue
@@ -97,18 +107,18 @@ def evaluate_no_data_rules(
             elapsed_seconds = max(0.0, (checked_at - received_at).total_seconds())
             if elapsed_seconds >= threshold_seconds:
                 # No-data alarms stay single-open even if fire=multi is selected.
-                if not has_open_alarm(session, latest_metric.agentid, rule):
+                if not has_open_alarm(session, agentid, rule):
                     _maybe_create_alarm(
                         session,
-                        latest_metric.agentid,
+                        agentid,
                         rule,
                         rule.metric,
                         elapsed_seconds,
-                        latest_metric.id,
+                        metric_id,
                         actions,
                     )
             elif rule.auto_close:
-                _ack_open_alarms(session, latest_metric.agentid, rule, rule.metric)
+                _ack_open_alarms(session, agentid, rule, rule.metric)
 
     return actions
 

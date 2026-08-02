@@ -115,6 +115,17 @@ with engine.begin() as connection:
         "CREATE TRIGGER IF NOT EXISTS trg_metrics_delete AFTER DELETE ON metrics "
         "BEGIN UPDATE _db_stats SET value = value - 1 WHERE name = 'metrics'; END"
     ))
+    # Per-metric "last received" tracker so no-data rules keep working even when
+    # unchanged values are discarded at ingest (no Metrics row is written then).
+    connection.execute(text(
+        "CREATE TABLE IF NOT EXISTS _metric_last_seen ("
+        "agentid TEXT NOT NULL, "
+        "pluginid TEXT NOT NULL, "
+        "metric TEXT NOT NULL, "
+        "last_received_at DATETIME, "
+        "PRIMARY KEY (agentid, pluginid, metric)"
+        ")"
+    ))
 
 logger.info("DB migration finished")
 
