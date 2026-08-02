@@ -383,22 +383,43 @@ def admin_cleanup_metrics():
     if metric:
         filters.append(Metrics.metric == metric)
 
+    # Delete in bounded batches, releasing the write lock between batches so
+    # agents keep ingesting and slow/networked storage cannot wedge the whole
+    # database. SQLite is limited to one writer, so a huge single DELETE would
+    # otherwise block every ingest for the entire run.
+    BATCH_SIZE = 2000
     session = SessionLocal()
+    deleted_alarms = 0
+    deleted_metrics = 0
     try:
+        from sqlalchemy import select
         with DB_WRITE_LOCK:
-            from sqlalchemy import select
             metric_ids = select(Metrics.id).where(*filters)
             deleted_alarms = (
                 session.query(Alarm)
                 .filter(Alarm.metrics_id.in_(metric_ids))
                 .delete(synchronize_session=False)
             )
-            deleted_metrics = (
-                session.query(Metrics)
-                .filter(*filters)
-                .delete(synchronize_session=False)
-            )
             session.commit()
+        while True:
+            with DB_WRITE_LOCK:
+                batch_ids = [
+                    row[0]
+                    for row in session.query(Metrics.id)
+                    .filter(*filters)
+                    .limit(BATCH_SIZE)
+                    .all()
+                ]
+                if not batch_ids:
+                    break
+                deleted_metrics += (
+                    session.query(Metrics)
+                    .filter(Metrics.id.in_(batch_ids))
+                    .delete(synchronize_session=False)
+                )
+                session.commit()
+            if len(batch_ids) < BATCH_SIZE:
+                break
     except Exception as e:
         session.rollback()
         logger.error("Metric cleanup failed: %s", e)
