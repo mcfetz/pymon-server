@@ -35,6 +35,8 @@ PLUGIN_REFRESH_INTERVAL = 30
 PLUGIN_TIMEOUT = 30
 VERSION_CHECK_INTERVAL = 300
 CONFIG_FILE = "agent.json"
+HTTP_TIMEOUT = (5, 15)
+WATCHDOG_STALL = 120
 
 SYSTEMD_SYSTEM_DIR = "/etc/systemd/system"
 
@@ -170,7 +172,7 @@ def plugin_hash(name: str) -> Optional[str]:
 
 def fetch_plugin_list() -> Optional[list[str]]:
     try:
-        resp = requests.get(f"{args.server}/plugins", headers=_build_headers())
+        resp = requests.get(f"{args.server}/plugins", headers=_build_headers(), timeout=HTTP_TIMEOUT)
         resp.raise_for_status()
         plugins = resp.json()
         if not isinstance(plugins, list):
@@ -183,11 +185,11 @@ def fetch_plugin_list() -> Optional[list[str]]:
 
 def download_plugin(plugin: str) -> bool:
     try:
-        resp = requests.get(f"{args.server}/plugins/{plugin}", headers=_build_headers())
+        resp = requests.get(f"{args.server}/plugins/{plugin}", headers=_build_headers(), timeout=HTTP_TIMEOUT)
         resp.raise_for_status()
         os.makedirs(PLUGINS_DIR, exist_ok=True)
-        with open(plugin_path(plugin), "w", encoding="utf-8") as f:
-            f.write(resp.text)
+        with open(plugin_path(plugin), "wb") as f:
+            f.write(resp.content)
         logging.info("Plugin '%s' downloaded", plugin)
         return True
     except Exception as e:
@@ -197,7 +199,7 @@ def download_plugin(plugin: str) -> bool:
 
 def fetch_plugin_hash(plugin: str) -> Optional[str]:
     try:
-        resp = requests.get(f"{args.server}/plugins/{plugin}/version", headers=_build_headers())
+        resp = requests.get(f"{args.server}/plugins/{plugin}/version", headers=_build_headers(), timeout=HTTP_TIMEOUT)
         resp.raise_for_status()
         plugin_hash_value = resp.json().get("hash")
         return plugin_hash_value if isinstance(plugin_hash_value, str) else None
@@ -208,7 +210,7 @@ def fetch_plugin_hash(plugin: str) -> Optional[str]:
 
 def fetch_plugin_config(plugin: str) -> Optional[dict]:
     try:
-        resp = requests.get(f"{args.server}/plugins/{plugin}/config", headers=_build_headers())
+        resp = requests.get(f"{args.server}/plugins/{plugin}/config", headers=_build_headers(), timeout=HTTP_TIMEOUT)
         if resp.status_code == 403:
             logging.info("No active config for '%s'; skipping run", plugin)
             return None
@@ -394,6 +396,35 @@ def signal_handler(sig, frame):
 
 
 # ---------------------------------------------------------------------------
+# Watchdog: restart if the main loop stalls for too long
+# ---------------------------------------------------------------------------
+
+_last_progress = time.monotonic()
+_last_progress_lock = threading.Lock()
+
+
+def mark_progress() -> None:
+    global _last_progress
+    with _last_progress_lock:
+        _last_progress = time.monotonic()
+
+
+def _watchdog_loop(stall_seconds: float) -> None:
+    while True:
+        time.sleep(stall_seconds / 2)
+        with _last_progress_lock:
+            idle = time.monotonic() - _last_progress
+        if idle >= stall_seconds:
+            logging.error("Watchdog: agent stalled for %.0fs, exiting for systemd restart", idle)
+            os._exit(3)
+
+
+def start_watchdog(stall_seconds: float = WATCHDOG_STALL) -> None:
+    mark_progress()
+    threading.Thread(target=_watchdog_loop, args=(stall_seconds,), daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
 # Self-update
 # ---------------------------------------------------------------------------
 
@@ -447,6 +478,7 @@ signal.signal(signal.SIGTERM, signal_handler)
 if __name__ == "__main__":
     os.makedirs(PLUGINS_DIR, exist_ok=True)
 
+    start_watchdog()
     plugins: list[str] = []
     sync_plugins(plugins)
     if not plugins:
@@ -461,6 +493,7 @@ if __name__ == "__main__":
     plugin_sleeps: dict[str, int] = {}
 
     while True:
+        mark_progress()
         now = time.time()
 
         # Periodic plugin list refresh

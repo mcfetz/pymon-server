@@ -162,7 +162,7 @@ def get_plugin(name):
         return jsonify({"error": f"Fehler beim Lesen des Plugins: {e!s}"}), 500
 
     # Return the content as plain text
-    return content, 200, {"Content-Type": "text/plain"}
+    return content, 200, {"Content-Type": "text/plain; charset=utf-8"}
 
 
 @app.route("/plugins/<name>/version", methods=["GET"])
