@@ -43,7 +43,7 @@ __schema__ = {
         {'key': 'check_updates', 'label': 'Check container image updates in registry', 'type': 'boolean', 'default': False, 'optional': True},
         {'key': 'check_updates_interval_min', 'label': 'Re-check registry interval (min)', 'type': 'number', 'default': 360, 'min': 5, 'optional': True},
         {'key': 'registry_username', 'label': 'Registry username (optional)', 'type': 'string', 'default': '', 'optional': True},
-        {'key': 'registry_password', 'label': 'Registry password (optional)', 'type': 'string', 'default': '', 'optional': True},
+        {'key': 'registry_password', 'label': 'Registry password (optional)', 'type': 'password', 'default': '', 'optional': True},
     ],
 }
 
