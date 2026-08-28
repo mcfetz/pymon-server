@@ -1,13 +1,23 @@
 from db_models import Metrics
 from datetime import datetime
+from dateutil import parser as dateutil_parser
 
 
 def _parse_time_param(value: str | None) -> datetime | None:
     if not value:
         return None
+    value = value.strip()
+    if " " in value and ("+" not in value and "-" not in value[10:]):
+        parts = value.rsplit(" ", 1)
+        if len(parts) == 2 and ":" in parts[1]:
+            value = f"{parts[0]}+{parts[1]}"
     try:
         return datetime.fromisoformat(value)
     except ValueError:
+        pass
+    try:
+        return dateutil_parser.parse(value)
+    except Exception:
         return None
 
 
