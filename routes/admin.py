@@ -1368,3 +1368,95 @@ def admin_delete_variable(var_id: str):
         del variables[var_id]
         _save_variables(variables)
     return jsonify({"status": "deleted"})
+
+
+# ── Dashboards CRUD ──
+
+DASHBOARDS_JSON = os.path.join(CONF_DIR, "dashboards.json")
+_dashboards_lock = threading.Lock()
+_PANEL_TYPES = {"chart", "table", "stats"}
+_TIME_RANGES = {"1h", "6h", "12h", "1d", "1w"}
+
+
+def _load_dashboards() -> dict:
+    if os.path.exists(DASHBOARDS_JSON):
+        try:
+            with open(DASHBOARDS_JSON, encoding="utf-8") as f:
+                data = json.load(f)
+                return data if isinstance(data, dict) else {}
+        except json.JSONDecodeError as e:
+            logger.error("Corrupt config file %s: %s", DASHBOARDS_JSON, e)
+            return {}
+    return {}
+
+
+def _save_dashboards(data: dict) -> None:
+    _atomic_write_json(DASHBOARDS_JSON, data)
+
+
+def _normalize_dashboard(data: dict) -> dict | None:
+    """Validate and normalize a dashboard payload."""
+    name = str(data.get("name", "")).strip()
+    if not name:
+        return None
+    timerange = data.get("timerange", "1h")
+    if timerange not in _TIME_RANGES:
+        timerange = "1h"
+    panels = []
+    for raw in data.get("panels", []) or []:
+        if not isinstance(raw, dict):
+            continue
+        ptype = raw.get("type", "chart")
+        if ptype not in _PANEL_TYPES:
+            ptype = "chart"
+        agentid = raw.get("agentid") or []
+        if not isinstance(agentid, list):
+            agentid = []
+        panels.append({
+            "id": str(raw.get("id") or ""),
+            "type": ptype,
+            "title": str(raw.get("title") or ""),
+            "group": str(raw.get("group") or ""),
+            "agentid": [str(a) for a in agentid],
+            "pluginid": str(raw.get("pluginid") or ""),
+            "metric": str(raw.get("metric") or ""),
+        })
+    return {
+        "id": str(data.get("id") or ""),
+        "name": name,
+        "timerange": timerange,
+        "panels": panels,
+    }
+
+
+@app.route("/admin/dashboards", methods=["GET"])
+@require_agent_apikey
+def admin_list_dashboards():
+    return jsonify(_load_dashboards())
+
+
+@app.route("/admin/dashboards/<dash_id>", methods=["PUT"])
+@require_agent_apikey
+def admin_save_dashboard(dash_id: str):
+    data = request.get_json(silent=True) or {}
+    normalized = _normalize_dashboard(data)
+    if normalized is None:
+        return jsonify({"error": "dashboard name is required"}), 400
+    normalized["id"] = dash_id
+    with _dashboards_lock:
+        dashboards = _load_dashboards()
+        dashboards[dash_id] = normalized
+        _save_dashboards(dashboards)
+    return jsonify({"status": "saved", "dashboard": normalized})
+
+
+@app.route("/admin/dashboards/<dash_id>", methods=["DELETE"])
+@require_agent_apikey
+def admin_delete_dashboard(dash_id: str):
+    with _dashboards_lock:
+        dashboards = _load_dashboards()
+        if dash_id not in dashboards:
+            return jsonify({"error": "not found"}), 404
+        del dashboards[dash_id]
+        _save_dashboards(dashboards)
+    return jsonify({"status": "deleted"})
