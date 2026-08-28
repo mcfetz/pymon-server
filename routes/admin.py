@@ -1374,7 +1374,7 @@ def admin_delete_variable(var_id: str):
 
 DASHBOARDS_JSON = os.path.join(CONF_DIR, "dashboards.json")
 _dashboards_lock = threading.Lock()
-_PANEL_TYPES = {"chart", "table", "stats"}
+_PANEL_TYPES = {"chart", "table", "stats", "last"}
 _TIME_RANGES = {"1h", "6h", "12h", "1d", "1w"}
 
 
