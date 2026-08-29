@@ -434,6 +434,27 @@ def admin_cleanup_metrics():
     return jsonify({"status": "deleted", "metrics": deleted_metrics, "alarms": deleted_alarms})
 
 
+@app.route("/admin/maintenance/cleanup-job", methods=["GET"])
+@require_agent_apikey
+def admin_cleanup_job_get():
+    """Return automatic cleanup job settings and last run statistics."""
+    from cleanup_job import get_state
+    return jsonify(get_state())
+
+
+@app.route("/admin/maintenance/cleanup-job", methods=["PUT"])
+@require_agent_apikey
+def admin_cleanup_job_save():
+    """Update automatic cleanup job settings."""
+    from cleanup_job import apply_settings
+    payload = request.get_json(silent=True) or {}
+    result = apply_settings(payload)
+    if isinstance(result, tuple):
+        error, status = result
+        return jsonify(error), status
+    return jsonify(result)
+
+
 @app.route("/admin/agents", methods=["POST"])
 @require_agent_apikey
 def admin_create_agent():
