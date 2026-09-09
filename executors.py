@@ -61,13 +61,22 @@ def run_executors(
         )
 
         target = conf.get("execution_target", "server")
-        logger.info("Executor '%s' target=%s cmd=%s", executor_id, target, command)
+        timeout = conf.get("timeout")
+        try:
+            timeout_sec = int(timeout) if timeout else 60
+        except (TypeError, ValueError):
+            timeout_sec = 60
+        if timeout_sec < 1:
+            timeout_sec = 60
+        logger.info("Executor '%s' target=%s timeout=%ss cmd=%s", executor_id, target, timeout_sec, command)
 
         if target == "agent":
-            agent_executors.append({"id": executor_id, "command": command})
+            agent_executors.append({"id": executor_id, "command": command, "timeout": timeout_sec})
         else:
             try:
-                subprocess.run(shlex.split(command), shell=False, check=False)
+                subprocess.run(shlex.split(command), shell=False, check=False, timeout=timeout_sec)
+            except subprocess.TimeoutExpired:
+                logger.error("Executor '%s' timed out after %ss", executor_id, timeout_sec)
             except Exception:
                 continue
 

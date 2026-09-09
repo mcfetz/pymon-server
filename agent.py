@@ -351,9 +351,17 @@ def _run_agent_executors(response_data: object) -> None:
             logging.warning("Skipping agent-side executor '%s': missing command", executor_id)
             continue
 
-        logging.info("Running agent-side executor '%s': %s", executor_id, command)
+        timeout = executor.get("timeout", 60)
         try:
-            subprocess.run(command, shell=True, check=False, timeout=30)
+            timeout = int(timeout) if timeout else 60
+        except (TypeError, ValueError):
+            timeout = 60
+        if timeout < 1:
+            timeout = 60
+
+        logging.info("Running agent-side executor '%s': %s (timeout %ss)", executor_id, command, timeout)
+        try:
+            subprocess.run(command, shell=True, check=False, timeout=timeout)
         except subprocess.TimeoutExpired:
             logging.error("Executor '%s' timed out", executor_id)
         except (OSError, subprocess.SubprocessError) as e:
@@ -387,6 +395,64 @@ def post_metrics(plugin: str, metrics_list: list[dict], timestamp: str):
             _run_agent_executors(response_data)
     except Exception as e:
         logging.error("Error posting metrics for '%s': %s", plugin, e)
+
+
+CRON_POLL_INTERVAL = 30
+
+
+def check_cron_tasks() -> None:
+    """Fetch due cron tasks, run their commands locally and report metrics."""
+    try:
+        resp = requests.get(f"{args.server}/cron/due", headers=_build_headers(), timeout=20)
+        if not resp.ok:
+            return
+        data = resp.json()
+    except Exception as e:
+        logging.error("Failed to fetch cron tasks: %s", e)
+        return
+
+    tasks = data.get("tasks", []) if isinstance(data, dict) else []
+    if not isinstance(tasks, list) or not tasks:
+        return
+
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        task_id = task.get("task_id")
+        command = task.get("command")
+        if not task_id or not isinstance(command, str) or not command:
+            logging.warning("Skipping malformed cron task: %r", task)
+            continue
+
+        timeout = 60
+        try:
+            timeout = int(task.get("timeout") or 60)
+        except (TypeError, ValueError):
+            pass
+        if timeout < 1:
+            timeout = 60
+
+        logging.info("Running cron task '%s': %s (timeout %ss)", task_id, command, timeout)
+        started = time.time()
+        exit_code = -1
+        try:
+            proc = subprocess.run(command, shell=True, check=False, timeout=timeout)
+            exit_code = proc.returncode
+        except subprocess.TimeoutExpired:
+            logging.error("Cron task '%s' timed out after %ss", task_id, timeout)
+            exit_code = -2
+        except (OSError, subprocess.SubprocessError) as e:
+            logging.error("Cron task '%s' failed: %s", task_id, e)
+        duration = round(time.time() - started, 3)
+
+        post_metrics(
+            "cron",
+            [
+                {f"{task_id}:exitcode": exit_code},
+                {f"{task_id}:duration": duration},
+            ],
+            datetime.now(timezone.utc).isoformat(),
+        )
 
 
 def signal_handler(sig, frame):
@@ -489,6 +555,7 @@ if __name__ == "__main__":
 
     last_plugin_refresh = time.time()
     last_version_check = 0.0
+    last_cron_check = 0.0
     last_run: dict[str, float] = {}
     plugin_sleeps: dict[str, int] = {}
 
@@ -508,6 +575,11 @@ if __name__ == "__main__":
         if self_update_enabled and now - last_version_check >= VERSION_CHECK_INTERVAL:
             self_update()
             last_version_check = now
+
+        # Poll for due cron tasks (scheduled by the server, run locally)
+        if now - last_cron_check >= CRON_POLL_INTERVAL:
+            check_cron_tasks()
+            last_cron_check = now
 
         # Run plugins respecting per-plugin sleep interval
         ts = datetime.now(timezone.utc).isoformat()

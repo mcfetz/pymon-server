@@ -857,6 +857,14 @@ def admin_save_executor(exec_id: str):
     data = request.get_json(silent=True) or {}
     if data.get("id") and data["id"] != exec_id:
         return jsonify({"error": "cannot change ID of existing entity"}), 400
+    if "timeout" in data and data["timeout"] is not None:
+        try:
+            timeout = int(data["timeout"])
+        except (TypeError, ValueError):
+            return jsonify({"error": "timeout must be an integer >= 1"}), 400
+        if timeout < 1:
+            return jsonify({"error": "timeout must be an integer >= 1"}), 400
+        data["timeout"] = timeout
     data["id"] = exec_id
     with _locked(EXECUTORS_JSON):
         exec_map = _load_executors()
@@ -1480,4 +1488,90 @@ def admin_delete_dashboard(dash_id: str):
             return jsonify({"error": "not found"}), 404
         del dashboards[dash_id]
         _save_dashboards(dashboards)
+    return jsonify({"status": "deleted"})
+
+
+# ── Cron Tasks CRUD ──
+
+CRON_TASKS_JSON = os.path.join(CONF_DIR, "cron_tasks.json")
+_cron_tasks_lock = threading.Lock()
+_TASK_ID_RE = re.compile(r"^t[a-zA-Z0-9_-]{0,63}$")
+
+
+def _load_cron_tasks() -> dict:
+    if os.path.exists(CRON_TASKS_JSON):
+        try:
+            with open(CRON_TASKS_JSON, encoding="utf-8") as f:
+                data = json.load(f)
+                return data if isinstance(data, dict) else {}
+        except json.JSONDecodeError as e:
+            logger.error("Corrupt config file %s: %s", CRON_TASKS_JSON, e)
+            return {}
+    return {}
+
+
+def _save_cron_tasks(data: dict) -> None:
+    _atomic_write_json(CRON_TASKS_JSON, data)
+
+
+@app.route("/admin/cron-tasks", methods=["GET"])
+@require_agent_apikey
+def admin_list_cron_tasks():
+    return jsonify(_load_cron_tasks())
+
+
+@app.route("/admin/cron-tasks/<task_id>", methods=["PUT"])
+@require_agent_apikey
+def admin_save_cron_task(task_id: str):
+    from cron_scheduler import parse_schedule
+
+    data = request.get_json(silent=True) or {}
+    if not _TASK_ID_RE.match(task_id):
+        return jsonify({"error": "task id must start with 't' followed by letters, digits, _ or -"}), 400
+
+    schedule = str(data.get("schedule", "")).strip()
+    if parse_schedule(schedule) is None:
+        return jsonify({"error": "schedule must be 5 cron fields: minute hour dom month dow"}), 400
+
+    executor_id = str(data.get("executor_id", "")).strip()
+    executors = _load_executors()
+    executor = executors.get(executor_id)
+    if not executor:
+        return jsonify({"error": "referenced executor does not exist"}), 400
+    if executor.get("execution_target", "server") != "agent":
+        return jsonify({"error": "executor must be an agent-side executor (execute on = agent)"}), 400
+
+    agents = data.get("agents") or []
+    if not isinstance(agents, list):
+        agents = []
+    agents_mode = str(data.get("agents_mode", "exclude"))
+    if agents_mode not in ("include", "exclude"):
+        return jsonify({"error": "agents_mode must be 'include' or 'exclude'"}), 400
+
+    task = {
+        "id": task_id,
+        "title": str(data.get("title") or task_id),
+        "description": str(data.get("description") or ""),
+        "enabled": bool(data.get("enabled", True)),
+        "agents_mode": agents_mode,
+        "agents": [str(a) for a in agents],
+        "schedule": schedule,
+        "executor_id": executor_id,
+    }
+    with _cron_tasks_lock:
+        tasks = _load_cron_tasks()
+        tasks[task_id] = task
+        _save_cron_tasks(tasks)
+    return jsonify({"status": "saved", "task": task})
+
+
+@app.route("/admin/cron-tasks/<task_id>", methods=["DELETE"])
+@require_agent_apikey
+def admin_delete_cron_task(task_id: str):
+    with _cron_tasks_lock:
+        tasks = _load_cron_tasks()
+        if task_id not in tasks:
+            return jsonify({"error": "not found"}), 404
+        del tasks[task_id]
+        _save_cron_tasks(tasks)
     return jsonify({"status": "deleted"})
