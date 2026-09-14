@@ -9,4 +9,4 @@ docker
 python-dateutil>=2.9.0.post0
 flask-cors>=6.0.5
 pywebpush>=2.4.0
-twilio>=9.11.0
+twilio>=9.11.1
