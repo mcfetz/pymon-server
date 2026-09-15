@@ -1,3 +1,11 @@
+from config import MIGRATE_SQLITE_TO_PSQL
+
+# One-shot SQLite -> PostgreSQL migration. Must run before core/ORM touches
+# the target database with real data.
+if MIGRATE_SQLITE_TO_PSQL:
+    from psql_migration import run_sqlite_to_psql_migration
+    run_sqlite_to_psql_migration()
+
 from core import app  # and swagger if you need it elsewhere
 
 # Import route modules so they can register their routes with `app`

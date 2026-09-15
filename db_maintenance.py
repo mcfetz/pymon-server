@@ -1,9 +1,13 @@
-"""Background maintenance tasks for the SQLite database (WAL checkpointing)."""
+"""Background maintenance tasks for the SQLite database (WAL checkpointing).
+
+These tasks only apply to the SQLite backend; PostgreSQL manages its own
+recovery/checkpointing internally.
+"""
 
 import sqlite3
 import threading
 
-from config import DB_PATH
+from config import DB_PATH, IS_POSTGRES
 from core import SQLITE_BUSY_TIMEOUT_MS, logger
 
 CHECKPOINT_INTERVAL_SECONDS = 5 * 60
@@ -11,6 +15,8 @@ CHECKPOINT_INTERVAL_SECONDS = 5 * 60
 
 def checkpoint_wal_once() -> None:
     """Checkpoint the WAL, truncating the log when no reader blocks it."""
+    if IS_POSTGRES:
+        return
     conn = sqlite3.connect(
         DB_PATH,
         timeout=SQLITE_BUSY_TIMEOUT_MS / 1000,
@@ -45,7 +51,11 @@ def _loop() -> None:
 
 
 def start_wal_maintenance() -> threading.Thread:
-    """Start the daemon WAL checkpoint thread."""
+    """Start the daemon WAL checkpoint thread (no-op on PostgreSQL)."""
+    if IS_POSTGRES:
+        thread = threading.Thread(target=lambda: None, name="pymon-wal-maintenance", daemon=True)
+        thread.start()
+        return thread
     thread = threading.Thread(
         target=_loop,
         name="pymon-wal-maintenance",

@@ -16,7 +16,7 @@ from flask import jsonify, request
 
 from auth import require_agent_apikey
 from core import app, logger, SessionLocal, DB_WRITE_LOCK
-from config import CONF_DIR, PLUGINS_DIR, DB_PATH
+from config import CONF_DIR, PLUGINS_DIR, DB_PATH, IS_POSTGRES
 from db_models import Alarm, Metrics
 
 CONF_DIR    = CONF_DIR   # re-export for local use (keeps existing references)
@@ -324,10 +324,15 @@ def admin_maintenance_stats():
             text("SELECT value FROM _db_stats WHERE name = 'metrics'")
         ).first()
         resources["metrics"] = row[0] if row else 0
+        if IS_POSTGRES:
+            db_size = session.execute(
+                text("SELECT pg_database_size(current_database())")
+            ).scalar()
+            resources["db_size"] = int(db_size or 0)
+        else:
+            resources["db_size"] = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
     finally:
         session.close()
-
-    resources["db_size"] = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
 
     return jsonify(resources)
 
@@ -335,7 +340,9 @@ def admin_maintenance_stats():
 @app.route("/admin/maintenance/vacuum", methods=["POST"])
 @require_agent_apikey
 def admin_vacuum_db():
-    """Rebuild the SQLite database file to reclaim space freed by deletes."""
+    """Rebuild the database to reclaim space freed by deletes (SQLite only)."""
+    if IS_POSTGRES:
+        return jsonify({"error": "vacuum is only supported for the SQLite backend"}), 400
     import sqlite3
 
     before = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0

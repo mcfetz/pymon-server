@@ -5,8 +5,7 @@ import os
 import logging
 
 from flask import jsonify, request
-from sqlalchemy import and_
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy import and_, text
 from sqlalchemy.orm import joinedload
 
 from db_models import Alarm, MetricLastSeen, Metrics
@@ -580,21 +579,19 @@ def collect_metrics():
                                 # the value is discarded, so no-data rules do not
                                 # false-alarm for stable metrics.
                                 session.execute(
-                                    sqlite_insert(MetricLastSeen)
-                                    .values(
-                                        agentid=agentid_payload,
-                                        pluginid=pluginid,
-                                        metric=metric_name,
-                                        last_received_at=received_at,
-                                    )
-                                    .on_conflict_do_update(
-                                        index_elements=[
-                                            MetricLastSeen.agentid,
-                                            MetricLastSeen.pluginid,
-                                            MetricLastSeen.metric,
-                                        ],
-                                        set_={"last_received_at": sqlite_insert(MetricLastSeen).excluded.last_received_at},
-                                    )
+                                    text(
+                                        "INSERT INTO _metric_last_seen "
+                                        "(agentid, pluginid, metric, last_received_at) "
+                                        "VALUES (:agentid, :pluginid, :metric, :last_received_at) "
+                                        "ON CONFLICT (agentid, pluginid, metric) "
+                                        "DO UPDATE SET last_received_at = EXCLUDED.last_received_at"
+                                    ),
+                                    {
+                                        "agentid": agentid_payload,
+                                        "pluginid": pluginid,
+                                        "metric": metric_name,
+                                        "last_received_at": received_at,
+                                    },
                                 )
                                 if discard_enabled:
                                     should_discard, last_row = _should_discard(

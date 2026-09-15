@@ -23,6 +23,15 @@ DATA_DIR = os.path.abspath(os.environ.get("PYMON_DATA_DIR", _SERVER_ROOT))
 CONF_DIR       = os.path.join(DATA_DIR, "conf")
 DB_PATH        = os.path.join(DATA_DIR, "metrics.db")
 
+# ── Database ───────────────────────────────────────────────────────────────
+# PostgreSQL connection override. When set (e.g.
+# PYMON_DATABASE_URL=postgresql://pymon:pass@pymon-db:5432/pymon) the server
+# uses PostgreSQL instead of the default SQLite file.
+DATABASE_URL = os.environ.get("PYMON_DATABASE_URL", "").strip() or f"sqlite:///{DB_PATH}"
+IS_POSTGRES = DATABASE_URL.startswith("postgresql")
+# Set to "1" to migrate the existing SQLite database into PostgreSQL at startup.
+MIGRATE_SQLITE_TO_PSQL = os.environ.get("PYMON_MIGRATE_SQLITE_TO_PSQL", "").strip() == "1"
+
 # Plugins directory (defaults to bundled plugins inside the server root).
 # Override with PYMON_PLUGINS_DIR to use a custom/external plugins directory.
 PLUGINS_DIR = os.path.abspath(
