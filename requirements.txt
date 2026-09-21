@@ -3,7 +3,7 @@ psutil>=7.2.2
 psycopg2-binary>=2.9
 toml>=0.10.2
 requests>=2.34.2
-SQLAlchemy>=2.0.52
+SQLAlchemy>=2.0.54
 flasgger>=0.9.5
 flasgger
 docker
