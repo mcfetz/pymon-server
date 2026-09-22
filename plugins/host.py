@@ -74,15 +74,16 @@ if __name__ == "__main__":
                 ifname = line.strip().split(":")[0].strip()
                 if ifname == "lo":
                     continue
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 try:
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                     ifr = struct.pack("16sH14s", ifname.encode()[:15], socket.AF_INET, b"\x00" * 14)
                     addr = fcntl.ioctl(sock.fileno(), SIOCGIFADDR, ifr)
                     ip = socket.inet_ntoa(addr[20:24])
                     metrics[f"ip:{ifname}"] = ip
-                    sock.close()
                 except OSError:
                     pass
+                finally:
+                    sock.close()
     except Exception:
         pass
 

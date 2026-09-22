@@ -106,46 +106,52 @@ def run_sqlite_to_psql_migration() -> None:
     with dst.begin():
         Base.metadata.create_all(bind=dst)
 
-    with src.connect() as src_conn, dst.connect() as dst_conn:
-        # Small reference tables first (no FK dependencies among them).
-        n_push = _copy_small(src_conn, dst_conn, "push_subscriptions")
-        n_last_seen = _copy_small(src_conn, dst_conn, "_metric_last_seen")
-        logger.info("migrate: copied %d push subscriptions, %d last-seen rows", n_push, n_last_seen)
+    try:
+        with src.connect() as src_conn, dst.connect() as dst_conn:
+            # Small reference tables first (no FK dependencies among them).
+            n_push = _copy_small(src_conn, dst_conn, "push_subscriptions")
+            n_last_seen = _copy_small(src_conn, dst_conn, "_metric_last_seen")
+            logger.info("migrate: copied %d push subscriptions, %d last-seen rows", n_push, n_last_seen)
 
-        # Bulk tables in dependency order: metrics before alarms.
-        n_metrics = _copy_batched(src_conn, dst_conn, "metrics")
-        n_alarms = _copy_small(
-            src_conn, dst_conn, "alarms",
-            where=("metrics_id IS NULL OR EXISTS "
-                   "(SELECT 1 FROM metrics m WHERE m.id = alarms.metrics_id)"),
-        )
-        logger.info("migrate: copied %d alarms", n_alarms)
-
-        # Carry over the trigger-maintained metric counter.
-        stats = src_conn.execute(text("SELECT * FROM _db_stats")).mappings().all()
-        for row in stats:
-            with dst_conn.begin():
-                dst_conn.execute(
-                    text(
-                        "INSERT INTO _db_stats (name, value) VALUES (:name, :value) "
-                        "ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value"
-                    ),
-                    {"name": row["name"], "value": int(row["value"])},
-                )
-
-        # Repair identity sequences so future inserts don't collide.
-        for table in ("metrics", "alarms", "push_subscriptions"):
-            seq = dst_conn.execute(
-                sa.text("SELECT pg_get_serial_sequence(:t, 'id')").bindparams(t=table)
-            ).scalar()
-            if not seq:
-                continue
-            dst_conn.execute(
-                sa.text(
-                    "SELECT setval(:seq, COALESCE((SELECT MAX(id) FROM %s), 1))" % table
-                ).bindparams(seq=seq)
+            # Bulk tables in dependency order: metrics before alarms.
+            n_metrics = _copy_batched(src_conn, dst_conn, "metrics")
+            n_alarms = _copy_small(
+                src_conn, dst_conn, "alarms",
+                where=("metrics_id IS NULL OR EXISTS "
+                       "(SELECT 1 FROM metrics m WHERE m.id = alarms.metrics_id)"),
             )
-            logger.info("migrate: sequence %s repaired", seq)
+            logger.info("migrate: copied %d alarms", n_alarms)
+
+            # Carry over the trigger-maintained metric counter.
+            stats = src_conn.execute(text("SELECT * FROM _db_stats")).mappings().all()
+            for row in stats:
+                with dst_conn.begin():
+                    dst_conn.execute(
+                        text(
+                            "INSERT INTO _db_stats (name, value) VALUES (:name, :value) "
+                            "ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value"
+                        ),
+                        {"name": row["name"], "value": int(row["value"])},
+                    )
+
+            # Repair identity sequences so future inserts don't collide.
+            for table in ("metrics", "alarms", "push_subscriptions"):
+                seq = dst_conn.execute(
+                    sa.text("SELECT pg_get_serial_sequence(:t, 'id')").bindparams(t=table)
+                ).scalar()
+                if not seq:
+                    continue
+                dst_conn.execute(
+                    sa.text(
+                        "SELECT setval(:seq, COALESCE((SELECT MAX(id) FROM %s), 1))" % table
+                    ).bindparams(seq=seq)
+                )
+                logger.info("migrate: sequence %s repaired", seq)
+    finally:
+        # Release the migration engines' FDs even on failure — they are not
+        # the application's main engine.
+        src.dispose()
+        dst.dispose()
 
     logger.info(
         "migrate: SQLite -> PostgreSQL complete (metrics=%d, alarms=%d) in %.1fs",

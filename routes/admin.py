@@ -1032,7 +1032,8 @@ def admin_test_notify():
         if token:
             req.add_header("Authorization", f"Bearer {token}")
         try:
-            _urllib_request.urlopen(req, timeout=10)
+            with _urllib_request.urlopen(req, timeout=10) as resp:
+                resp.read()
             return jsonify({"status": "test sent"})
         except Exception as e:
             return jsonify({"error": str(e)}), 500

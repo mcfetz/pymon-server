@@ -49,15 +49,17 @@ def send_email_notification(target_conf: dict[str, Any], subject: str, body: str
     password = target_conf.get("password") or os.environ.get("NOTIFY_EMAIL_PASSWORD")
     use_tls = bool(target_conf.get("use_tls", True))
 
+    # Timeout guards against a hanging mail server blocking an alarm thread
+    # (and the socket FD it holds) indefinitely.
     if use_tls:
-        with smtplib.SMTP(server, port) as smtp:
+        with smtplib.SMTP(server, port, timeout=15) as smtp:
             smtp.starttls()
             if user and password:
                 smtp.login(user, password)
             logger.info("Sending email notification to %s", target_conf.get("to"))
             smtp.send_message(msg)
     else:
-        with smtplib.SMTP(server, port) as smtp:
+        with smtplib.SMTP(server, port, timeout=15) as smtp:
             if user and password:
                 smtp.login(user, password)
             smtp.send_message(msg)
@@ -220,7 +222,8 @@ def notify_targets(
             if token:
                 req.add_header("Authorization", f"Bearer {token}")
             try:
-                urllib.request.urlopen(req, timeout=10)
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    resp.read()
             except Exception as exc:
                 logger.error("ntfy notification failed: %s", exc)
 
