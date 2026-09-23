@@ -180,12 +180,27 @@ def _rule_applies_to_plugin(rule: Rule, pluginid: str) -> bool:
     return metric_matches(pattern, pluginid)
 
 
-def has_open_alarm(session: Session, agentid: str, rule: Rule) -> bool:
+def has_open_alarm(
+    session: Session,
+    agentid: str,
+    rule: Rule,
+    pluginid: str | None = None,
+    metric: str | None = None,
+) -> bool:
+    """True if an open alarm already exists for this agent+rule and, when
+    given, also pinned to the exact pluginid/metric. fire=single must treat
+    (agentid, pluginid, metric) as the composite key so wildcard plugin
+    rules can hold one open alarm per plugin/metric instead of one per
+    agent+rule."""
+    effective_pluginid = pluginid if pluginid is not None else rule.pluginid
+    effective_metric = metric if metric is not None else rule.metric
     q = (
         select(Alarm)
         .where(
             Alarm.agentid == agentid,
             Alarm.rule_id == rule.id,
+            Alarm.pluginid == effective_pluginid,
+            Alarm.metric == effective_metric,
             Alarm.acknowledged == False,  # noqa: E712
         )
         .limit(1)
@@ -460,8 +475,10 @@ def create_alarm(
 ) -> None:
     effective_pluginid = pluginid or rule.pluginid
 
-    # fire=single: nur einen offenen Alarm pro (agentid, rule)
-    if rule.fire == "single" and has_open_alarm(session, agentid, rule):
+    # fire=single: nur ein offener Alarm pro (agentid, pluginid, metric).
+    # Bei pluginid="*"-Regeln kann jeder Plugin/Metrik-Kombination ihr
+    # eigener offener Alarm existieren, ohne den der anderen zu blockieren.
+    if rule.fire == "single" and has_open_alarm(session, agentid, rule, effective_pluginid, metric):
         return
 
     # fire=replace: bestehende offene Alarme acknoledgen, dann neuen auslösen
