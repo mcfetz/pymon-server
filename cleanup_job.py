@@ -15,7 +15,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 
-from config import CONF_DIR
+from config import CONF_DIR, LOCAL_TZ
 from core import DB_WRITE_LOCK, SessionLocal, logger
 from db_models import Alarm, Metrics
 
@@ -81,7 +81,7 @@ def _should_run(data: dict) -> bool:
     parsed = _parse_time(data.get("time", "03:00"))
     if parsed is None:
         return False
-    now = datetime.now()
+    now = datetime.now(LOCAL_TZ)
     if (now.hour, now.minute) < parsed:
         return False
     today = now.date().isoformat()
@@ -158,7 +158,7 @@ def _compute_next_run(data: dict) -> str | None:
     parsed = _parse_time(data.get("time", "03:00"))
     if parsed is None:
         return None
-    now = datetime.now()
+    now = datetime.now(LOCAL_TZ)
     scheduled = now.replace(hour=parsed[0], minute=parsed[1], second=0, microsecond=0)
     today = now.date().isoformat()
     if now < scheduled:

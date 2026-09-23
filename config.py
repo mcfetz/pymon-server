@@ -11,6 +11,8 @@ nothing changes for existing setups.
 """
 
 import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 # Absolute path to the directory containing this file (pymon-server/)
 _SERVER_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -37,3 +39,12 @@ MIGRATE_SQLITE_TO_PSQL = os.environ.get("PYMON_MIGRATE_SQLITE_TO_PSQL", "").stri
 PLUGINS_DIR = os.path.abspath(
     os.environ.get("PYMON_PLUGINS_DIR", os.path.join(_SERVER_ROOT, "plugins"))
 )
+
+# ── Local timezone ────────────────────────────────────────────────────────
+# Cron schedules and the daily cleanup time are interpreted in this
+# timezone. Override with PYMON_TZ (e.g. "Europe/Berlin"); default is the
+# host/container configured local time (respects the TZ env var).
+try:
+    LOCAL_TZ: object = ZoneInfo(os.environ.get("PYMON_TZ", "").strip()) if os.environ.get("PYMON_TZ", "").strip() else datetime.now().astimezone().tzinfo
+except Exception:
+    LOCAL_TZ = datetime.now().astimezone().tzinfo

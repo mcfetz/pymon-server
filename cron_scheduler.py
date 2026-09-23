@@ -16,7 +16,7 @@ import threading
 import time
 from datetime import datetime
 
-from config import CONF_DIR
+from config import CONF_DIR, LOCAL_TZ
 from core import logger
 
 CRON_JSON = os.path.join(CONF_DIR, "cron_tasks.json")
@@ -181,8 +181,13 @@ def _resolve_executor(task: dict, executors: dict) -> dict | None:
 
 def due_tasks_for_agent(agentid: str) -> list[dict]:
     """Return due cron tasks for the given agent (enabled + allowed + not
-    already fired this minute + usable executor). Marks them served."""
-    now = datetime.now()
+    already fired this minute + usable executor). Marks them served.
+
+    Schedules are interpreted in the configured LOCAL_TZ so a 04:00 cron
+    entry always runs at 04:00 local time, regardless of the container's
+    UTC bias.
+    """
+    now = datetime.now(LOCAL_TZ)
     minute_key = now.strftime("%Y-%m-%d %H:%M")
 
     with _lock:
