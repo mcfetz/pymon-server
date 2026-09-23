@@ -628,7 +628,7 @@ def evaluate_single_rule(
                     pluginid,
                 )
         elif rule.auto_close:
-            _ack_open_alarms(session, agentid, rule, metric)
+            _ack_open_alarms(session, agentid, rule, metric, pluginid)
 
     elif rule.scope == "change":
         previous = session.query(
