@@ -7,10 +7,23 @@ container is compared against the registry that provided it. If the
 registry's current manifest digest for that tag differs from the locally
 pulled digest, a newer version is available.
 
+Some fields include per-container resource usage from the Docker stats API:
+
+  container:<name>:cpu_percent       CPU share since the clostest sample (can
+                                     exceed 100 across multiple cores)
+  container:<name>:mem_usage_bytes   current memory usage
+  container:<name>:mem_limit_bytes   container memory limit
+  container:<name>:mem_percent       usage/limit in percent
+  container:<name>:pids              current number of processes
+  container:<name>:io_read_bytes     cumulative block reads since start
+  container:<name>:io_write_bytes    cumulative block writes since start
+  container:<name>:net_rx_bytes      cumulative received network bytes
+  container:<name>:net_tx_bytes      cumulative transmitted network bytes
+
 Emitted per running container:
   container:<name>:image_outdated   1 = newer version available,
-                                    0 = up-to-date,
-                                   -1 = could not verify (registry/auth/network)
+                                     0 = up-to-date,
+                                    -1 = could not verify (registry/auth/network)
   container:<name>:image            the image reference in use (string)
 
 Summaries:
@@ -36,10 +49,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 __schema__ = {
     'label': 'Docker',
-    'description': 'Docker host, swarm statistics and container image update checks',
+    'description': 'Docker host, swarm statistics, per-container resource usage and image update checks',
     'fields': [
         {'key': 'sleep', 'label': 'Interval (s)', 'type': 'number', 'default': 60, 'min': 5},
         {'key': 'base_url', 'label': 'Docker socket URL', 'type': 'string', 'default': '', 'optional': True},
+        {'key': 'collect_stats', 'label': 'Collect per-container CPU/memory/IO/net', 'type': 'boolean', 'default': True, 'optional': True},
         {'key': 'check_updates', 'label': 'Check container image updates in registry', 'type': 'boolean', 'default': False, 'optional': True},
         {'key': 'check_updates_interval_min', 'label': 'Re-check registry interval (min)', 'type': 'number', 'default': 360, 'min': 5, 'optional': True},
         {'key': 'registry_username', 'label': 'Registry username (optional)', 'type': 'string', 'default': '', 'optional': True},
@@ -246,6 +260,65 @@ def _update_checks(client, running, metrics, config):
     _save_cache(base_url, cache)
 
 
+def _resource_stats(running, metrics, budget=8.0):
+    """Collect per-container CPU/memory/IO/net/pids via the Docker stats API.
+
+    Uses the daemon's ``precpu_stats`` so CPU percent is computed without a
+    second sample. Each container gets a try/except so one broken stats call
+    never fails the whole poll. Stops early once the budget is spent.
+    """
+    deadline = time.time() + budget
+    for c in running:
+        if time.time() >= deadline:
+            break
+        name = c.name.strip() or c.short_id
+        try:
+            s = c.stats(stream=False)
+        except Exception:
+            continue
+
+        cpu = s.get("cpu_stats", {}) or {}
+        precpu = s.get("precpu_stats", {}) or {}
+        cpu_delta = (cpu.get("cpu_usage", {}).get("total_usage", 0)
+                     - precpu.get("cpu_usage", {}).get("total_usage", 0))
+        sys_delta = (cpu.get("system_cpu_usage", 0)
+                     - precpu.get("system_cpu_usage", 0))
+        online = cpu.get("online_cpus") or precpu.get("online_cpus") or 1
+        if sys_delta > 0 and cpu_delta >= 0:
+            metrics[f"container:{name}:cpu_percent"] = round(
+                cpu_delta / sys_delta * online * 100.0, 1)
+
+        mem = s.get("memory_stats", {}) or {}
+        usage = mem.get("usage")
+        limit = mem.get("limit")
+        if usage is not None:
+            metrics[f"container:{name}:mem_usage_bytes"] = int(usage)
+            if limit:
+                metrics[f"container:{name}:mem_limit_bytes"] = int(limit)
+                metrics[f"container:{name}:mem_percent"] = round(100.0 * usage / limit, 1)
+        pids = (mem.get("pids_stats", {}) or {}).get("current")
+        if pids is not None:
+            metrics[f"container:{name}:pids"] = int(pids)
+
+        read_b = write_b = 0
+        for b in (s.get("blkio_stats", {}) or {}).get("io_service_bytes_recursive", []) or []:
+            op = (b.get("op") or "").lower()
+            if op == "read":
+                read_b += b.get("value", 0)
+            elif op == "write":
+                write_b += b.get("value", 0)
+        if read_b or write_b:
+            metrics[f"container:{name}:io_read_bytes"] = int(read_b)
+            metrics[f"container:{name}:io_write_bytes"] = int(write_b)
+
+        net = s.get("networks", {}) or {}
+        rx = sum(((v or {}).get("rx_bytes") or 0) for v in net.values())
+        tx = sum(((v or {}).get("tx_bytes") or 0) for v in net.values())
+        if rx or tx:
+            metrics[f"container:{name}:net_rx_bytes"] = int(rx)
+            metrics[f"container:{name}:net_tx_bytes"] = int(tx)
+
+
 if __name__ == "__main__":
     config = json.load(sys.stdin)
     base_url = config.get("base_url")
@@ -297,6 +370,12 @@ if __name__ == "__main__":
     if config.get("check_updates"):
         try:
             _update_checks(client, running, metrics, config)
+        except Exception:
+            pass
+
+    if config.get("collect_stats", True):
+        try:
+            _resource_stats(running, metrics)
         except Exception:
             pass
 
