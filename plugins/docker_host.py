@@ -356,17 +356,23 @@ def _container_states(all_containers, services, metrics):
         metrics[f"container:{name}:running"] = 1 if c.status == "running" else 0
 
 
-def _service_states(services, running_containers, metrics):
+def _service_states(client, services, metrics):
     """Emit per-service desired replicas, running tasks and an up flag.
 
-    ``up`` is 1 when a replicated service meets its desired replica count
-    (at least one task running for global services) — this is the swarm-level
-    health signal.
+    Task counts are resolved over the whole swarm (one ``api.tasks`` call)
+    instead of the local node's containers: a service whose tasks run on
+    other nodes must not look down on this node. ``up`` is 1 when a
+    replicated service meets its desired replica count (at least one task
+    running for global services).
     """
     running_by_svc = {}
-    for c in running_containers:
-        sid = _swarm_service_id(c)
-        if sid:
+    try:
+        task_rows = client.api.tasks(filters={"desired-state": "running"})
+    except Exception:
+        task_rows = []
+    for t in task_rows:
+        if (t.get("Status") or {}).get("State") == "running":
+            sid = t.get("ServiceID", "")
             running_by_svc[sid] = running_by_svc.get(sid, 0) + 1
     for svc in services:
         name = svc.name or svc.id
@@ -426,7 +432,7 @@ if __name__ == "__main__":
 
     try:
         _container_states(all_containers, services, metrics)
-        _service_states(services, running, metrics)
+        _service_states(client, services, metrics)
     except Exception as e:
         print(json.dumps({"error": str(e)}))
         sys.exit(1)
