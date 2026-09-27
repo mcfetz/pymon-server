@@ -29,6 +29,17 @@ Emitted per running container:
 Summaries:
   containers_updates_available / containers_updates_current / containers_updates_unchecked
 
+Per-container state:
+  container:<name>:running     1 = running, 0 = not (only for non-swarm
+                               containers; swarm task transitions would be noise)
+  container:<name>:service     the swarm service a task container belongs to
+
+Per swarm service:
+  service:<name>:replicas      desired replica count (replicated services)
+  service:<name>:tasks_running actual number of running tasks
+  service:<name>:up            1 when the service meets its desired replicas
+                               (or has a task running for global services)
+
 The registry is only queried when the local image digest changed or the
 re-check interval (check_updates_interval_min) elapsed, results are cached
 in a per-host file under the temp dir.
@@ -319,6 +330,61 @@ def _resource_stats(running, metrics, budget=8.0):
             metrics[f"container:{name}:net_tx_bytes"] = int(tx)
 
 
+def _swarm_service_id(c):
+    return ((c.attrs.get("Config") or {}).get("Labels") or {}).get("com.docker.swarm.service.id")
+
+
+def _container_states(all_containers, services, metrics):
+    """Emit per-container running state.
+
+    Containers that belong to a swarm service are excluded from
+    ``container:<name>:running``: their exit/restart is expected during
+    rollouts, so a down alarm at container level would be noise. They are
+    tracked at the service level instead (see ``_service_states``).
+    """
+    svc_by_id = {}
+    for svc in services:
+        svc_by_id[svc.id] = svc
+    for c in all_containers:
+        name = c.name.strip() or c.short_id
+        sid = _swarm_service_id(c)
+        if sid:
+            svc = svc_by_id.get(sid)
+            if svc:
+                metrics[f"container:{name}:service"] = svc.name or sid[:12]
+            continue
+        metrics[f"container:{name}:running"] = 1 if c.status == "running" else 0
+
+
+def _service_states(services, running_containers, metrics):
+    """Emit per-service desired replicas, running tasks and an up flag.
+
+    ``up`` is 1 when a replicated service meets its desired replica count
+    (at least one task running for global services) — this is the swarm-level
+    health signal.
+    """
+    running_by_svc = {}
+    for c in running_containers:
+        sid = _swarm_service_id(c)
+        if sid:
+            running_by_svc[sid] = running_by_svc.get(sid, 0) + 1
+    for svc in services:
+        name = svc.name or svc.id
+        spec = svc.attrs.get("Spec", {})
+        mode = spec.get("Mode", {})
+        replicas = None
+        if "Replicated" in mode:
+            replicas = mode["Replicated"].get("Replicas", 0)
+        if replicas is not None:
+            metrics[f"service:{name}:replicas"] = replicas
+        running_n = running_by_svc.get(svc.id, 0)
+        metrics[f"service:{name}:tasks_running"] = running_n
+        if replicas is not None:
+            metrics[f"service:{name}:up"] = 1 if running_n >= replicas else 0
+        else:
+            metrics[f"service:{name}:up"] = 1 if running_n > 0 else 0
+
+
 if __name__ == "__main__":
     config = json.load(sys.stdin)
     base_url = config.get("base_url")
@@ -355,17 +421,15 @@ if __name__ == "__main__":
     try:
         services = client.services.list()
         metrics["services_total"] = len(services)
-        for svc in services:
-            name = svc.name or svc.id
-            spec = svc.attrs.get("Spec", {})
-            mode = spec.get("Mode", {})
-            replicas = None
-            if "Replicated" in mode:
-                replicas = mode["Replicated"].get("Replicas", 0)
-            if replicas is not None:
-                metrics[f"service:{name}:replicas"] = replicas
     except APIError:
-        pass
+        services = []
+
+    try:
+        _container_states(all_containers, services, metrics)
+        _service_states(services, running, metrics)
+    except Exception as e:
+        print(json.dumps({"error": str(e)}))
+        sys.exit(1)
 
     if config.get("check_updates"):
         try:
