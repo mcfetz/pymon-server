@@ -20,6 +20,105 @@ SNOOZE_DURATIONS = {
 # Nearby same-rule alarms shown in the alarm detail view, per side.
 SURROUNDING_LIMIT = 10
 
+# Alarms closer together than this belong to the same incident.
+INCIDENT_GAP_MINUTES = 60
+# Bounds for the per-rule statistics so a chatty rule cannot blow up the query.
+STATS_WINDOW_DAYS = 90
+STATS_MAX_ALARMS = 5000
+
+
+def _pct(values: list[float], q: float) -> float | None:
+    """Linear-interpolated percentile; None for an empty sample."""
+    if not values:
+        return None
+    v = sorted(values)
+    k = (len(v) - 1) * q
+    lo = int(k)
+    hi = min(lo + 1, len(v) - 1)
+    return v[lo] + (v[hi] - v[lo]) * (k - lo)
+
+
+def _rule_incident_stats(session, rule_id: str, now: datetime | None = None) -> dict:
+    """Describe how a rule's alarms arrive, clustered into incidents.
+
+    Alarms inside one incident fire seconds apart, so an alarm-to-alarm median
+    collapses to zero and says nothing. Gaps are therefore measured between
+    incident starts, and incident size is reported separately.
+    """
+    now = now or datetime.now(UTC).replace(tzinfo=None)
+    rows = (
+        session.query(Alarm.created_at)
+        .filter(
+            Alarm.rule_id == rule_id,
+            Alarm.created_at >= now - timedelta(days=STATS_WINDOW_DAYS),
+        )
+        .order_by(Alarm.created_at)
+        .limit(STATS_MAX_ALARMS + 1)
+        .all()
+    )
+    truncated = len(rows) > STATS_MAX_ALARMS
+    stamps = [r[0] for r in rows[:STATS_MAX_ALARMS]]
+
+    if not stamps:
+        return {
+            "incidents": 0,
+            "alarms": 0,
+            "observed_days": 0,
+            "gap_minutes": INCIDENT_GAP_MINUTES,
+            "truncated": truncated,
+        }
+
+    gap = timedelta(minutes=INCIDENT_GAP_MINUTES)
+    incidents: list[list[datetime]] = [[stamps[0]]]
+    for prev, cur in zip(stamps, stamps[1:]):
+        if cur - prev > gap:
+            incidents.append([cur])
+        else:
+            incidents[-1].append(cur)
+
+    starts = [inc[0] for inc in incidents]
+    sizes = [len(inc) for inc in incidents]
+    intervals = [
+        (starts[i + 1] - starts[i]).total_seconds() / 3600 for i in range(len(starts) - 1)
+    ]
+    # Quiet time is the silence between the end of one incident and the next.
+    quiet = [
+        (starts[i + 1] - incidents[i][-1]).total_seconds() / 3600
+        for i in range(len(starts) - 1)
+    ]
+    span_hours = max((stamps[-1] - stamps[0]).total_seconds() / 3600, 1.0)
+
+    def r(x, nd=1):
+        return None if x is None else round(x, nd)
+
+    return {
+        "incidents": len(incidents),
+        "alarms": len(stamps),
+        "gap_minutes": INCIDENT_GAP_MINUTES,
+        "observed_days": round(span_hours / 24, 1),
+        # Meaningless on a short window: a few incidents in two days would read
+        # as dozens per week.
+        "incidents_per_week": (
+            r(len(incidents) / (span_hours / 168), 2) if span_hours >= 168 else None
+        ),
+        "alarms_per_incident": {
+            "median": r(float(_pct(sizes, 0.5))),
+            "p75": r(float(_pct(sizes, 0.75))),
+            "max": max(sizes),
+            "mean": r(sum(sizes) / len(sizes)),
+        },
+        "interval_hours": {
+            "median": r(_pct(intervals, 0.5)),
+            "p75": r(_pct(intervals, 0.75)),
+            "samples": len(intervals),
+        },
+        "longest_quiet_hours": r(max(quiet), 1) if quiet else None,
+        "first_incident": starts[0].isoformat(),
+        "last_incident": starts[-1].isoformat(),
+        "since_last_hours": r((now - starts[-1]).total_seconds() / 3600, 1),
+        "truncated": truncated,
+    }
+
 
 def _alarm_to_dict(a: Alarm) -> dict:
     return {
@@ -328,6 +427,7 @@ def get_alarm_detail(alarmid: int):
         result["total_same_rule"] = (
             result["surrounding_before_total"] + result["surrounding_after_total"] + 1
         )
+        result["rule_stats"] = _rule_incident_stats(session, alarm.rule_id)
 
         # Rule info from rules.json
         try:
