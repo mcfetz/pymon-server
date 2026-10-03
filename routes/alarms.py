@@ -17,6 +17,9 @@ SNOOZE_DURATIONS = {
     "1w": timedelta(weeks=1),
 }
 
+# Nearby same-rule alarms shown in the alarm detail view, per side.
+SURROUNDING_LIMIT = 10
+
 
 def _alarm_to_dict(a: Alarm) -> dict:
     return {
@@ -268,32 +271,37 @@ def get_alarm_detail(alarmid: int):
             "expires_at": snooze.get("expires_at") if snooze else None,
         }
 
-        # 5 alarms before and after (same rule+agent+plugin+metric), ordered by id
-        before = session.query(Alarm).filter(
+        # Nearby alarms of the same rule, ordered by time rather than id: alarms
+        # are looked up around this one and then capped on each side.
+        same_rule = [
             Alarm.rule_id == alarm.rule_id,
-            Alarm.agentid == alarm.agentid,
-            Alarm.pluginid == alarm.pluginid,
-            Alarm.metric == alarm.metric,
-            Alarm.id < alarmid,
-        ).order_by(desc(Alarm.id)).limit(5).all()
-
-        after = session.query(Alarm).filter(
-            Alarm.rule_id == alarm.rule_id,
-            Alarm.agentid == alarm.agentid,
-            Alarm.pluginid == alarm.pluginid,
-            Alarm.metric == alarm.metric,
-            Alarm.id > alarmid,
-        ).order_by(asc(Alarm.id)).limit(5).all()
-
-        result["surrounding"] = sorted(
-            [_alarm_to_dict(a) for a in before + after],
-            key=lambda x: x["id"],
+            Alarm.created_at < alarm.created_at,
+        ]
+        before = (
+            session.query(Alarm)
+            .filter(*same_rule)
+            .order_by(desc(Alarm.created_at), desc(Alarm.id))
+            .limit(SURROUNDING_LIMIT)
+            .all()
         )
-        result["total_same_type"] = session.query(Alarm).filter(
+        after = (
+            session.query(Alarm)
+            .filter(Alarm.rule_id == alarm.rule_id, Alarm.created_at > alarm.created_at)
+            .order_by(asc(Alarm.created_at), asc(Alarm.id))
+            .limit(SURROUNDING_LIMIT)
+            .all()
+        )
+
+        result["surrounding"] = [
+            _alarm_to_dict(a) for a in list(reversed(before)) + after
+        ]
+        result["surrounding_before"] = len(before)
+        result["surrounding_after"] = len(after)
+        result["surrounding_capped"] = (
+            len(before) == SURROUNDING_LIMIT or len(after) == SURROUNDING_LIMIT
+        )
+        result["total_same_rule"] = session.query(Alarm).filter(
             Alarm.rule_id == alarm.rule_id,
-            Alarm.agentid == alarm.agentid,
-            Alarm.pluginid == alarm.pluginid,
-            Alarm.metric == alarm.metric,
         ).count()
 
         # Rule info from rules.json

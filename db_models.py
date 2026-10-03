@@ -66,6 +66,14 @@ class Alarm(Base):
     ack_method = Column(String, nullable=True)
     metrics_id = Column(Integer, ForeignKey("metrics.id"), nullable=False, index=True)
 
+    __table_args__ = (
+        Index(
+            "idx_alarms_rule_ts",
+            "rule_id",
+            "created_at",
+        ),
+    )
+
 
 class MetricLastSeen(Base):
     """Tracks the most recent server receipt time per metric.
