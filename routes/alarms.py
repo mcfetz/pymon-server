@@ -6,7 +6,7 @@ from flask import jsonify, request
 from core import DB_WRITE_LOCK, app, logger, SessionLocal
 from db_models import Alarm, Metrics
 from auth import require_agent_apikey
-from sqlalchemy import desc, asc
+from sqlalchemy import desc, asc, func
 from config import CONF_DIR
 from snooze import load_snoozes, prune_expired_snoozes, save_snoozes, snooze_key
 
@@ -273,13 +273,12 @@ def get_alarm_detail(alarmid: int):
 
         # Nearby alarms of the same rule, ordered by time rather than id: alarms
         # are looked up around this one and then capped on each side.
-        same_rule = [
-            Alarm.rule_id == alarm.rule_id,
-            Alarm.created_at < alarm.created_at,
-        ]
         before = (
             session.query(Alarm)
-            .filter(*same_rule)
+            .filter(
+                Alarm.rule_id == alarm.rule_id,
+                Alarm.created_at < alarm.created_at,
+            )
             .order_by(desc(Alarm.created_at), desc(Alarm.id))
             .limit(SURROUNDING_LIMIT)
             .all()
@@ -292,17 +291,43 @@ def get_alarm_detail(alarmid: int):
             .all()
         )
 
-        result["surrounding"] = [
-            _alarm_to_dict(a) for a in list(reversed(before)) + after
-        ]
+        surrounding = list(reversed(before)) + after
+        result["surrounding"] = [_alarm_to_dict(a) for a in surrounding]
         result["surrounding_before"] = len(before)
         result["surrounding_after"] = len(after)
-        result["surrounding_capped"] = (
-            len(before) == SURROUNDING_LIMIT or len(after) == SURROUNDING_LIMIT
+        # True totals per side, so the UI can report "10 of 78 before" instead of
+        # implying the cap is the whole story.
+        result["surrounding_before_total"] = (
+            session.query(func.count(Alarm.id))
+            .filter(Alarm.rule_id == alarm.rule_id, Alarm.created_at < alarm.created_at)
+            .scalar()
+            or 0
         )
-        result["total_same_rule"] = session.query(Alarm).filter(
-            Alarm.rule_id == alarm.rule_id,
-        ).count()
+        result["surrounding_after_total"] = (
+            session.query(func.count(Alarm.id))
+            .filter(Alarm.rule_id == alarm.rule_id, Alarm.created_at > alarm.created_at)
+            .scalar()
+            or 0
+        )
+        # True when the per-side cap actually hid alarms, so exactly-limit totals
+        # are not reported as truncated.
+        result["surrounding_before_capped"] = (
+            result["surrounding_before_total"] > SURROUNDING_LIMIT
+        )
+        result["surrounding_after_capped"] = (
+            result["surrounding_after_total"] > SURROUNDING_LIMIT
+        )
+        result["surrounding_span"] = (
+            [
+                min(a.created_at for a in surrounding).isoformat(),
+                max(a.created_at for a in surrounding).isoformat(),
+            ]
+            if surrounding
+            else None
+        )
+        result["total_same_rule"] = (
+            result["surrounding_before_total"] + result["surrounding_after_total"] + 1
+        )
 
         # Rule info from rules.json
         try:
