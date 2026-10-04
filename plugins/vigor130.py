@@ -327,12 +327,16 @@ def compute_poll(state, parsed, now=None, uptime_seconds=None):
         now = time.time()
     metrics = {}
     line_state = parsed.get("line_state")
-    ok_state = bool(line_state and str(line_state).upper() not in PLACEHOLDERS)
+    ok_state = bool(line_state and str(line_state).strip().lower() not in PLACEHOLDERS)
     metrics["vigor_dsl_scrape_success"] = 1 if ok_state else 0
     if not ok_state:
+        metrics["vigor_dsl_error"] = "parse_failed"
         state["scrape_fail_count"] = state.get("scrape_fail_count", 0) + 1
         return metrics
 
+    # Emit an empty error so a previously reported failure cannot stay stored as
+    # the current value once the modem is reachable again.
+    metrics["vigor_dsl_error"] = ""
     state["scrape_fail_count"] = 0
     state["last_poll_at"] = now
     state_key = str(line_state).upper().strip()
