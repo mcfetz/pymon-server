@@ -5,7 +5,15 @@ Optional container image update check:
 When the 'check_updates' flag is enabled, the image tag of every running
 container is compared against the registry that provided it. If the
 registry's current manifest digest for that tag differs from the locally
-pulled digest, a newer version is available.
+pulled digest, a newer version is available. A container that is running but
+unhealthy is never checked — a crash-looping or healthcheck-failing container
+must not be reported as "newer image available", because the image is not the
+cause.
+
+Containers without a healthcheck report no health status and are checked by
+default. Set 'check_updates_include_unchecked' to false to check only
+containers that actually pass their healthcheck instead; note that hosts whose
+images ship no HEALTHCHECK then lose nearly all update coverage.
 
 Some fields include per-container resource usage from the Docker stats API:
 
@@ -20,7 +28,7 @@ Some fields include per-container resource usage from the Docker stats API:
   container:<name>:net_rx_bytes      cumulative received network bytes
   container:<name>:net_tx_bytes      cumulative transmitted network bytes
 
-Emitted per running container:
+Emitted per checked container:
   container:<name>:image_outdated   1 = newer version available,
                                      0 = up-to-date,
                                     -1 = could not verify (registry/auth/network)
@@ -28,6 +36,8 @@ Emitted per running container:
 
 Summaries:
   containers_updates_available / containers_updates_current / containers_updates_unchecked
+  containers_updates_skipped       running containers not checked because they
+                                   are unhealthy
 
 Per-container state:
   container:<name>:running     1 = running, 0 = not (only for non-swarm
@@ -233,7 +243,45 @@ def _check_one(cache, c, interval_min, username, password):
         return cid, name, "", -1
 
 
-def _update_checks(client, running, metrics, config):
+def _update_check_candidates(client, running, include_unchecked=False):
+    """Return the running containers that are eligible for an image update check.
+
+    A container that is explicitly unhealthy is never checked: a crash-looping
+    or healthcheck-failing container must not be reported as "newer image
+    available", because the image is not the cause.
+
+    Containers without a healthcheck report no health status at all. They are
+    included only when ``include_unchecked`` is set — on a host where most
+    images ship no HEALTHCHECK they would otherwise silently lose update
+    coverage.
+
+    The Docker ``health`` filter resolves the matching sets in one call instead
+    of an inspect per container. If the daemon rejects the filter we fall back
+    to a per-container inspect.
+    """
+    wanted = ["healthy"] + (["none"] if include_unchecked else [])
+    eligible = set()
+    for value in wanted:
+        try:
+            eligible |= {c.id for c in client.containers.list(filters={"health": value})}
+        except Exception:
+            eligible = None
+            break
+    if eligible is None:
+        candidates = []
+        for c in running:
+            try:
+                state = client.api.inspect_container(c.id).get("State") or {}
+            except Exception:
+                continue
+            status = (state.get("Health") or {}).get("Status")
+            if status == "healthy" or (include_unchecked and status is None):
+                candidates.append(c)
+        return candidates
+    return [c for c in running if c.id in eligible]
+
+
+def _update_checks(client, candidates, metrics, config):
     interval_min = int(config.get("check_updates_interval_min") or 360)
     username = config.get("registry_username", "") or ""
     password = config.get("registry_password", "") or ""
@@ -243,7 +291,7 @@ def _update_checks(client, running, metrics, config):
     counters = {"outdated": 0, "current": 0, "unchecked": 0}
     with ThreadPoolExecutor(max_workers=8) as pool:
         futures = []
-        for c in running:
+        for c in candidates:
             if time.time() >= deadline:
                 break
             futures.append(pool.submit(_check_one, cache, c, interval_min, username, password))
@@ -439,7 +487,10 @@ if __name__ == "__main__":
 
     if config.get("check_updates"):
         try:
-            _update_checks(client, running, metrics, config)
+            include_unchecked = bool(config.get("check_updates_include_unchecked"))
+            candidates = _update_check_candidates(client, running, include_unchecked)
+            metrics["containers_updates_skipped"] = len(running) - len(candidates)
+            _update_checks(client, candidates, metrics, config)
         except Exception:
             pass
 
