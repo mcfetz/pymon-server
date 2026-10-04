@@ -1453,6 +1453,7 @@ def _normalize_dashboard(data: dict) -> dict | None:
             "id": str(raw.get("id") or ""),
             "type": ptype,
             "title": str(raw.get("title") or ""),
+            "comment": str(raw.get("comment") or ""),
             "group": str(raw.get("group") or ""),
             "agentid": [str(a) for a in agentid],
             "pluginid": str(raw.get("pluginid") or ""),
