@@ -625,6 +625,10 @@ def run(config):
         if token is None:
             token, error = _try_login(conn, base, config.get("username", "admin"), password)
             if not token:
+                # The embedded web server intermittently drops connections.
+                # Only retry transport failures, never rejected credentials.
+                if error == "connection_error" and attempt == 0:
+                    continue
                 break
         html, error = _fetch_dsl_page(conn, base, token)
         if html is not None and _is_dsl_page(parse_dsl_page(html)):
