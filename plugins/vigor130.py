@@ -8,13 +8,16 @@ detection, baseline handling and outage tracking survive agent restarts.
 Credentials and session tokens are never emitted into metric names, stdout
 or error strings.
 """
+import base64
 import http.cookiejar
 import json
 import os
+import random
 import re
 import ssl
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from html import unescape
@@ -168,6 +171,13 @@ def _is_valid(value):
     return True
 
 
+# A bare number, i.e. a table value rather than a unit or a stray fragment.
+_PURE_NUM_RE = re.compile(r"^[-+]?\d+(?:[.,]\d+)?$")
+_UNIT_RE = re.compile(
+    r"(?i)^(?:kbps|mbps|gbps|db|s|sec|secs|second|seconds|kbytes|bytes|kbit|kbits)\.?$"
+)
+
+
 def _normalize_text(html):
     """Convert HTML into a list of meaningful text lines."""
     html = re.sub(r"(?is)<(script|style|textarea)[^>]*>.*?</\1>", " ", html)
@@ -178,6 +188,32 @@ def _normalize_text(html):
     return [l for l in lines if l]
 
 
+def _row_values(lines, i, want=2):
+    """Collect the value tokens belonging to the label at ``lines[i]``.
+
+    The status page renders a Downstream/Upstream two column table, so a row
+    reads 'Label', value, unit, value, unit. Units and following labels are
+    skipped and at most ``want`` value tokens are returned. Single-value fields
+    pass ``want=1``.
+    """
+    out = []
+    for token in lines[i + 1:]:
+        tok = token.strip()
+        if LABEL_KEYS.get(_norm_label(tok)) or tok.endswith(":"):
+            break
+        if _PURE_NUM_RE.match(tok):
+            out.append(tok)
+        elif _UNIT_RE.match(tok):
+            continue
+        else:
+            # Non-numeric value, e.g. 'Interleave' or 'SHOWTIME'. Rows are
+            # capped at `want` tokens below, so no terminator is needed here.
+            out.append(tok)
+        if len(out) >= want:
+            break
+    return out
+
+
 def parse_dsl_page(html):
     """Extract typed DSL fields from the dslstatus page.
 
@@ -186,6 +222,7 @@ def parse_dsl_page(html):
     lines = _normalize_text(html)
     found = {}
 
+    # Single-line layout: 'Line State: SHOWTIME'.
     for line in lines:
         m = re.match(r"^([A-Za-z][\w .()\-]{0,40}?):\s*(.*)$", line)
         if not m:
@@ -196,20 +233,21 @@ def parse_dsl_page(html):
             if _is_valid(value):
                 found[key] = value
 
-    # Two-column table layout: 'Label' line followed by a value line.
+    # Two-column Downstream/Upstream table: 'Label', value, unit, value, unit.
     for i, line in enumerate(lines):
         key = LABEL_KEYS.get(_norm_label(line))
         if not key or key in found or i + 1 >= len(lines):
             continue
-        nxt = lines[i + 1]
-        if (
-            _to_num(nxt) is not None
-            or "downstream" in nxt.lower()
-            or _norm_label(nxt) not in LABEL_KEYS
-        ):
-            value = _parse_value(nxt, FIELD_KIND[key])
-            if _is_valid(value):
-                found[key] = value
+        kind = FIELD_KIND[key]
+        if kind.startswith("pair"):
+            leaf = kind.split("_", 1)[1]
+            raw = _row_values(lines, i, 2)
+            value = [_parse_value(r, leaf) for r in raw]
+        else:
+            raw = _row_values(lines, i, 1)
+            value = _parse_value(raw[0], kind) if raw else None
+        if _is_valid(value):
+            found[key] = value
 
     return found
 
@@ -225,7 +263,7 @@ def _san(str_value):
 
 
 def _pair_metrics(prefix, pair, out, suffix=("_downstream", "_upstream")):
-    if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+    if not isinstance(pair, (list, tuple)) or not pair:
         return
     for val, suf in zip(pair, suffix):
         if val is not None:
@@ -317,6 +355,9 @@ def compute_poll(state, parsed, now=None, uptime_seconds=None):
     for key, prefix in SYNC_METRICS.items():
         _pair_metrics(prefix, parsed.get(key), metrics)
 
+    # 'Fast' vs 'Interleave' path mode matters when diagnosing line instability.
+    _pair_metrics("path_mode", parsed.get("path_mode"), metrics)
+
     last = state.get("last_line_state")
     loss_at = state.get("last_showtime_loss_at")
     was_baseline = bool(state.get("baseline"))
@@ -348,7 +389,7 @@ def compute_poll(state, parsed, now=None, uptime_seconds=None):
     prev_reads = {}
     for key, base in COUNTER_BASE.items():
         pair = parsed.get(key)
-        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+        if not isinstance(pair, (list, tuple)) or not pair:
             continue
         for val, direction in zip(pair, ("_downstream", "_upstream")):
             if val is None:
@@ -397,6 +438,11 @@ def compute_poll(state, parsed, now=None, uptime_seconds=None):
 AUTH_TOKEN_RE = re.compile(r"sFormAuthStr\s*=\s*[\"']?([A-Za-z0-9]+)[\"']?", re.I)
 AUTH_ERROR_MARKERS = ("autherror", "session expired", "sformautherrstr")
 
+# The firmware's login form posts base64 credentials as 'aa'/'ab' to wlogin.cgi
+# together with a client side generated sFormAuthStr token.
+LOGIN_PATH = "/cgi-bin/wlogin.cgi"
+AUTH_CHARSET = "ABCDEFGHJKMNPQRSTWXYZabcdefhijkmnprstwxyz2345678"
+
 
 class UrllibConn:
     """Cookie-aware urllib client used for real scrapes."""
@@ -428,23 +474,6 @@ class UrllibConn:
             return resp.read().decode("utf-8", "replace")
 
 
-def _extract_form_action(html):
-    m = re.search(r"<form[^>]*action\s*=\s*[\"']([^\"']+)[\"']", html, re.I)
-    return m.group(1) if m else ""
-
-
-def _extract_inputs(html):
-    fields = {}
-    for m in re.finditer(r"<input\b[^>]*>", html, re.I):
-        tag = m.group(0)
-        nm = re.search(r"name\s*=\s*[\"']([^\"']+)[\"']", tag, re.I)
-        if not nm:
-            continue
-        vl = re.search(r"value\s*=\s*[\"']([^\"']*)[\"']", tag, re.I)
-        fields[nm.group(1)] = vl.group(1) if vl else ""
-    return fields
-
-
 def _extract_token(html):
     m = AUTH_TOKEN_RE.search(html or "")
     return m.group(1) if m else None
@@ -468,31 +497,46 @@ def _url(base, path):
 
 
 def _try_login(conn, base, username, password):
-    """Return (session_token, error_code). token is None on failure."""
+    """Return (session_token, error_code).
+
+    Transport failures are reported separately from rejected credentials so a
+    timeout or unreachable host is never misreported as an auth problem.
+    """
+    fields = {
+        "aa": base64.b64encode(username.encode()).decode(),
+        "ab": base64.b64encode(password.encode()).decode(),
+        "sFormAuthStr": "".join(random.choice(AUTH_CHARSET) for _ in range(15)),
+    }
     try:
-        html = conn.get(_url(base, "/weblogin.htm"))
+        body = conn.post(_url(base, LOGIN_PATH), fields)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            return None, "auth_error"
+        return None, f"http_{exc.code}"
     except Exception:
-        return None, "auth_error"
-    action = _extract_form_action(html) or "/cgi-bin/login.cgi"
-    fields = _extract_inputs(html)
-    fields["sUserName"] = username
-    fields["sSysPass"] = password
-    fields["btnOk"] = fields.get("btnOk") or "OK"
-    try:
-        body = conn.post(_url(base, action), fields)
-    except Exception:
-        return None, "auth_error"
+        return None, "connection_error"
+
     token = _extract_token(body)
     if token:
         return token, None
-    for path in ("/", "/index.htm", "/menu/framelist.htm", "/page/menu.htm"):
+
+    # Some firmwares answer the login POST with a redirect to a frame page that
+    # carries the token instead.
+    for path in ("/index.htm", "/menu/framelist.htm", "/doc/dslstatus.sht"):
         try:
             token = _extract_token(conn.get(_url(base, path)))
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403):
+                return None, "auth_error"
+            continue
         except Exception:
             continue
         if token:
             return token, None
-    return None, "auth_error"
+
+    if _is_autherror(body):
+        return None, "auth_error"
+    return None, "no_session"
 
 
 def _fetch_dsl_page(conn, base, token):
