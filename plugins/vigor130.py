@@ -313,6 +313,46 @@ def _save_state(path, state):
         pass
 
 
+COUNTER_LABELS = {
+    _norm_label(label) for key, label, _kind in DSL_FIELDS if key in COUNTER_BASE
+}
+
+
+def _detect_counter_columns(lines):
+    """Report which column headers the error-counter table actually uses.
+
+    The error counters live in their own table, separate from the
+    Downstream/Upstream sync table, so the sync labels cannot be assumed for
+    them: on this firmware the counters are headed Near End / Far End, which is
+    the opposite direction (Near End is what the CPE transmits). Emitted as a
+    two-word enum so the metric names can be migrated on evidence instead of
+    assumption. No page content is stored.
+    """
+    first = None
+    for i, line in enumerate(lines):
+        if _norm_label(line) in COUNTER_LABELS:
+            first = i
+            break
+    if first is None:
+        return None
+    # Walk backwards and take the *nearest* preceding header token. The sync
+    # table's own Downstream/Upstream header also lies in this direction, so
+    # stopping at the first header is what keeps the two tables apart. The pair
+    # is read from a small neighbourhood because a td-per-cell table puts the
+    # two column names on separate lines.
+    window = lines[max(0, first - 20):first]
+    for i in range(len(window) - 1, -1, -1):
+        low = window[i].lower()
+        if not any(t in low for t in ("near end", "far end", "downstream", "upstream")):
+            continue
+        neigh = " ".join(window[max(0, i - 2):i + 3]).lower()
+        if "near end" in neigh and "far end" in neigh:
+            return "near_end_far_end"
+        if "downstream" in neigh and "upstream" in neigh:
+            return "downstream_upstream"
+    return None
+
+
 def _default_state_file():
     plugin_dir = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(plugin_dir, ".vigor130_state.json")
@@ -350,7 +390,10 @@ def compute_poll(state, parsed, now=None, uptime_seconds=None):
     if uptime_seconds is not None:
         try:
             up = float(uptime_seconds)
-            metrics["vigor_dsl_uptime_seconds"] = int(up)
+            # Canonical name. The former vigor_dsl_uptime_seconds is not
+            # emitted any more: it had zero consumers (no rule, no dashboard),
+            # and every extra metric costs rows in an already large database.
+            metrics["vigor_dsl_system_uptime_seconds"] = int(up)
         except (TypeError, ValueError):
             up = None
     else:
@@ -577,26 +620,34 @@ def _parse_duration(line: str) -> float | None:
 
 
 def _fetch_uptime(conn, base, token):
-    """Best-effort system uptime from the System Status page."""
-    try:
-        html = conn.get(f"{base}/cgi-bin/V2X00.cgi?sFormAuthStr={token}&fid=2015")
-    except Exception:
+    """Best-effort system uptime from the authenticated online dashboard.
+
+    Only fid=168 carries "System Up Time". fid=2015 (system status) does not,
+    so the uptime was never measured and the reboot-vs-resync split in
+    compute_poll ran blind on every poll. The legacy pages are kept as
+    fallbacks for firmware variants that do not serve fid=168.
+    """
+    pages = (
+        (f"{base}/cgi-bin/V2X00.cgi?sFormAuthStr={token}&fid=168", "fid=168"),
+        (f"{base}/doc/online1.sht", "online1.sht"),
+        (f"{base}/cgi-bin/V2X00.cgi?sFormAuthStr={token}&fid=2015", "fid=2015"),
+        (f"{base}/doc/status.htm", "status.htm"),
+    )
+    for url, _label in pages:
         try:
-            html = conn.get(f"{base}/doc/status.htm")
+            html = conn.get(url)
         except Exception:
-            return None
-    lines = _normalize_text(html)
-    for line in lines:
-        if re.search(r"(?i)up\s*time", line):
-            dur = _parse_duration(line)
-            if dur:
-                return dur
-    # value may sit in the cell following the label (td-per-cell table)
-    for idx, line in enumerate(lines):
-        if re.search(r"(?i)up\s*time", line) and idx + 1 < len(lines):
-            dur = _parse_duration(lines[idx + 1])
-            if dur:
-                return dur
+            continue
+        lines = _normalize_text(html)
+        for idx, line in enumerate(lines):
+            if not re.search(r"(?i)up\s*time", line):
+                continue
+            # The duration is either on the label line itself or in the
+            # following cell of a td-per-cell table.
+            for candidate in (line, lines[idx + 1] if idx + 1 < len(lines) else ""):
+                dur = _parse_duration(candidate)
+                if dur:
+                    return dur
     return None
 
 
@@ -643,6 +694,9 @@ def run(config):
             uptime = _fetch_uptime(conn, base, token)
             metrics = compute_poll(state, parsed, uptime_seconds=uptime)
             metrics["vigor_dsl_scrape_duration_seconds"] = round(time.time() - start, 3)
+            columns = _detect_counter_columns(_normalize_text(html))
+            if columns:
+                metrics["vigor_dsl_counter_columns"] = columns
             _save_state(state_file, state)
             print(json.dumps(metrics))
             return

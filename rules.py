@@ -297,8 +297,12 @@ def _count_ratio_violations(
     window: int,
     sleep_seconds: float,
     now: datetime,
-) -> int:
+) -> tuple[int, float | None]:
     """Count violations across the last ``window`` polls.
+
+    Returns ``(violations, violating_value)`` where ``violating_value`` is the
+    value of the most recent violating row, so the alarm reports what actually
+    tripped instead of the newest (possibly healthy) value.
 
     Stored rows are sparse when unchanged values are discarded. A discarded
     value always equals the last stored value, so each stored row represents
@@ -313,19 +317,32 @@ def _count_ratio_violations(
         .all()
     )
     if not rows:
-        return 0
+        return 0, None
 
     def _utc(dt):
+        if dt is None:
+            return None
         return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+    # The window covers ``window`` polls, i.e. roughly window * sleep seconds.
+    # A row older than that lies outside the window: stretching it over the
+    # recent polls is what fabricated violations. During a long outage the
+    # plugin stops emitting the metric entirely, the dedup leaves a single old
+    # row, and the old value used to be smeared across the whole window.
+    window_span = max(0.0, (window - 1) * sleep_seconds)
 
     total_polls = 0
     violations = 0
+    violating_value: float | None = None
     prev_ts = _utc(now)
     for index, row in enumerate(rows):
         ts = _utc(row.timestamp)
         if ts is None:
             continue
         delta = max(0, (prev_ts - ts).total_seconds())
+        if index > 0 and delta > window_span:
+            # Too old to contribute coverage; older rows are older still.
+            break
         if index == 0:
             covered = 1 + int(delta / sleep_seconds)
         else:
@@ -343,9 +360,11 @@ def _count_ratio_violations(
             continue
         if compare_rule_value(v, rule, agentid):
             violations += covered
+            if violating_value is None:
+                violating_value = v
         if total_polls >= window:
             break
-    return violations
+    return violations, violating_value
 
 
 def _load_blackouts() -> list[dict]:
@@ -611,7 +630,7 @@ def evaluate_single_rule(
             # window reflects the real poll cadence even when unchanged values
             # are discarded.
             try:
-                violations = _count_ratio_violations(
+                violations, violating_value = _count_ratio_violations(
                     session,
                     base_filter,
                     rule,
@@ -634,12 +653,14 @@ def evaluate_single_rule(
                 logger.warning("rule '%s' count_ratio: cannot convert value to float: %s", rule.id, e)
                 return
         if violations >= min_violations:
+                # Report the value that actually violated the condition rather
+                # than the newest stored value, which may well be healthy.
                 _maybe_create_alarm(
                     session,
                     agentid,
                     rule,
                     metric,
-                    float(value),
+                    float(violating_value if violating_value is not None else value),
                     trigger_metric.id,
                     post_commit_actions,
                     pluginid,
