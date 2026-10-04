@@ -108,6 +108,25 @@ SYNC_METRICS = {
     "interleave_depth": "interleave_depth",
 }
 
+# Column order of the error-counter table, verified live against this firmware
+# via the vigor_dsl_counter_columns metric. The header reads Near End / Far End,
+# so these are NOT the same axes as SYNC_METRICS: "Near End" is what the CPE
+# transmits (upstream), "Far End" is what it receives (downstream). Emitting
+# them as _downstream/_upstream was therefore both mislabelled and inverted.
+COUNTER_DIRECTIONS = ("_near_end", "_far_end")
+
+# The plugin emitted the counter table as _downstream/_upstream before the
+# header was inspected, so stored history carries those names. Both are emitted
+# alongside the canonical pair for one transition period: position 0 was always
+# _downstream and position 1 always _upstream, so aliases repeat the identical
+# value under the identical old name and existing dashboards and rules keep
+# rendering and firing on exactly the series they saw before. Remove this map
+# once no rule or dashboard references a _downstream/_upstream counter metric.
+LEGACY_COUNTER_DIRECTIONS = {
+    "_near_end": "_downstream",
+    "_far_end": "_upstream",
+}
+
 STATE_VERSION = 1
 
 
@@ -318,6 +337,29 @@ COUNTER_LABELS = {
 }
 
 
+def _migrate_counter_state(state):
+    """Rename persisted counter keys from the old direction suffixes in place.
+
+    Without this the first poll after the rename finds no previous value for
+    the new keys and skips its delta/rate metrics. The rename is idempotent:
+    ``_near_end``/``_far_end`` do not themselves end in a legacy suffix, so
+    running it on every poll stops after the first one.
+    """
+    counters = state.get("counters")
+    if not isinstance(counters, dict) or not counters:
+        return state
+    legacy = {v: k for k, v in LEGACY_COUNTER_DIRECTIONS.items()}
+    migrated = {}
+    for key, value in counters.items():
+        for old_suffix, new_suffix in legacy.items():
+            if key.endswith(old_suffix):
+                key = f"{key[: -len(old_suffix)]}{new_suffix}"
+                break
+        migrated[key] = value
+    state["counters"] = migrated
+    return state
+
+
 def _detect_counter_columns(lines):
     """Report which column headers the error-counter table actually uses.
 
@@ -365,6 +407,7 @@ def compute_poll(state, parsed, now=None, uptime_seconds=None):
     """
     if now is None:
         now = time.time()
+    _migrate_counter_state(state)
     metrics = {}
     line_state = parsed.get("line_state")
     ok_state = bool(line_state and str(line_state).strip().lower() not in PLACEHOLDERS)
@@ -438,17 +481,17 @@ def compute_poll(state, parsed, now=None, uptime_seconds=None):
         pair = parsed.get(key)
         if not isinstance(pair, (list, tuple)) or not pair:
             continue
-        for val, direction in zip(pair, ("_downstream", "_upstream")):
+        for val, direction in zip(pair, COUNTER_DIRECTIONS):
             if val is None:
                 continue
             ckey = f"{base}{direction}"
-            prev_reads[ckey] = (val, state.get("counters", {}).get(ckey))
+            prev_reads[ckey] = (val, state.get("counters", {}).get(ckey), direction)
 
     any_reset = False
-    for ckey, (val, prev) in prev_reads.items():
-        base = ckey.rsplit("_", 1)[0]
-        direction = "_downstream" if ckey.endswith("_downstream") else "_upstream"
-        metrics[f"vigor_dsl_{base}_total{direction}"] = val
+    for ckey, (val, prev, direction) in prev_reads.items():
+        base = ckey[: -len(direction)]
+        for name_suffix in (direction, LEGACY_COUNTER_DIRECTIONS[direction]):
+            metrics[f"vigor_dsl_{base}_total{name_suffix}"] = val
         state.setdefault("counters", {})[ckey] = val
         if prev is None:
             continue
@@ -458,10 +501,12 @@ def compute_poll(state, parsed, now=None, uptime_seconds=None):
             any_reset = True
             continue
         if elapsed and elapsed > 0:
-            metrics[f"vigor_dsl_{base}_delta{direction}"] = round(delta, 3)
+            for name_suffix in (direction, LEGACY_COUNTER_DIRECTIONS[direction]):
+                metrics[f"vigor_dsl_{base}_delta{name_suffix}"] = round(delta, 3)
             if delta > 0:
                 rate = delta / elapsed * 3600.0
-                metrics[f"vigor_dsl_{base}_rate_perhour{direction}"] = round(rate, 3)
+                for name_suffix in (direction, LEGACY_COUNTER_DIRECTIONS[direction]):
+                    metrics[f"vigor_dsl_{base}_rate_perhour{name_suffix}"] = round(rate, 3)
 
     if any_reset:
         prev_uptime = state.get("last_uptime")
