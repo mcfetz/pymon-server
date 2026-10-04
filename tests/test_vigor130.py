@@ -259,6 +259,41 @@ def main():
         False,
     )
 
+    print("\n== Richtungs-Kontext der Zaehler-Tabelle ==")
+    check(
+    "Near/End-Header ohne Richtungslabel",
+    vigor._detect_counter_direction(vigor._normalize_text(page(NEAR_FAR, BASE_COUNTERS))),
+    "near_end_far_end_only",
+    )
+    check(
+    "Downstream-Kontext erkannt",
+    vigor._detect_counter_direction(["Downstream", "Near End", "Far End", "CRC"]),
+    "downstream",
+    )
+    check(
+    "Upstream-Kontext erkannt",
+    vigor._detect_counter_direction(["Upstream", "Near End", "Far End", "CRC"]),
+    "upstream",
+    )
+    check(
+    "beide Richtungen im Header",
+    vigor._detect_counter_direction(["Downstream", "Upstream", "Near End", "Far End", "CRC"]),
+    "downstream+upstream",
+    )
+    check(
+    "Down/Up weiter oben zaehlt auch",
+    vigor._detect_counter_direction(
+        ["Line State", "SHOWTIME", "Downstream", "Upstream", "Near End", "Far End",
+         "Actual Rate", "98338", "26996", "CRC", "1", "2"]
+    ),
+    "downstream+upstream",
+    )
+    check(
+    "keine Zaehlertabelle -> unknown",
+    vigor._detect_counter_direction(["Line State", "SHOWTIME"]),
+    "unknown",
+    )
+
     print()
     failed = [r for r in RESULTS if not r[1]]
     print(f"{len(RESULTS) - len(failed)}/{len(RESULTS)} bestanden")

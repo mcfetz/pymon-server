@@ -395,6 +395,38 @@ def _detect_counter_columns(lines):
     return None
 
 
+def _detect_counter_direction(lines):
+    """Report whether the error-counter table is scoped to a DSL direction.
+
+    The counter columns are headed Near End / Far End and the parser reads them
+    positionally, so nothing on the page so far ties column 0 or column 1 to
+    upstream or downstream. This looks for a direction label anywhere in the
+    header region and returns a small enum, never raw markup. A result of
+    ``near_end_far_end_only`` means the page carries no direction label for this
+    table and the NE/FE pair cannot be mapped onto up/down from the header alone
+    (Near End is the CPE-side transmitter, which is the upstream direction in
+    ITU-T G.992.x, but a single NE/FE pair may equally belong to the downstream
+    table on some firmware).
+    """
+    first = None
+    for i, line in enumerate(lines):
+        if _norm_label(line) in COUNTER_LABELS:
+            first = i
+            break
+    if first is None:
+        return "unknown"
+    window = " ".join(lines[max(0, first - 20):first]).lower()
+    has_down = "downstream" in window
+    has_up = "upstream" in window
+    if has_down and has_up:
+        return "downstream+upstream"
+    if has_down:
+        return "downstream"
+    if has_up:
+        return "upstream"
+    return "near_end_far_end_only"
+
+
 def _default_state_file():
     plugin_dir = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(plugin_dir, ".vigor130_state.json")
@@ -739,9 +771,13 @@ def run(config):
             uptime = _fetch_uptime(conn, base, token)
             metrics = compute_poll(state, parsed, uptime_seconds=uptime)
             metrics["vigor_dsl_scrape_duration_seconds"] = round(time.time() - start, 3)
-            columns = _detect_counter_columns(_normalize_text(html))
+            normalized = _normalize_text(html)
+            columns = _detect_counter_columns(normalized)
             if columns:
                 metrics["vigor_dsl_counter_columns"] = columns
+            direction = _detect_counter_direction(normalized)
+            if direction and direction != "unknown":
+                metrics["vigor_dsl_counter_direction"] = direction
             _save_state(state_file, state)
             print(json.dumps(metrics))
             return
