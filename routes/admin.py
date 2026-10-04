@@ -1439,6 +1439,12 @@ def _normalize_dashboard(data: dict) -> dict | None:
     timerange = data.get("timerange", "1h")
     if timerange not in _TIME_RANGES:
         timerange = "1h"
+    try:
+        columns = int(data.get("columns", 2))
+    except (TypeError, ValueError):
+        columns = 2
+    if columns not in (1, 2):
+        columns = 2
     panels = []
     for raw in data.get("panels", []) or []:
         if not isinstance(raw, dict):
@@ -1463,6 +1469,7 @@ def _normalize_dashboard(data: dict) -> dict | None:
         "id": str(data.get("id") or ""),
         "name": name,
         "timerange": timerange,
+        "columns": columns,
         "panels": panels,
     }
 
