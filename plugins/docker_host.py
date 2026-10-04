@@ -487,7 +487,11 @@ if __name__ == "__main__":
 
     if config.get("check_updates"):
         try:
-            include_unchecked = bool(config.get("check_updates_include_unchecked"))
+            # Absent or null means "checked": on a host whose images ship no
+            # HEALTHCHECK, skipping them would silently drop nearly all
+            # coverage, so the permissive default is the safe one.
+            raw = config.get("check_updates_include_unchecked")
+            include_unchecked = True if raw is None else bool(raw)
             candidates = _update_check_candidates(client, running, include_unchecked)
             metrics["containers_updates_skipped"] = len(running) - len(candidates)
             _update_checks(client, candidates, metrics, config)
