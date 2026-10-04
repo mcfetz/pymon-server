@@ -142,7 +142,7 @@ The `metric` field accepts an exact metric name, a full-match regular expression
 
 | Mode | Behaviour |
 |------|-----------|
-| `single` | At most one open alarm per (agent, rule) |
+| `single` | At most one open alarm per (agent, plugin, metric) |
 | `multi` | New alarm on every violation |
 | `replace` | Acknowledge all open alarms for this combo, then create one new alarm |
 
