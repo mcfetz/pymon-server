@@ -174,6 +174,91 @@ def main():
             check(f"Secret in {k}", True, False)
     check("keine Secret-Metrik", True, True)
 
+    print("\n== Zaehler-Namen: Near End / Far End ==")
+    check(
+        "kanonische Reihenfolge ist (near_end, far_end)",
+        vigor.COUNTER_DIRECTIONS,
+        ("_near_end", "_far_end"),
+    )
+    st = vigor._fresh_state()
+    m = vigor.compute_poll(st, showtime, now=1000.0, uptime_seconds=644466.0)
+    # 0 = Near End (was previously mislabelled _downstream), 1 = Far End.
+    check("Near End traegt Wert der ersten Spalte", m["vigor_dsl_crc_total_near_end"], 111)
+    check("Far End traegt Wert der zweiten Spalte", m["vigor_dsl_crc_total_far_end"], 7906)
+    check(
+        "Alias: _downstream == _near_end",
+        m["vigor_dsl_crc_total_downstream"],
+        m["vigor_dsl_crc_total_near_end"],
+    )
+    check(
+        "Alias: _upstream == _far_end",
+        m["vigor_dsl_crc_total_upstream"],
+        m["vigor_dsl_crc_total_far_end"],
+    )
+    check("Alias existiert fuer crc", "vigor_dsl_crc_total_downstream" in m, True)
+    check("Alias existiert fuer ses", "vigor_dsl_ses_seconds_total_upstream" in m, True)
+    sync_names = [k for k in m if any(s in k for s in ("_downstream", "_upstream"))]
+    canon_names = [k for k in m if any(s in k for s in ("_near_end", "_far_end"))]
+    check("Alias vorhanden", len(sync_names) > 0, True)
+    check("kanonische Namen vorhanden", len(canon_names) > 0, True)
+    # Sync metrics legitimately keep _downstream/_upstream, so the pairing has
+    # to be checked over counter names only.
+    counter_prefixes = tuple(f"vigor_dsl_{b}_" for b in vigor.COUNTER_BASE.values())
+    counters_only = [k for k in m if k.startswith(counter_prefixes)]
+    paired = True
+    for k in counters_only:
+        for new_s, old_s in vigor.LEGACY_COUNTER_DIRECTIONS.items():
+            if k.endswith(new_s) and k[: -len(new_s)] + old_s not in m:
+                paired = False
+    check("jeder kanonische Zaehler hat einen Alias", paired, True)
+    legacy_suffixes = tuple(vigor.LEGACY_COUNTER_DIRECTIONS.values())
+    canonical_suffixes = tuple(vigor.LEGACY_COUNTER_DIRECTIONS)
+    check(
+        "Alias- und kanonische Zaehlerzahl gleich",
+        len([k for k in counters_only if k.endswith(legacy_suffixes)])
+        == len([k for k in counters_only if k.endswith(canonical_suffixes)]),
+        True,
+    )
+    # Sync metrics are genuinely downstream/upstream and must NOT be renamed.
+    check("Sync-Metrik heisst weiterhin downstream", "vigor_dsl_snr_db_downstream" in m, True)
+    check("Sync-Metrik heisst weiterhin upstream", "vigor_dsl_snr_db_upstream" in m, True)
+    check("Sync-Metrik ohne near_end-Variante", "vigor_dsl_snr_db_near_end" in m, False)
+
+    print("\n== Zaehler-Delta und Rate unter neuen Namen ==")
+    st = vigor._fresh_state()
+    vigor.compute_poll(st, showtime, now=1000.0, uptime_seconds=644466.0)
+    st["counters"]["crc_near_end"] = 100
+    st["counters"]["crc_far_end"] = 100
+    grown = dict(showtime)
+    grown["crc"] = [160, 830]
+    m2 = vigor.compute_poll(st, grown, now=1960.0, uptime_seconds=644500.0)
+    check("Delta Near End", m2.get("vigor_dsl_crc_delta_near_end"), 60)
+    check("Delta Alias downstream", m2.get("vigor_dsl_crc_delta_downstream"), 60)
+    check("Delta Far End", m2.get("vigor_dsl_crc_delta_far_end"), 730)
+    check(
+        "Rate Near End (60 in 960s)",
+        round(m2["vigor_dsl_crc_rate_perhour_near_end"], 2),
+        225.0,
+    )
+
+    print("\n== State-Migration der Zaehler-Schluessel ==")
+    st = vigor._fresh_state()
+    st["counters"] = {"crc_downstream": 111, "crc_upstream": 7906}
+    vigor.compute_poll(st, showtime, now=1000.0, uptime_seconds=644466.0)
+    check("downstream -> near_end", st["counters"].get("crc_near_end"), 111)
+    check("upstream -> far_end", st["counters"].get("crc_far_end"), 7906)
+    check("alter Schluessel entfernt", "crc_downstream" in st["counters"], False)
+    vigor._migrate_counter_state(st)
+    check("Idempotenz: near_end unveraendert", st["counters"].get("crc_near_end"), 111)
+    check(
+        "Idempotenz: keine Legacy-Schluessel uebrig",
+        any(
+            k.endswith(tuple(vigor.LEGACY_COUNTER_DIRECTIONS.values()))
+            for k in st["counters"]
+        ),
+        False,
+    )
+
     print()
     failed = [r for r in RESULTS if not r[1]]
     print(f"{len(RESULTS) - len(failed)}/{len(RESULTS)} bestanden")
