@@ -3,11 +3,11 @@ psutil>=7.2.2
 psycopg2-binary>=2.9.13
 toml>=0.10.2
 requests>=2.34.2
-SQLAlchemy>=2.1.0
+SQLAlchemy>=2.1.2
 flasgger>=0.9.7.1
 flasgger
 docker
 python-dateutil>=2.9.0.post0
 flask-cors>=6.0.5
 pywebpush>=2.5.0
-twilio>=9.11.1
+twilio>=9.11.2
