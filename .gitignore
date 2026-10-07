@@ -1,5 +1,7 @@
 .aider*
 plugins/__pycache__
+# Runtime counter state written by the DSL plugins (vigor130/vigor167)
+plugins/.*_state.json
 .ignore
 __pycache__
 metrics.db
