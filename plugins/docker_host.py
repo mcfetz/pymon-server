@@ -461,10 +461,6 @@ if __name__ == "__main__":
         metrics["containers_paused"] = len(paused)
         metrics["containers_stopped"] = len(exited)
 
-        for c in all_containers:
-            name = c.name.strip() or c.short_id
-            metrics[f"container:{name}:running"] = 1 if c.status == "running" else 0
-
         metrics["images_total"] = len(client.images.list())
         metrics["volumes_total"] = len(client.volumes.list())
         metrics["networks_total"] = len(client.networks.list())
