@@ -11,6 +11,7 @@ Run with:  python tests/test_docker_host.py
 import importlib.util
 import os
 import sys
+from contextlib import contextmanager
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -48,9 +49,12 @@ docker_host = _load_plugin()
 class FakeContainer:
     """Minimal stand-in for a docker SDK Container."""
 
-    def __init__(self, name, status="running", service_id=None, short_id=None):
+    def __init__(
+        self, name, status="running", service_id=None, short_id=None, container_id=None
+    ):
         self.name = name
         self.short_id = short_id or name
+        self.id = container_id or short_id or name
         self.status = status
         labels = {SWARM_SERVICE_LABEL: service_id} if service_id else {}
         self.attrs = {"Config": {"Labels": labels}}
@@ -59,7 +63,7 @@ class FakeContainer:
 class FakeService:
     """Minimal stand-in for a docker SDK Service."""
 
-    def __init__(self, service_id, name, replicas=None):
+    def __init__(self, service_id, name, replicas=None, image=None):
         self.id = service_id
         self.name = name
         mode = (
@@ -67,18 +71,46 @@ class FakeService:
             if replicas is not None
             else {"Global": {}}
         )
-        self.attrs = {"Spec": {"Mode": mode}}
+        spec = {"Mode": mode}
+        if image is not None:
+            spec["TaskTemplate"] = {"ContainerSpec": {"Image": image}}
+        self.attrs = {"Spec": spec}
+
+
+class FakeContainersAPI:
+    """Minimal stand-in for client.containers, keyed by health filter value."""
+
+    def __init__(self, by_health):
+        self._by_health = by_health
+
+    def list(self, filters=None):
+        return self._by_health.get((filters or {}).get("health"), [])
 
 
 class FakeClient:
     """Minimal stand-in for a docker SDK client exposing api.tasks()."""
 
-    def __init__(self, tasks):
+    def __init__(self, tasks=(), health=None):
         self.api = self
-        self._tasks = tasks
+        self._tasks = list(tasks)
+        self.containers = FakeContainersAPI(health or {})
 
     def tasks(self, filters=None):
         return self._tasks
+
+
+@contextmanager
+def patched(**attrs):
+    """Temporarily replace module-level attributes and restore them."""
+    saved = {}
+    for key, value in attrs.items():
+        saved[key] = getattr(docker_host, key)
+        setattr(docker_host, key, value)
+    try:
+        yield
+    finally:
+        for key, value in saved.items():
+            setattr(docker_host, key, value)
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +194,59 @@ def test_global_service_up_with_any_running_task():
     docker_host._service_states(FakeClient(tasks), [svc], metrics)
     assert "service:agent:replicas" not in metrics
     assert metrics["service:agent:up"] == 1
+
+
+# ---------------------------------------------------------------------------
+# image update checks
+# ---------------------------------------------------------------------------
+
+
+def test_update_check_candidates_exclude_swarm_tasks():
+    plain = FakeContainer("web", container_id="web1")
+    task = FakeContainer("app.1", service_id="svc1", container_id="task1")
+    client = FakeClient(health={"healthy": [plain, task], "none": []})
+    candidates = docker_host._update_check_candidates(
+        client, [plain, task], include_unchecked=False
+    )
+    assert candidates == [plain]
+
+
+def test_check_service_reports_newer_image_under_service_namespace():
+    svc = FakeService("svc1", "app", image="app:1")
+    with patched(
+        _resolve_image=lambda client, ref: object(),
+        _local_digest=lambda image: "sha256:local",
+        _remote_digest=lambda registry, repository, tag, username, password: (
+            "sha256:remote"
+        ),
+    ):
+        namespace, name, ref, status = docker_host._check_service(
+            {}, FakeClient(), svc, 360, "", ""
+        )
+    assert namespace == "service"
+    assert name == "app"
+    assert ref == "app:1"
+    assert status == 1
+
+
+def test_update_checks_emits_stable_service_metric_not_task_metric():
+    svc = FakeService("svc1", "app", image="app:1")
+    config = {"base_url": "", "check_updates_interval_min": 360}
+    with patched(
+        _resolve_image=lambda client, ref: object(),
+        _local_digest=lambda image: "sha256:local",
+        _remote_digest=lambda registry, repository, tag, username, password: (
+            "sha256:remote"
+        ),
+        _load_cache=lambda base_url: {},
+        _save_cache=lambda base_url, cache: None,
+    ):
+        metrics = {}
+        docker_host._update_checks(FakeClient(), [], [svc], metrics, config)
+    assert metrics["service:app:image_outdated"] == 1
+    assert metrics["service:app:image"] == "app:1"
+    assert metrics["containers_updates_available"] == 1
+    assert not any("app.1" in key for key in metrics)
 
 
 def main():

@@ -28,16 +28,22 @@ Some fields include per-container resource usage from the Docker stats API:
   container:<name>:net_rx_bytes      cumulative received network bytes
   container:<name>:net_tx_bytes      cumulative transmitted network bytes
 
-Emitted per checked container:
+Emitted per checked container (non-swarm):
   container:<name>:image_outdated   1 = newer version available,
                                      0 = up-to-date,
                                     -1 = could not verify (registry/auth/network)
   container:<name>:image            the image reference in use (string)
 
+Emitted per checked swarm service (one check per service, not per task, so the
+metric name stays stable across task reschedules):
+  service:<name>:image_outdated     same 1/0/-1 semantics as above
+  service:<name>:image              the image reference the service runs
+
 Summaries:
   containers_updates_available / containers_updates_current / containers_updates_unchecked
-  containers_updates_skipped       running containers not checked because they
-                                   are unhealthy
+  containers_updates_skipped       running containers not checked at container
+                                   level: unhealthy containers and swarm task
+                                   containers (their image is checked per service)
 
 Per-container state:
   container:<name>:running     1 = running, 0 = not (only for non-swarm
@@ -211,36 +217,72 @@ def _save_cache(base_url, cache):
         pass
 
 
+def _resolve_image(client, ref):
+    """Return the local Image object for a ref, or None if it is not present."""
+    if not ref:
+        return None
+    try:
+        return client.images.get(ref)
+    except Exception:
+        return None
+
+
+def _check_ref(cache, key, ref, local, interval_min, username, password):
+    """Compare a local image digest against the registry for ``ref``.
+
+    Returns 1 (newer version available), 0 (up to date) or -1 (not
+    verifiable). The result is cached under ``key`` and reused while the local
+    digest is unchanged and the re-check interval has not elapsed.
+    """
+    split = _split_ref(ref)
+    if not split or not local:
+        return -1
+    cached = cache.get(key)
+    if cached and cached.get("local") == local and time.time() - cached.get("t", 0) < interval_min * 60:
+        return cached.get("status", -1)
+    registry, repository, tag = split
+    remote = _remote_digest(registry, repository, tag, username, password)
+    status = -1
+    if remote:
+        status = 0 if remote.strip().lower() == local.strip().lower() else 1
+    cache[key] = {"t": time.time(), "local": local, "status": status}
+    return status
+
+
 def _check_one(cache, c, interval_min, username, password):
-    cid = c.id
-    name = c.name
+    """Check one non-swarm container. Returns (namespace, name, ref, status)."""
+    name = (c.name or "").strip() or c.short_id or c.id[:12]
     try:
         image = c.image
         ref = ""
-        split = None
         for t in image.tags or []:
-            s = _split_ref(t)
-            if s:
-                split = s
+            if _split_ref(t):
                 ref = t
                 break
-        if not split:
-            return cid, name, ref, -1
-        local = _local_digest(image)
-        if not local:
-            return cid, name, ref, -1
-        cached = cache.get(cid)
-        if cached and cached.get("local") == local and time.time() - cached.get("t", 0) < interval_min * 60:
-            return cid, name, ref, cached.get("status", -1)
-        registry, repository, tag = split
-        remote = _remote_digest(registry, repository, tag, username, password)
-        status = -1
-        if remote:
-            status = 0 if remote.strip().lower() == local.strip().lower() else 1
-        cache[cid] = {"t": time.time(), "local": local, "status": status}
-        return cid, name, ref, status
+        status = _check_ref(
+            cache, c.id, ref, _local_digest(image), interval_min, username, password
+        )
+        return "container", name, ref, status
     except Exception:
-        return cid, name, "", -1
+        return "container", name, "", -1
+
+
+def _check_service(cache, client, svc, interval_min, username, password):
+    """Check a swarm service image once. Returns (namespace, name, ref, status)."""
+    name = svc.name or svc.id
+    try:
+        spec = svc.attrs.get("Spec") or {}
+        ref = ((spec.get("TaskTemplate") or {}).get("ContainerSpec") or {}).get(
+            "Image", ""
+        ) or ""
+        image = _resolve_image(client, ref)
+        local = _local_digest(image) if image is not None else None
+        status = _check_ref(
+            cache, "service:" + svc.id, ref, local, interval_min, username, password
+        )
+        return "service", name, ref, status
+    except Exception:
+        return "service", name, "", -1
 
 
 def _update_check_candidates(client, running, include_unchecked=False):
@@ -254,6 +296,10 @@ def _update_check_candidates(client, running, include_unchecked=False):
     included only when ``include_unchecked`` is set — on a host where most
     images ship no HEALTHCHECK they would otherwise silently lose update
     coverage.
+
+    Swarm task containers are excluded: their restart during a rollout is
+    expected and their image is checked once per service instead (see
+    ``_check_service``).
 
     The Docker ``health`` filter resolves the matching sets in one call instead
     of an inspect per container. If the daemon rejects the filter we fall back
@@ -277,11 +323,12 @@ def _update_check_candidates(client, running, include_unchecked=False):
             status = (state.get("Health") or {}).get("Status")
             if status == "healthy" or (include_unchecked and status is None):
                 candidates.append(c)
-        return candidates
-    return [c for c in running if c.id in eligible]
+    else:
+        candidates = [c for c in running if c.id in eligible]
+    return [c for c in candidates if not _swarm_service_id(c)]
 
 
-def _update_checks(client, candidates, metrics, config):
+def _update_checks(client, candidates, services, metrics, config):
     interval_min = int(config.get("check_updates_interval_min") or 360)
     username = config.get("registry_username", "") or ""
     password = config.get("registry_password", "") or ""
@@ -295,18 +342,26 @@ def _update_checks(client, candidates, metrics, config):
             if time.time() >= deadline:
                 break
             futures.append(pool.submit(_check_one, cache, c, interval_min, username, password))
+        for svc in services:
+            if time.time() >= deadline:
+                break
+            futures.append(
+                pool.submit(
+                    _check_service, cache, client, svc, interval_min, username, password
+                )
+            )
         for fut in futures:
             remaining = deadline - time.time()
             if remaining <= 0:
                 break
             try:
-                cid, name, ref, status = fut.result(timeout=remaining)
+                namespace, name, ref, status = fut.result(timeout=remaining)
             except Exception:
                 continue
-            name = name.strip() or cid[:12]
-            metrics[f"container:{name}:image_outdated"] = status
+            name = name.strip() or "?"
+            metrics[f"{namespace}:{name}:image_outdated"] = status
             if ref:
-                metrics[f"container:{name}:image"] = ref
+                metrics[f"{namespace}:{name}:image"] = ref
             if status == 1:
                 counters["outdated"] += 1
             elif status == 0:
@@ -490,7 +545,7 @@ if __name__ == "__main__":
             include_unchecked = True if raw is None else bool(raw)
             candidates = _update_check_candidates(client, running, include_unchecked)
             metrics["containers_updates_skipped"] = len(running) - len(candidates)
-            _update_checks(client, candidates, metrics, config)
+            _update_checks(client, candidates, services, metrics, config)
         except Exception:
             pass
 
