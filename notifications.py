@@ -16,6 +16,15 @@ from services.web_push import send_push_notification
 # Frontend base URL for direct alarm links — set via PYMON_FRONTEND_URL env var
 FRONTEND_URL = os.environ.get("PYMON_FRONTEND_URL", "").rstrip("/")
 
+# ntfy priority levels: 1=min, 2=low, 3=default, 4=high, 5=max/urgent
+# (priority 5 is "urgent": breaks through Do Not Disturb and requires
+#  acknowledgement on ntfy clients that support it)
+NTFY_PRIORITY_BY_SEVERITY: dict[str, int] = {
+    "critical": 5,
+    "warning": 4,
+    "info": 3,
+}
+
 
 def _alarm_url(alarm_id: int | None) -> str | None:
     """Return a direct link to the alarm detail modal, or None if not configured."""
@@ -205,7 +214,7 @@ def notify_targets(
                 "title": notification_title,
                 "message": notification_body,
                 "tags": [rule.severity],
-                "priority": 4 if rule.severity == "critical" else 3,
+                "priority": NTFY_PRIORITY_BY_SEVERITY.get(rule.severity, 3),
             }
             if detail_url:
                 ntfy_payload["click"] = detail_url

@@ -175,6 +175,18 @@ Supported types: `email`, `ntfy`, `web_push`, `twilio_call`.
 For `email`, set the SMTP password via the `NOTIFY_EMAIL_PASSWORD` environment
 variable rather than storing it in the config file.
 
+For `ntfy`, alarm severity is mapped to the ntfy message priority:
+
+| pymon severity | ntfy priority |
+| -------------- | ------------- |
+| `critical`     | `5` (max / urgent) |
+| `warning`      | `4` (high) |
+| `info`         | `3` (default) |
+
+Priority `5` is "urgent" — it breaks through Do Not Disturb and requires an
+acknowledgement on ntfy clients that support it. Unknown severities fall back
+to `3`.
+
 ### Executors (`conf/executors.json`)
 
 ```json
