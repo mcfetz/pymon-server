@@ -181,7 +181,7 @@ def notify_targets(
             target_conf = NOTIFICATION_TARGETS.get(target_name)
             if not target_conf:
                 continue
-            subject = f"[pymon] {notification_title}"
+            subject = f"[{rule.severity}] {notification_title}"
             body = notification_body
             detail_url = _alarm_url(alarm_id)
             if detail_url:
