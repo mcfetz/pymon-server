@@ -13,3 +13,4 @@
 - venv/bin/python tests/test_count_ratio.py tests/test_ucg_eth4.py tests/test_vigor130.py → 8/8 bestanden
 - venv/bin/python tests/test_vigor167.py → 11/11 bestanden
 - venv/bin/python /tmp/opencode/test_homey_rules.py → 34/34 bestanden
+- venv/bin/python tests/test_github.py → 7/7 bestanden

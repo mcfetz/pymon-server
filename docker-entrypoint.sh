@@ -31,7 +31,7 @@ if [ ! -f "$CONF_DIR/users.json" ]; then
 fi
 
 seed "agents.json"       '{"agents":{},"groups":{}}'
-seed "rules.json"        '{}'
+seed "rules.json"        '{"github-findings":{"id":"github-findings","title":"GitHub Findings > 0","enabled":true,"description":"Open code, dependency or secret scanning findings on a GitHub repository","pluginid":"github","metric":".*:(code|security|secret)_findings","condition":"gt","threshold":"0","scope":"single","severity":"warning","fire":"single","auto_close":true,"notifications":[],"executors":[],"agents":[],"agents_mode":"exclude"}}'
 seed "executors.json"    '{}'
 seed "notifications.json" '{}'
 seed "blackouts.json"    '{}'
