@@ -215,6 +215,7 @@ def notify_targets(
                 continue
             token = cfg.get("ntfy_access_token") or None
             detail_url = _alarm_url(alarm_id)
+            ntfy_title = f"{NTFY_EMOJI_BY_SEVERITY.get(rule.severity, '')} {rule_title}".strip()
             ntfy_body_md = (
                 f"**Severity:** {rule.severity}\n"
                 f"**Agent:** {agent_title}\n"
@@ -228,7 +229,7 @@ def notify_targets(
                 ntfy_body_md += f"\n\n[Acknowledge](http://localhost:5000/alarms/{alarm_id}/ack)"
             ntfy_payload: dict[str, Any] = {
                 "topic": topic,
-                "title": notification_title,
+                "title": ntfy_title,
                 "message": ntfy_body_md,
                 "tags": [rule.severity, NTFY_EMOJI_BY_SEVERITY.get(rule.severity, "bell").rstrip()],
                 "priority": NTFY_PRIORITY_BY_SEVERITY.get(rule.severity, 3),
