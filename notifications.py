@@ -210,6 +210,7 @@ def notify_targets(
             token = cfg.get("ntfy_access_token") or None
             detail_url = _alarm_url(alarm_id)
             ntfy_body_md = (
+                f"**Severity:** {rule.severity}\n"
                 f"**Agent:** {agent_title}\n"
                 f"**Plugin:** {plugin_title}\n"
                 f"**Metric:** {metric}\n"
