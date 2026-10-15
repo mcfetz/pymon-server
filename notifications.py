@@ -27,10 +27,10 @@ NTFY_PRIORITY_BY_SEVERITY: dict[str, int] = {
 
 # ntfy emoji shortcodes for tags — ntfy renders these as emojis on all clients
 # (critical: 🚨, warning: ⚠️, info: ℹ️)
-NTFY_TAG_BY_SEVERITY: dict[str, str] = {
-    "critical": "rotating_light",
-    "warning": "warning",
-    "info": "information_source",
+NTFY_EMOJI_BY_SEVERITY: dict[str, str] = {
+    "critical": "🚨",
+    "warning": "⚠️",
+    "info": "ℹ️",
 }
 
 
@@ -217,10 +217,8 @@ def notify_targets(
                 continue
             token = cfg.get("ntfy_access_token") or None
             detail_url = _alarm_url(alarm_id)
-            # Severity as emoji shortcode (renders as emoji on all clients),
             # agent/plugin/metric as plain-text tags shown as chips.
-            ntfy_tags: list[str] = [NTFY_TAG_BY_SEVERITY.get(rule.severity, "bell")]
-            ntfy_tags += [t for t in (agent_title, plugin_title, metric) if t]
+            ntfy_tags: list[str] = [t for t in (agent_title, plugin_title, metric) if t]
             ntfy_body_plain = notification_body
             if detail_url:
                 ntfy_body_plain += f"\n\nView alarm: {detail_url}"
@@ -228,7 +226,7 @@ def notify_targets(
                 ntfy_body_plain += f"\n\nAcknowledge: http://localhost:5000/alarms/{alarm_id}/ack"
             ntfy_payload: dict[str, Any] = {
                 "topic": topic,
-                "title": f"[{rule.severity}] {rule_title}",
+                "title": f"{NTFY_EMOJI_BY_SEVERITY.get(rule.severity, '')} [{rule.severity}] {rule_title}".strip(),
                 "message": ntfy_body_plain,
                 "tags": ntfy_tags,
                 "priority": NTFY_PRIORITY_BY_SEVERITY.get(rule.severity, 3),

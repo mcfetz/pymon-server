@@ -187,9 +187,10 @@ Priority `5` is "urgent" — it breaks through Do Not Disturb and requires an
 acknowledgement on ntfy clients that support it. Unknown severities fall back
 to `3`.
 
-ntfy messages use the severity emoji as first tag (🚨 critical, ⚠️ warning,
-ℹ️ info) plus the agent, plugin and metric names as additional tags, which
-clients render as chips. The notification title is `[severity] <rule title>`.
+ntfy messages carry the severity emoji as title prefix (🚨 critical, ⚠️
+warning, ℹ️ info) and use the agent, plugin and metric names as tags, which
+clients render as chips. The notification title is `emoji [severity] <rule
+title>`.
 
 ### Executors (`conf/executors.json`)
 
