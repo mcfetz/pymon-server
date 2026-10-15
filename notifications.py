@@ -25,10 +25,12 @@ NTFY_PRIORITY_BY_SEVERITY: dict[str, int] = {
     "info": 3,
 }
 
-NTFY_EMOJI_BY_SEVERITY: dict[str, str] = {
-    "critical": "🚨",
-    "warning": "⚠️",
-    "info": "ℹ️",
+# ntfy emoji shortcodes for tags — ntfy renders these as emojis on all clients
+# (critical: 🚨, warning: ⚠️, info: ℹ️)
+NTFY_TAG_BY_SEVERITY: dict[str, str] = {
+    "critical": "rotating_light",
+    "warning": "warning",
+    "info": "information_source",
 }
 
 
@@ -167,7 +169,7 @@ def notify_targets(
     rule_title = rule.title.strip() if isinstance(rule.title, str) and rule.title.strip() else rule.id
     agent_title = _get_agent_title(agentid)
     plugin_title = _get_plugin_title(effective_pluginid)
-    notification_title = f"{NTFY_EMOJI_BY_SEVERITY.get(rule.severity, '')} {rule_title}".strip()
+    notification_title = rule_title
     notification_body = (
         f"Agent: {agent_title}\n"
         f"Plugin: {plugin_title}\n"
@@ -215,25 +217,21 @@ def notify_targets(
                 continue
             token = cfg.get("ntfy_access_token") or None
             detail_url = _alarm_url(alarm_id)
-            ntfy_title = f"{NTFY_EMOJI_BY_SEVERITY.get(rule.severity, '')} {rule_title}".strip()
-            ntfy_body_md = (
-                f"**Severity:** {rule.severity}\n"
-                f"**Agent:** {agent_title}\n"
-                f"**Plugin:** {plugin_title}\n"
-                f"**Metric:** {metric}\n"
-                f"**Value:** {value}"
-            )
+            # Severity as emoji shortcode (renders as emoji on all clients),
+            # agent/plugin/metric as plain-text tags shown as chips.
+            ntfy_tags: list[str] = [NTFY_TAG_BY_SEVERITY.get(rule.severity, "bell")]
+            ntfy_tags += [t for t in (agent_title, plugin_title, metric) if t]
+            ntfy_body_plain = notification_body
             if detail_url:
-                ntfy_body_md += f"\n\n[View alarm]({detail_url})"
+                ntfy_body_plain += f"\n\nView alarm: {detail_url}"
             elif alarm_id is not None:
-                ntfy_body_md += f"\n\n[Acknowledge](http://localhost:5000/alarms/{alarm_id}/ack)"
+                ntfy_body_plain += f"\n\nAcknowledge: http://localhost:5000/alarms/{alarm_id}/ack"
             ntfy_payload: dict[str, Any] = {
                 "topic": topic,
-                "title": ntfy_title,
-                "message": ntfy_body_md,
-                "tags": [rule.severity, NTFY_EMOJI_BY_SEVERITY.get(rule.severity, "bell").rstrip()],
+                "title": f"[{rule.severity}] {rule_title}",
+                "message": ntfy_body_plain,
+                "tags": ntfy_tags,
                 "priority": NTFY_PRIORITY_BY_SEVERITY.get(rule.severity, 3),
-                "markdown": True,
             }
             if detail_url:
                 ntfy_payload["click"] = detail_url
