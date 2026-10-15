@@ -209,12 +209,23 @@ def notify_targets(
                 continue
             token = cfg.get("ntfy_access_token") or None
             detail_url = _alarm_url(alarm_id)
+            ntfy_body_md = (
+                f"**Agent:** {agent_title}\n"
+                f"**Plugin:** {plugin_title}\n"
+                f"**Metric:** {metric}\n"
+                f"**Value:** {value}"
+            )
+            if detail_url:
+                ntfy_body_md += f"\n\n[View alarm]({detail_url})"
+            elif alarm_id is not None:
+                ntfy_body_md += f"\n\n[Acknowledge](http://localhost:5000/alarms/{alarm_id}/ack)"
             ntfy_payload: dict[str, Any] = {
                 "topic": topic,
                 "title": notification_title,
-                "message": notification_body,
+                "message": ntfy_body_md,
                 "tags": [rule.severity],
                 "priority": NTFY_PRIORITY_BY_SEVERITY.get(rule.severity, 3),
+                "markdown": True,
             }
             if detail_url:
                 ntfy_payload["click"] = detail_url
