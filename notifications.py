@@ -25,6 +25,12 @@ NTFY_PRIORITY_BY_SEVERITY: dict[str, int] = {
     "info": 3,
 }
 
+NTFY_EMOJI_BY_SEVERITY: dict[str, str] = {
+    "critical": "🚨",
+    "warning": "⚠️",
+    "info": "ℹ️",
+}
+
 
 def _alarm_url(alarm_id: int | None) -> str | None:
     """Return a direct link to the alarm detail modal, or None if not configured."""
@@ -161,7 +167,7 @@ def notify_targets(
     rule_title = rule.title.strip() if isinstance(rule.title, str) and rule.title.strip() else rule.id
     agent_title = _get_agent_title(agentid)
     plugin_title = _get_plugin_title(effective_pluginid)
-    notification_title = rule_title
+    notification_title = f"{NTFY_EMOJI_BY_SEVERITY.get(rule.severity, '')} {rule_title}".strip()
     notification_body = (
         f"Agent: {agent_title}\n"
         f"Plugin: {plugin_title}\n"
