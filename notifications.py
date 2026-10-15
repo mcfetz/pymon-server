@@ -230,7 +230,7 @@ def notify_targets(
                 "topic": topic,
                 "title": notification_title,
                 "message": ntfy_body_md,
-                "tags": [rule.severity],
+                "tags": [rule.severity, NTFY_EMOJI_BY_SEVERITY.get(rule.severity, "bell").rstrip()],
                 "priority": NTFY_PRIORITY_BY_SEVERITY.get(rule.severity, 3),
                 "markdown": True,
             }
