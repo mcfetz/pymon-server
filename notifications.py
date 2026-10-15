@@ -161,7 +161,7 @@ def notify_targets(
     rule_title = rule.title.strip() if isinstance(rule.title, str) and rule.title.strip() else rule.id
     agent_title = _get_agent_title(agentid)
     plugin_title = _get_plugin_title(effective_pluginid)
-    notification_title = f"[{rule.severity}] {rule_title}"
+    notification_title = rule_title
     notification_body = (
         f"Agent: {agent_title}\n"
         f"Plugin: {plugin_title}\n"
