@@ -27,7 +27,8 @@ Klartext im Repository steht:
 1. GitHub → Repository → **Settings** → **Secrets and variables** → **Actions**
 2. **New repository secret**
    - Name: `PORTAINER_WEBHOOK_URL`
-   - Value: `https://portainer.familie-heise.de/api/webhooks/090c565f-06b6-45d5-8af2-93be67ae5246`
+   - Value: `https://portainer.familie-heise.de/api/webhooks/<token>`
+     (Token: Portainer → **Webhooks** → beim Service `pymon-server`)
 3. Save
 
 ## Image
@@ -42,10 +43,20 @@ Klartext im Repository steht:
 | `main` | Jeder Push auf `main` |
 | `1.2.3` / `1.2` / `1` | Git-Tag `v1.2.3` |
 
-## Portainer: Container einrichten
+## Portainer: Webhook einrichten
 
-1. **Stacks → Add stack**
-2. Compose-Inhalt aus `docker-compose.yml` einfügen (Image-Zeile anpassen):
+Die Services laufen als Swarm-Services (nicht als Portainer-Stacks). Der
+Deploy-Webhook ist ein Portainer-**Service-Webhook** (Force-Update +
+`:latest`-Repull):
+
+1. Portainer → **Webhooks** → **Add webhook**
+2. **Type** Service, **Environment** `local`, **Service** `pymon-server`
+3. Die generierte URL als `PORTAINER_WEBHOOK_URL`-Secret in GitHub hinterlegen
+   (siehe oben)
+
+## Service anlegen (falls neu nötig)
+
+Compose-Inhalt aus `docker-compose.yml` (Image-Zeile anpassen):
 
 ```yaml
 services:
@@ -66,12 +77,9 @@ volumes:
   pymon-data:
 ```
 
-3. **Webhook aktivieren**: Stack → **Webhooks** → Enable → die generierte URL
-   als `PORTAINER_WEBHOOK_URL` Secret in GitHub hinterlegen (siehe oben).
-
 ## Manueller Redeploy
 
 ```bash
 curl -fsS -X POST \
-  "https://portainer.familie-heise.de/api/webhooks/090c565f-06b6-45d5-8af2-93be67ae5246"
+  "https://portainer.familie-heise.de/api/webhooks/<token>"
 ```
