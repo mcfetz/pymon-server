@@ -7,7 +7,7 @@ SQLAlchemy>=2.1.6
 flasgger>=0.9.7.1
 flasgger
 docker
-python-dateutil>=2.9.0.post0
+python-dateutil>=3.0.0
 flask-cors>=6.0.5
 pywebpush>=2.5.0
 twilio>=9.12.0
