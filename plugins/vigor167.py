@@ -804,6 +804,11 @@ def _run_error(state, state_file, start, error):
             }
         )
     )
+    # Signal the failed run through the process exit code so the agent records
+    # `agent:error=1` (generic rule rbfprf92 alarms on it).  The payload above
+    # still lands as metrics because the agent keeps valid JSON printed by a
+    # non-zero exit, so scrape_success/error stay visible to rules/dashboards.
+    sys.exit(1)
 
 
 def run(config):
@@ -815,7 +820,7 @@ def run(config):
                 {"vigor_dsl_scrape_success": 0, "vigor_dsl_error": "missing_config"}
             )
         )
-        return
+        sys.exit(1)
     try:
         port = int(config.get("port", 80))
         timeout = int(config.get("timeout", 8))
@@ -825,7 +830,7 @@ def run(config):
                 {"vigor_dsl_scrape_success": 0, "vigor_dsl_error": "invalid_config"}
             )
         )
-        return
+        sys.exit(1)
 
     state_file = config.get("state_file") or os.path.join(
         os.path.dirname(os.path.abspath(__file__)), ".vigor167_state.json"
@@ -901,3 +906,4 @@ if __name__ == "__main__":
         print(
             json.dumps({"vigor_dsl_scrape_success": 0, "vigor_dsl_error": "internal"})
         )
+        sys.exit(1)

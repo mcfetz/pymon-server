@@ -261,6 +261,22 @@ def test_schema_defaults_to_thirty_second_polling():
     assert fields["http_encode"]["default"] is True
 
 
+def test_run_without_config_exits_nonzero():
+    """A run that cannot scrape must exit non-zero so agent:error is set."""
+    import contextlib
+    import io
+
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        try:
+            vigor.run({})
+        except SystemExit as exc:
+            assert exc.code == 1
+        else:  # pragma: no cover - failure path
+            raise AssertionError("run({}) must raise SystemExit(1)")
+    assert "missing_config" in buffer.getvalue()
+
+
 def main():
     """Run every test_* function; pytest is not installed in the venv."""
     tests = [

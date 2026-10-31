@@ -288,13 +288,23 @@ def run_plugin(plugin: str, config: dict) -> tuple[Optional[dict], float, int]:
 
     runtime = time.time() - start
 
+    output = proc.stdout.strip()
+
     if proc.returncode != 0:
         stderr = proc.stderr.strip()
         if stderr:
             logging.warning("Plugin '%s' stderr: %s", plugin, stderr)
+        # A plugin may exit non-zero *after* printing a metric payload (for
+        # example a failed scrape that still reports scrape_success/error).
+        # Keep that payload so dashboards and rules stay informed, while
+        # ERR_EXIT still flags the failed run through `agent:error`.
+        if output:
+            try:
+                return json.loads(output), runtime, ERR_EXIT
+            except json.JSONDecodeError:
+                pass
         return None, runtime, ERR_EXIT
 
-    output = proc.stdout.strip()
     if not output:
         return None, runtime, ERR_NO_OUTPUT
 
