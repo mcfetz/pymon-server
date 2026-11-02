@@ -1,30 +1,29 @@
 #!/usr/bin/env python3
 """DrayTek Vigor 167 DSL monitoring in bridge mode.
 
-The Vigor 167 uses the DrayOS 5 JSON/CGI API rather than the legacy Vigor 130
-HTML pages.  This collector only performs authenticated read requests:
-``event/552`` for login and ``CFG_MULTI_GET/501`` for status PIDs.
+The collector logs in through the modem's read-only management CLI over SSH.
+It reads the ``exec dslinfo`` summary and the DrayOS 5 monitoring page
+(``config Monitoring DSL_Status Monitoring_DSL_General`` + ``show all``) for
+the stream and error tables; classic ``vdsl status`` commands are a fallback
+for older firmware.  It never sends a ``set``/``edit``/``save``/``reboot``
+command and never emits credentials, command output or session data as metrics.
 
-Credentials, CGI payloads, cookies and tokens never enter metrics or errors.
+The SSH layer uses paramiko.  It is imported lazily so the parser can be tested
+without the optional dependency; the agent image installs it via
+``pymon-agent/requirements.txt``.
 """
 
-import base64
-import hashlib
-import http.cookiejar
 import json
 import os
 import re
-import ssl
+import socket
 import sys
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 
 
 __schema__ = {
     "label": "DrayTek Vigor 167 (DSL)",
-    "description": "DrayTek Vigor 167 DSL modem monitoring (bridge mode)",
+    "description": "DrayTek Vigor 167 DSL modem monitoring via SSH CLI (bridge mode)",
     "fields": [
         {
             "key": "sleep",
@@ -40,10 +39,10 @@ __schema__ = {
             "default": "192.168.184.2",
         },
         {
-            "key": "port",
-            "label": "Web port (80=http, 443=https)",
+            "key": "ssh_port",
+            "label": "SSH port",
             "type": "number",
-            "default": 80,
+            "default": 22,
             "min": 1,
             "max": 65535,
         },
@@ -55,52 +54,33 @@ __schema__ = {
         },
         {"key": "password", "label": "Vigor password", "type": "password"},
         {
-            "key": "http_encode",
-            "label": "Use DrayOS CT encoding",
-            "type": "boolean",
-            "default": True,
+            "key": "timeout",
+            "label": "SSH timeout (s)",
+            "type": "number",
+            "default": 10,
+            "min": 3,
+            "max": 30,
         },
         {
-            "key": "verify_tls",
-            "label": "Verify HTTPS certificates",
+            "key": "verify_host_key",
+            "label": "Verify SSH host key",
             "type": "boolean",
-            "default": True,
+            "default": False,
+            "optional": True,
         },
         {
-            "key": "ca_file",
-            "label": "HTTPS CA file (optional)",
+            "key": "known_hosts",
+            "label": "known_hosts file (optional)",
             "type": "string",
             "default": "",
             "optional": True,
         },
         {
-            "key": "timeout",
-            "label": "HTTP timeout (s)",
-            "type": "number",
-            "default": 8,
-            "min": 3,
-            "max": 15,
-        },
-        # Request line of the DrayOS 5 web UI. Firmware revisions differ, so the
-        # three values stay editable: correct them from a browser dev-tools
-        # capture instead of editing the plugin.
-        {
-            "key": "cgi_path",
-            "label": "CGI path",
+            "key": "dsl_command",
+            "label": "DSL CLI command",
             "type": "string",
-            "default": "/cgi-bin/webproc.cgi",
-        },
-        {
-            "key": "login_op",
-            "label": "Login op code",
-            "type": "string",
-            "default": "552",
-        },
-        {
-            "key": "status_op",
-            "label": "Status op code",
-            "type": "string",
-            "default": "501",
+            "default": "exec dslinfo",
+            "optional": True,
         },
         {
             "key": "state_file",
@@ -112,9 +92,10 @@ __schema__ = {
     ],
 }
 
-DEFAULT_CGI_PATH = "/cgi-bin/webproc.cgi"
-DEFAULT_LOGIN_OP = "552"
-DEFAULT_STATUS_OP = "501"
+DEFAULT_DSL_COMMAND = "exec dslinfo"
+DEFAULT_SSH_PORT = 22
+MONITORING_PAGE_COMMAND = "config Monitoring DSL_Status Monitoring_DSL_General"
+MONITORING_SHOW_COMMAND = "show all"
 
 PLACEHOLDERS = {"", "---", "[---]", "(nil)", "-", "n/a", "none", "--"}
 
@@ -142,14 +123,26 @@ COUNTER_BASE = {
 }
 COUNTER_ALIASES = {
     "crc": "crc",
+    "crc count": "crc",
+    "crc errors": "crc",
     "fecs": "fecs",
+    "fec": "fecs",
+    "fec count": "fecs",
     "es": "es",
+    "es count": "es",
+    "errored seconds": "es",
     "ses": "ses",
+    "ses count": "ses",
+    "severely errored seconds": "ses",
     "loss": "loss",
+    "loss count": "loss",
+    "loss of signal seconds": "loss",
     "uas": "uas",
+    "uas count": "uas",
+    "unavailable seconds": "uas",
     "hec": "hec_errors",
     "hec errors": "hec_errors",
-    "hec_error": "hec_errors",
+    "hec error": "hec_errors",
     "rs corrections": "rs_corrections",
     "rs correction": "rs_corrections",
     "los failure": "los_failure",
@@ -157,21 +150,60 @@ COUNTER_ALIASES = {
     "lpr failure": "lpr_failure",
     "ncd failure": "ncd_failure",
     "lcd failure": "lcd_failure",
+    "los": "los_failure",
+    "lof": "lof_failure",
+    "lpr": "lpr_failure",
+    "ncd": "ncd_failure",
+    "lcd": "lcd_failure",
     "nfec": "nfec",
     "rfec": "rfec",
     "lysmb": "lysmb",
-    "attenuation": "attenuation",
 }
-STREAM_ALIASES = {
-    "actual rate": "actual_rate",
-    "actual line rate": "actual_rate",
-    "attainable rate": "attainable_rate",
-    "attainable line rate": "attainable_rate",
-    "snr margin": "snr_margin",
-    "snr": "snr_margin",
-    "attenuation": "attenuation",
-    "path mode": "path_mode",
-    "interleave depth": "interleave_depth",
+PAIR_ALIASES = {
+    "actual rate": ("actual_rate", None),
+    "actual line rate": ("actual_rate", None),
+    "line rate": ("actual_rate", None),
+    "sync rate": ("actual_rate", None),
+    "attainable rate": ("attainable_rate", None),
+    "attainable line rate": ("attainable_rate", None),
+    "snr margin": ("snr_margin", None),
+    "snr": ("snr_margin", None),
+    "cur snr margin": ("snr_margin", None),
+    "current snr margin": ("snr_margin", None),
+    "attenuation": ("attenuation", None),
+    "line attenuation": ("attenuation", None),
+    "current attenuation": ("attenuation", None),
+    "cur attenuation": ("attenuation", None),
+    "path mode": ("path_mode", None),
+    "interleave depth": ("interleave_depth", None),
+}
+SCALAR_ALIASES = {
+    "status": "line_state",
+    "state": "line_state",
+    "line state": "line_state",
+    "line status": "line_state",
+    "dsl status": "line_state",
+    "dsl state": "line_state",
+    "running mode": "mode",
+    "mode": "mode",
+    "dsl mode": "mode",
+    "xdsl mode": "mode",
+    "profile": "profile",
+    "vdsl profile": "profile",
+    "dsl profile": "profile",
+    "annex": "annex",
+    "annex type": "annex",
+    "dsl version": "dsl_version",
+    "dsl firmware version": "dsl_version",
+    "firmware version": "dsl_version",
+    "modem code": "dsl_version",
+    "line uptime": "line_uptime_seconds",
+    "line up time": "line_uptime_seconds",
+    "dsl uptime": "line_uptime_seconds",
+    "link uptime": "line_uptime_seconds",
+    "link up time": "line_uptime_seconds",
+    "system uptime": "system_uptime_seconds",
+    "system up time": "system_uptime_seconds",
 }
 SYNC_METRICS = {
     "actual_rate": "sync_rate_kbps",
@@ -182,31 +214,60 @@ SYNC_METRICS = {
 }
 STATE_VERSION = 1
 
+# Build the label lookup table once.  Directional aliases let both the classic
+# ``NE CRC Count / FE CRC Count`` layout and DrayOS 5's
+# ``Downstream_Line_Rate / Upstream_Line_Rate`` fields resolve to one pair.
+FIELD_ALIASES = {}
+for _alias, _key in SCALAR_ALIASES.items():
+    FIELD_ALIASES[_alias] = ("scalar", _key, None)
+for _alias, (_key, _direction) in PAIR_ALIASES.items():
+    FIELD_ALIASES[_alias] = ("pair", _key, _direction)
+for _alias, _key in COUNTER_ALIASES.items():
+    FIELD_ALIASES[_alias] = ("counter", _key, None)
 
-def _norm(value):
-    return re.sub(r"\s+", " ", str(value or "").strip(" .:_-\t\r\n")).lower()
+_DIRECTION_PREFIXES = (
+    ("near end", 0),
+    ("far end", 1),
+    ("downstream", 0),
+    ("upstream", 1),
+    ("near", 0),
+    ("far", 1),
+    ("ne", 0),
+    ("fe", 1),
+    ("ds", 0),
+    ("us", 1),
+)
+for _prefix, _direction in _DIRECTION_PREFIXES:
+    for _alias, (_key, _alias_direction) in PAIR_ALIASES.items():
+        if _alias_direction is None:
+            FIELD_ALIASES[f"{_prefix} {_alias}"] = ("pair", _key, _direction)
+    for _alias, _key in COUNTER_ALIASES.items():
+        FIELD_ALIASES[f"{_prefix} {_alias}"] = ("counter", _key, _direction)
+
+# A label starts at the beginning of a line or after at least two spaces.  This
+# keeps the regex from treating the "Mode" inside "Power Management Mode" as a
+# separate field.
+_LABEL_RE = re.compile(r"(?:^|\s{2,})([A-Za-z][A-Za-z0-9 ./()_\-]{0,40}?)\s*[:=]\s*")
+_ROW_RE = re.compile(r"^([A-Za-z][A-Za-z0-9 ./()_\-]{0,40}?)\s{2,}(.+)$")
+_NUMBER_RE = re.compile(
+    r"([-+]?\d+(?:[.,]\d+)?)\s*(kbps|mbps|gbps|bps|db|dB|s|sec|secs|seconds)?",
+    re.IGNORECASE,
+)
+_PAGER_RE = re.compile(r"(?i)(?:--\s*more\s*--|<more>|press\s+(?:any\s+)?key[^\n]*)")
+_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)")
+_PROMPT_RE = re.compile(r"(?m)^[^\s]{1,64}[>#]\s*$")
+
+
+def _label_norm(value):
+    text = str(value or "").strip(" .:\t\r\n")
+    text = text.replace("_", " ")
+    return re.sub(r"\s+", " ", text).lower()
 
 
 def _san(value):
     value = str(value or "").strip()
     value = re.sub(r"\s+", "_", value)
     return re.sub(r"[^A-Za-z0-9_.\-/]", "", value)
-
-
-def _to_num(value):
-    if value is None:
-        return None
-    text = str(value).strip()
-    if text.lower() in PLACEHOLDERS:
-        return None
-    match = re.search(r"[-+]?\d+(?:[,.]\d+)?", text)
-    if not match:
-        return None
-    try:
-        number = float(match.group(0).replace(",", "."))
-    except ValueError:
-        return None
-    return int(number) if number.is_integer() else number
 
 
 def _to_duration(value):
@@ -221,6 +282,8 @@ def _to_duration(value):
     text = str(value).strip().lower()
     if text in PLACEHOLDERS:
         return None
+    if re.fullmatch(r"\d+(?:[.,]\d+)?", text):
+        return int(float(text.replace(",", ".")))
 
     clock = re.fullmatch(r"(\d+):(\d+):(\d+)(?::(\d+))?", text)
     if clock:
@@ -244,26 +307,267 @@ def _to_duration(value):
     return int(total) if found else None
 
 
-def _pair(downstream, upstream):
-    return [_to_num(downstream), _to_num(upstream)]
+def _canonical_state(value):
+    text = re.sub(r"[^A-Za-z0-9]+", "", str(value or "")).lower()
+    if text.endswith("showtime") or text == "showtime":
+        return "SHOWTIME"
+    if text.endswith("training") or text == "training":
+        return "TRAINING"
+    return _san(value).upper()
 
 
-def _pair_text(first, second):
+def _lookup_field(label):
+    """Resolve a CLI label to ``(kind, key, direction)`` or ``None``."""
+    normal = _label_norm(label)
+    if normal in FIELD_ALIASES:
+        return FIELD_ALIASES[normal]
+
+    # Handle variants such as "SNR_Downstream", "CRC (Near End)" or
+    # "Downstream Line Attenuation" without enumerating every combination.
+    cleaned = normal.replace("(", " ").replace(")", " ")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    direction = None
+    for token, index in _DIRECTION_PREFIXES:
+        if re.search(rf"\b{re.escape(token)}\b", cleaned):
+            direction = index
+            cleaned = re.sub(rf"\b{re.escape(token)}\b", " ", cleaned)
+            cleaned = re.sub(r"\s+", " ", cleaned).strip()
+            break
+    if cleaned in FIELD_ALIASES:
+        kind, key, alias_direction = FIELD_ALIASES[cleaned]
+        return kind, key, direction if direction is not None else alias_direction
+    return None
+
+
+def _strip_ansi(text):
+    return _ANSI_RE.sub("", text or "")
+
+
+def _process_backspaces(text):
+    result = []
+    for char in text:
+        if char == "\b":
+            if result:
+                result.pop()
+        else:
+            result.append(char)
+    return "".join(result)
+
+
+def _clean_lines(text):
+    """Return non-empty, de-ANSI'd output lines without pager artefacts."""
+    text = _strip_ansi(text)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = _process_backspaces(text)
+    lines = []
+    for raw in text.split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        if _PAGER_RE.fullmatch(line):
+            continue
+        if re.fullmatch(r"[-=_]{3,}", line):
+            continue
+        lines.append(line)
+    return lines
+
+
+def _clean_cli_output(text, command=None, prompt=None):
+    """Remove the echoed command, terminal prompt and pager noise."""
+    text = _strip_ansi(text)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = _process_backspaces(text)
+    lines = text.split("\n")
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    if command and lines:
+        first = lines[0].strip()
+        if first == command.strip() or first.endswith(command.strip()):
+            lines.pop(0)
+    cleaned = []
+    for line in lines:
+        stripped = line.strip()
+        if prompt and stripped == prompt:
+            continue
+        if re.fullmatch(r"[^\s]{0,64}[>#]", stripped):
+            continue
+        cleaned.append(line.rstrip())
+    if prompt and cleaned:
+        last = cleaned[-1].rstrip()
+        if last.endswith(prompt):
+            cleaned[-1] = last[: -len(prompt)].rstrip()
+    while cleaned and not cleaned[-1].strip():
+        cleaned.pop()
+    return "\n".join(cleaned)
+
+
+def _extract_numbers(text):
+    """Return numeric values, normalising rate units to kbit/s."""
+    # Some firmware prints "7. 3 dB" with a space after the decimal point.
+    text = re.sub(r"(\d)\s*\.\s*(\d)", r"\1.\2", str(text or ""))
     values = []
-    for value in (first, second):
-        text = str(value or "").strip()
-        values.append(None if text.lower() in PLACEHOLDERS else text)
+    for match in _NUMBER_RE.finditer(text):
+        try:
+            number = float(match.group(1).replace(",", "."))
+        except ValueError:
+            continue
+        unit = (match.group(2) or "").lower()
+        if unit == "mbps":
+            number *= 1000
+        elif unit == "gbps":
+            number *= 1_000_000
+        elif unit == "bps":
+            number /= 1000
+        values.append(int(number) if number.is_integer() else number)
     return values
 
 
-def _first_dict(value):
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, list):
-        for item in value:
-            if isinstance(item, dict):
-                return item
+def _parse_numeric_pair(value):
+    parts = [part for part in re.split(r"\s*/\s*", str(value or "")) if part.strip()]
+    if len(parts) >= 2:
+        first = _extract_numbers(parts[0])
+        second = _extract_numbers(parts[1])
+        pair = [first[0] if first else None, second[0] if second else None]
+        return pair if any(item is not None for item in pair) else None
+    numbers = _extract_numbers(value)
+    if not numbers:
+        return None
+    return numbers[:2]
+
+
+def _parse_text_pair(value):
+    parts = [part.strip() for part in re.split(r"\s*/\s*", str(value or ""))]
+    if len(parts) >= 2:
+        return [part for part in parts[:2] if part]
+    parts = [part for part in re.split(r"\s{2,}", str(value or "").strip()) if part]
+    if len(parts) >= 2:
+        return parts[:2]
+    text = str(value or "").strip()
+    return [text] if text else None
+
+
+def _direction_kind(label):
+    """Map a directional CLI label to the counter-column convention."""
+    normal = _label_norm(label)
+    if re.search(r"\bnear end\b|\bne\b|\bfar end\b|\bfe\b", normal):
+        return "near_end_far_end"
+    if re.search(r"\bdownstream\b|\bds\b|\bupstream\b|\bus\b", normal):
+        return "downstream_upstream"
     return None
+
+
+def _apply_field(parsed, label, value, table_direction=None):
+    resolved = _lookup_field(label)
+    if not resolved:
+        return
+    kind, key, direction = resolved
+    value = str(value or "").strip()
+    if not value or value.lower() in PLACEHOLDERS:
+        return
+
+    if kind == "scalar":
+        if key == "line_state":
+            parsed[key] = _canonical_state(value)
+        elif key in ("line_uptime_seconds", "system_uptime_seconds"):
+            duration = _to_duration(value)
+            if duration is not None:
+                parsed[key] = duration
+        else:
+            if key == "dsl_version":
+                value = re.sub(r"\[[^\]]*\]", "", value).strip()
+            if value:
+                parsed[key] = value
+        return
+
+    if kind == "counter":
+        pair = _parse_numeric_pair(value)
+        if pair:
+            if direction is None:
+                parsed[key] = pair
+            else:
+                existing = parsed.get(key)
+                if not isinstance(existing, list):
+                    existing = []
+                if len(existing) == 0:
+                    existing = [None, None]
+                elif len(existing) == 1:
+                    existing = [existing[0], None]
+                existing[direction] = pair[0] if len(pair) == 1 else pair[direction]
+                parsed[key] = existing
+            counter_kind = table_direction or _direction_kind(label)
+            if counter_kind:
+                parsed.setdefault("_counter_directions", set()).add(counter_kind)
+        return
+
+    # kind == "pair"
+    pair = _parse_text_pair(value) if key == "path_mode" else _parse_numeric_pair(value)
+    if not pair:
+        return
+    if direction is None:
+        parsed[key] = pair
+        return
+    existing = parsed.get(key)
+    if not isinstance(existing, list):
+        existing = []
+    if len(existing) == 0:
+        existing = [None, None]
+    elif len(existing) == 1:
+        existing = [existing[0], None]
+    existing[direction] = pair[0] if len(pair) == 1 else pair[direction]
+    parsed[key] = existing
+
+
+def parse_cli_output(text):
+    """Convert Vigor CLI text (DrayOS 5 or classic vdsl status) to the model."""
+    parsed = {}
+    table_direction = None
+    for line in _clean_lines(text):
+        low = line.lower()
+        if "near end" in low and "far end" in low and ":" not in line:
+            table_direction = "near_end_far_end"
+        elif "downstream" in low and "upstream" in low and ":" not in line:
+            table_direction = "downstream_upstream"
+        if not parsed.get("annex") and "hw:" in low and "annex" in low:
+            annex = re.search(r"\bannex\s+([A-Za-z])\b", line, re.IGNORECASE)
+            if annex:
+                parsed["annex"] = f"ANNEX {annex.group(1).upper()}"
+
+        matches = list(_LABEL_RE.finditer(line))
+        if matches:
+            for index, match in enumerate(matches):
+                end = (
+                    matches[index + 1].start()
+                    if index + 1 < len(matches)
+                    else len(line)
+                )
+                _apply_field(
+                    parsed, match.group(1), line[match.end() : end], table_direction
+                )
+            continue
+
+        row = _ROW_RE.match(line)
+        if row:
+            _apply_field(parsed, row.group(1), row.group(2), table_direction)
+
+    # Classic ``vdsl status`` reports the VDSL profile (17A, 35B, ...) as
+    # "Running Mode".  DrayOS 5's dslinfo reports Mode and Profile separately;
+    # only infer the pair when the firmware did not provide a profile.
+    mode = parsed.get("mode")
+    if (
+        mode
+        and not parsed.get("profile")
+        and re.fullmatch(r"(?:8|12|17|30|35)[a-zA-Z]", str(mode).strip())
+    ):
+        parsed["profile"] = mode
+        parsed["mode"] = "VDSL2"
+
+    directions = parsed.pop("_counter_directions", set())
+    if directions:
+        if "near_end_far_end" in directions:
+            parsed["counter_direction"] = "near_end_far_end"
+        elif "downstream_upstream" in directions:
+            parsed["counter_direction"] = "downstream_upstream"
+    return {key: value for key, value in parsed.items() if value not in (None, "")}
 
 
 def _walk_dicts(value):
@@ -276,185 +580,108 @@ def _walk_dicts(value):
             yield from _walk_dicts(child)
 
 
-def _response_ok(response):
-    return (
-        isinstance(response, dict)
-        and str(response.get("rid", ""))[:4] == "0000"
-        and isinstance(response.get("ct"), list)
-        and bool(response.get("ct"))
-    )
-
-
-def _merge_responses(*responses):
-    """Combine successful PID responses without retaining transport metadata."""
-    merged = {"rid": "2001", "ct": []}
-    successful = False
-    for response in responses:
-        if not _response_ok(response):
-            continue
-        successful = True
-        blocks = response.get("ct")
-        if isinstance(blocks, list):
-            merged["ct"].extend(blocks)
-    if successful:
-        merged["rid"] = "0000"
-    return merged
-
-
-def _find_blocks(response, names):
-    wanted = set(names)
-    found = []
-    for item in _walk_dicts(response):
-        for key, value in item.items():
-            if key in wanted:
-                found.append(value)
-    return found
-
-
-def _find_first_row(response, names):
-    for block in _find_blocks(response, names):
-        row = _first_dict(block)
-        if row:
-            return row
+def _first_dict(value):
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, dict):
+                return item
     return None
 
 
-def _row_name(row):
-    return _norm(
-        row.get("Name") or row.get("name") or row.get("Title") or row.get("title")
-    )
+def _json_payload(text):
+    text = _strip_ansi(text or "").strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        return json.loads(text[start : end + 1])
+    except ValueError:
+        return None
 
 
-def _counter_key(name):
-    normal = _norm(name).replace("_", " ")
-    return COUNTER_ALIASES.get(normal)
+def _pair_from_values(first, second, key):
+    if key == "path_mode":
+        values = []
+        for value in (first, second):
+            text = str(value or "").strip()
+            values.append(None if text.lower() in PLACEHOLDERS else text)
+        return values
+    pair = []
+    for value in (first, second):
+        numbers = _extract_numbers(value)
+        pair.append(numbers[0] if numbers else None)
+    return pair
 
 
-def _stream_key(name):
-    normal = _norm(name).replace("_", " ")
-    return STREAM_ALIASES.get(normal)
+def parse_monitoring_json(text):
+    """Parse the JSON emitted by ``show all`` on the DSL monitoring page.
 
-
-def _rows_with_keys(response, names):
-    rows = []
-    for block in _find_blocks(response, names):
-        for row in _walk_dicts(block):
-            if isinstance(row, dict) and _row_name(row):
-                rows.append(row)
-    return rows
-
-
-def parse_api_responses(
-    status_response, monitoring_response=None, system_response=None
-):
-    """Convert Vigor 167 CGI responses into the collector's neutral model."""
-    if not _response_ok(status_response):
+    DrayOS 5 returns the same structure as the web API's
+    ``0MONITORING_DSL_GENERAL`` PID, so the stream and error tables can be
+    decoded without screen scraping.
+    """
+    payload = _json_payload(text)
+    if not payload:
+        return {}
+    block = None
+    for item in _walk_dicts(payload):
+        if "0MONITORING_DSL_GENERAL" in item:
+            block = _first_dict(item["0MONITORING_DSL_GENERAL"])
+            break
+    if not block:
         return {}
 
-    # Firmware revisions either return the general monitoring tree together
-    # with the status PID or as a separate PID response.  Accept both shapes.
-    monitoring_source = monitoring_response or {}
-    if not _find_blocks(
-        monitoring_source,
-        ("0MONITORING_DSL_GENERAL", "1MON_DSL_STREAM_TABLE", "1MON_DSL_END_TABLE"),
+    parsed = {}
+    for source, key in (
+        ("Status", "line_state"),
+        ("Mode", "mode"),
+        ("Profile", "profile"),
+        ("Annex", "annex"),
+        ("DSL_Version", "dsl_version"),
     ):
-        monitoring_source = status_response
-
-    status = _find_first_row(status_response, ("1DSL_STS_INFO_LITE",)) or {}
-    if not status:
-        status = _find_first_row(monitoring_source, ("0MONITORING_DSL_GENERAL",)) or {}
-    line_state = str(status.get("Status", "")).strip()
-    if not line_state:
-        return {}
-
-    parsed = {
-        "line_state": _canonical_state(line_state),
-        "mode": str(status.get("Mode", "")).strip(),
-        "profile": str(status.get("Profile", "")).strip(),
-        "annex": str(status.get("Annex", "")).strip(),
-        "dsl_version": str(status.get("DSL_Version", "")).strip(),
-        "line_uptime_seconds": _to_duration(status.get("Line_Uptime")),
-        "actual_rate": _pair(
-            status.get("Downstream_Line_Rate"), status.get("Upstream_Line_Rate")
-        ),
-        "snr_margin": _pair(status.get("SNR_Downstream"), status.get("SNR_Upstream")),
-    }
-    attenuation = _to_num(status.get("Downstream_Line_Attenuation"))
-    if attenuation is not None:
-        parsed["attenuation"] = [attenuation, None]
-
-    # The general monitoring PID can duplicate status fields and carries the
-    # stream/end table.  Prefer it only where the status PID has no value.
-    general = _find_first_row(monitoring_source, ("0MONITORING_DSL_GENERAL",)) or {}
-    for key, source in (
-        ("mode", "Mode"),
-        ("profile", "Profile"),
-        ("annex", "Annex"),
-        ("dsl_version", "DSL_Version"),
-    ):
-        if not parsed.get(key) and general.get(source):
-            parsed[key] = str(general[source]).strip()
-
-    stream_rows = _rows_with_keys(monitoring_source, ("1MON_DSL_STREAM_TABLE",))
-    end_rows = _rows_with_keys(monitoring_source, ("1MON_DSL_END_TABLE",))
-    # Some firmware versions nest the rows only under the general PID.
-    stream_rows += [
-        row
-        for row in _walk_dicts(general.get("Stream_Table", []))
-        if isinstance(row, dict) and _row_name(row)
-    ]
-    end_rows += [
-        row
-        for row in _walk_dicts(general.get("End_Table", []))
-        if isinstance(row, dict) and _row_name(row)
-    ]
-
-    for row in stream_rows:
-        key = _stream_key(_row_name(row))
-        if key:
-            pair = (
-                _pair_text(row.get("Downstream"), row.get("Upstream"))
-                if key == "path_mode"
-                else _pair(row.get("Downstream"), row.get("Upstream"))
-            )
-            if any(value is not None for value in pair):
-                parsed[key] = pair
-        counter = _counter_key(_row_name(row))
-        if counter and counter not in parsed:
-            pair = _pair(row.get("Downstream"), row.get("Upstream"))
-            if any(value is not None for value in pair):
-                parsed[counter] = pair
-
-    for row in end_rows:
-        key = _counter_key(_row_name(row))
-        if not key:
+        value = str(block.get(source) or "").strip()
+        if not value:
             continue
-        pair = _pair(row.get("Near_End"), row.get("Far_End"))
+        parsed[key] = _canonical_state(value) if key == "line_state" else value
+    if block.get("Line_Uptime"):
+        duration = _to_duration(block["Line_Uptime"])
+        if duration is not None:
+            parsed["line_uptime_seconds"] = duration
+
+    for row in _walk_dicts(block.get("Stream_Table", [])):
+        if not isinstance(row, dict) or not row.get("Name"):
+            continue
+        resolved = _lookup_field(row["Name"])
+        if not resolved:
+            continue
+        kind, key, _direction = resolved
+        if kind not in ("pair", "counter"):
+            continue
+        pair = _pair_from_values(row.get("Downstream"), row.get("Upstream"), key)
         if any(value is not None for value in pair):
-            if key == "attenuation":
-                parsed["attenuation"] = pair
-            else:
-                # The dedicated Near/Far table is authoritative over a
-                # stream-table duplicate because it preserves the modem's
-                # actual error-counter semantics.
-                parsed[key] = pair
+            parsed[key] = pair
 
-    parsed["counter_direction"] = (
-        "near_end_far_end" if end_rows else "downstream_upstream"
-    )
-    system = _find_first_row(system_response or {}, ("1SYSTEM_INFO",))
-    if system:
-        parsed["system_uptime_seconds"] = _to_duration(system.get("System_Uptime"))
-    return {key: value for key, value in parsed.items() if value not in (None, "")}
+    end_rows = False
+    for row in _walk_dicts(block.get("End_Table", [])):
+        if not isinstance(row, dict) or not row.get("Name"):
+            continue
+        resolved = _lookup_field(row["Name"])
+        if not resolved:
+            continue
+        kind, key, _direction = resolved
+        if kind not in ("pair", "counter"):
+            continue
+        end_rows = True
+        pair = _pair_from_values(row.get("Near_End"), row.get("Far_End"), key)
+        if any(value is not None for value in pair):
+            parsed[key] = pair
 
-
-def _canonical_state(value):
-    text = re.sub(r"[^A-Za-z0-9]+", "", str(value or "")).lower()
-    if text.endswith("showtime") or text == "showtime":
-        return "SHOWTIME"
-    if text.endswith("training") or text == "training":
-        return "TRAINING"
-    return _san(value).upper()
+    if end_rows:
+        parsed["counter_direction"] = "near_end_far_end"
+    return parsed
 
 
 def _fresh_state():
@@ -634,141 +861,237 @@ def compute_poll(state, parsed, now=None):
 
 
 # ---------------------------------------------------------------------------
-# DrayOS 5 JSON/CGI transport
+# SSH transport
 # ---------------------------------------------------------------------------
 
 
-def _encode_uri(value):
-    # JavaScript encodeURI's unescaped character set.
-    return urllib.parse.quote(value, safe=";/?:@&=+$-_.!~*'()#")
+class Vigor167SSHClient:
+    """Read-only interactive SSH client for the DrayOS management CLI.
 
-
-def build_login_payload(username, password, utc=None, locales="en"):
-    if utc is None:
-        utc = int(time.time())
-    return {
-        "param": [],
-        "ct": [
-            {
-                "Name": username,
-                "Password": hashlib.sha512(password.encode()).hexdigest(),
-                "utc": utc,
-                "VaildationCode": "",
-                "locales": locales,
-            }
-        ],
-    }
-
-
-def _encode_ct(value):
-    """Encode JSON with DrayOS 5's padding-count/base64 CT wrapper."""
-    encoded = base64.b64encode(value.encode("utf-8")).decode("ascii")
-    padding = len(encoded) - len(encoded.rstrip("="))
-    return f"{padding}{encoded[:-padding] if padding else encoded}"
-
-
-def build_cgi_body(pid, op, payload, http_encode=True):
-    content = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
-    ct = _encode_ct(content) if http_encode else _encode_uri(content)
-    return f"pid={pid}&op={op}&ct={ct}"
-
-
-def decode_cgi_response(text):
-    """Decode standalone JSON or DrayOS CT-prefixed base64 JSON."""
-    text = (text or "").strip()
-    if text.startswith("{") or text.startswith("["):
-        return json.loads(text)
-    if not text or not text[0].isdigit() or int(text[0]) > 2:
-        raise ValueError("invalid CGI response")
-    padding = int(text[0])
-    raw = base64.b64decode(text[1:] + "=" * padding)
-    return json.loads(raw.decode("utf-8"))
-
-
-class Vigor167Client:
-    """Cookie-aware, read-only Vigor 167 API client.
-
-    The request line (CGI path plus op codes) is configurable because it is
-    firmware specific; the defaults are what the DrayOS 5 web UI itself sends.
+    DrayTek's SSH server accepts the transport-level ``none`` authentication
+    and then runs ``draysh``, which asks for ``Username:`` / ``Password:`` in
+    the channel.  Some firmware revisions accept normal SSH password auth
+    instead, so both paths are supported.
     """
 
     def __init__(
         self,
-        base_url,
+        host,
+        port=DEFAULT_SSH_PORT,
+        username="admin",
+        password="",
         timeout=8,
-        cgi_path=DEFAULT_CGI_PATH,
-        login_op=DEFAULT_LOGIN_OP,
-        status_op=DEFAULT_STATUS_OP,
-        http_encode=True,
-        verify_tls=True,
-        ca_file="",
+        verify_host_key=False,
+        known_hosts="",
     ):
-        self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
-        self.http_encode = bool(http_encode)
-        path = str(cgi_path or DEFAULT_CGI_PATH).strip()
-        self.cgi_path = path if path.startswith("/") else f"/{path}"
-        self.login_op = str(login_op or DEFAULT_LOGIN_OP)
-        self.status_op = str(status_op or DEFAULT_STATUS_OP)
-        if verify_tls:
-            context = ssl.create_default_context(cafile=ca_file or None)
-        else:
-            # Insecure TLS is an explicit opt-in for devices with an
-            # untrusted certificate. Prefer HTTP on the isolated management
-            # VLAN or provide the modem's CA file instead.
-            context = ssl._create_unverified_context()
-        jar = http.cookiejar.CookieJar()
-        self.opener = urllib.request.build_opener(
-            urllib.request.HTTPSHandler(context=context),
-            urllib.request.HTTPCookieProcessor(jar),
-        )
+        self.host = host
+        self.port = int(port)
+        self.username = username or "admin"
+        self.password = password or ""
+        self.timeout = int(timeout)
+        self.verify_host_key = bool(verify_host_key)
+        self.known_hosts = known_hosts or ""
+        self._transport = None
+        self._channel = None
+        self.prompt = ">"
 
-    def _post(self, body, content_type=None):
-        if content_type is None:
-            content_type = (
-                "text/plain; charset=utf-8"
-                if self.http_encode
-                else "application/json; charset=utf-8"
-            )
-        request = urllib.request.Request(
-            f"{self.base_url}{self.cgi_path}",
-            data=body.encode("utf-8"),
-            headers={
-                "Accept": "application/json, text/plain, */*",
-                "Content-Type": content_type,
-                "User-Agent": "pymon-vigor167/1.0",
-            },
-            method="POST",
-        )
-        with self.opener.open(request, timeout=self.timeout) as response:
-            return decode_cgi_response(response.read().decode("utf-8", "replace"))
+    def connect(self):
+        try:
+            import paramiko
+        except ImportError as exc:  # pragma: no cover - deployment dependency
+            raise RuntimeError("missing_paramiko") from exc
 
-    def login(self, username, password):
-        """Authenticate; raises ``RuntimeError("auth_error")`` when rejected."""
-        # The standalone web UI sends this first request with its JSON content
-        # type; the CT wrapper is controlled by the HTTP_Encode setting.
-        response = self._post(
-            build_cgi_body(
-                "event",
-                self.login_op,
-                build_login_payload(username, password),
-                self.http_encode,
-            ),
-            content_type="application/json; charset=utf-8",
-        )
-        if not _response_ok(response):
+        sock = socket.create_connection((self.host, self.port), self.timeout)
+        sock.settimeout(self.timeout)
+        transport = paramiko.Transport(sock)
+        transport.banner_timeout = self.timeout
+        transport.auth_timeout = self.timeout
+        try:
+            transport.start_client(timeout=self.timeout)
+        except paramiko.SSHException as exc:
+            transport.close()
+            raise RuntimeError("ssh_error") from exc
+
+        if self.verify_host_key:
+            self._verify_host_key(transport, paramiko)
+
+        try:
+            # Preferred path for DrayOS: transport auth succeeds without a
+            # password, then the CLI itself asks for the credentials.
+            transport.auth_none(self.username)
+        except paramiko.BadAuthenticationType as exc:
+            allowed = tuple(getattr(exc, "allowed_types", ()) or ())
+            if "password" not in allowed:
+                transport.close()
+                raise RuntimeError("auth_error") from exc
+            try:
+                transport.auth_password(self.username, self.password)
+            except paramiko.AuthenticationException as auth_exc:
+                transport.close()
+                raise RuntimeError("auth_error") from auth_exc
+        except paramiko.AuthenticationException as exc:
+            transport.close()
+            raise RuntimeError("auth_error") from exc
+
+        if not transport.is_authenticated():
+            transport.close()
             raise RuntimeError("auth_error")
-        return response
 
-    def get_pid(self, pid):
-        """Read one status PID; raises ``RuntimeError("cgi_error")`` on refusal."""
-        payload = {"param": [], "ct": [{pid: []}]}
-        response = self._post(
-            build_cgi_body(pid, self.status_op, payload, self.http_encode)
+        try:
+            channel = transport.open_session(timeout=self.timeout)
+            channel.get_pty(term="vt100", width=200, height=1000)
+            channel.settimeout(self.timeout)
+            channel.invoke_shell()
+        except paramiko.SSHException as exc:
+            transport.close()
+            raise RuntimeError("ssh_error") from exc
+        self._transport = transport
+        self._channel = channel
+        try:
+            self._login()
+        except Exception:
+            self.close()
+            raise
+
+    def _verify_host_key(self, transport, paramiko):
+        try:
+            from paramiko.hostkeys import HostKeys
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError("host_key_error") from exc
+        candidates = [self.known_hosts] if self.known_hosts else []
+        candidates.append(os.path.expanduser("~/.ssh/known_hosts"))
+        hostkeys = HostKeys()
+        loaded = False
+        for path in candidates:
+            if path and os.path.exists(path):
+                try:
+                    hostkeys.load(path)
+                except Exception:  # malformed or unreadable known_hosts entry
+                    continue
+                loaded = True
+        if not loaded:
+            raise RuntimeError("host_key_error")
+        server_key = transport.get_remote_server_key()
+        for name in (self.host, f"[{self.host}]:{self.port}"):
+            entry = hostkeys.lookup(name)
+            if entry and entry.get(server_key.get_name()) == server_key:
+                return
+        raise RuntimeError("host_key_error")
+
+    def _decode(self, data):
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError:
+            return data.decode("latin-1", "replace")
+
+    def _send(self, text):
+        if self._channel is None:
+            raise RuntimeError("connection_error")
+        self._channel.sendall((text + "\n").encode("utf-8"))
+
+    def _read_until(self, patterns, timeout, require_end=True):
+        deadline = time.monotonic() + timeout
+        buffer = ""
+        while time.monotonic() < deadline:
+            if self._channel is None:
+                break
+            if self._channel.recv_ready():
+                chunk = self._channel.recv(65536)
+                if not chunk:
+                    break
+                buffer += self._decode(chunk)
+                buffer = _strip_ansi(buffer)
+                if _PAGER_RE.search(buffer):
+                    try:
+                        self._channel.sendall(b" ")
+                    except OSError:
+                        pass
+                    buffer = _PAGER_RE.sub("", buffer)
+                for pattern in patterns:
+                    match = pattern.search(buffer)
+                    if match and (not require_end or not buffer[match.end() :].strip()):
+                        return buffer, match
+            elif self._channel.closed:
+                break
+            else:
+                time.sleep(0.05)
+        raise TimeoutError("timeout")
+
+    def _login(self):
+        username_re = re.compile(r"(?i)username\s*:\s*$")
+        password_re = re.compile(r"(?i)password\s*:\s*$")
+        denied_re = re.compile(r"(?i)access\s+denied")
+        buffer, _match = self._read_until(
+            (_PROMPT_RE, username_re, denied_re), self.timeout, require_end=False
         )
-        if not _response_ok(response):
-            raise RuntimeError("cgi_error")
-        return response
+        if denied_re.search(buffer):
+            raise RuntimeError("auth_error")
+
+        if username_re.search(buffer):
+            self._send(self.username)
+            buffer, _match = self._read_until(
+                (password_re, _PROMPT_RE, denied_re),
+                self.timeout,
+                require_end=False,
+            )
+            if denied_re.search(buffer):
+                raise RuntimeError("auth_error")
+
+        if password_re.search(buffer):
+            self._send(self.password)
+            buffer, match = self._read_until(
+                (_PROMPT_RE, denied_re, username_re),
+                self.timeout,
+                require_end=False,
+            )
+            if denied_re.search(buffer) or username_re.search(buffer):
+                raise RuntimeError("auth_error")
+            if not _PROMPT_RE.search(buffer):
+                raise RuntimeError("auth_error")
+            self.prompt = match.group(0).strip() if match else ">"
+            return
+
+        if not _PROMPT_RE.search(buffer):
+            raise RuntimeError("auth_error")
+        match = _PROMPT_RE.search(buffer)
+        self.prompt = match.group(0).strip() if match else ">"
+
+    def command(self, command, timeout=None):
+        timeout = self.timeout if timeout is None else timeout
+        # Discard a pending prompt or late banner data before sending.
+        while self._channel is not None and self._channel.recv_ready():
+            self._channel.recv(65536)
+        self._send(command)
+        try:
+            buffer, _match = self._read_until((_PROMPT_RE,), timeout, require_end=True)
+        except TimeoutError:
+            # Return the CLI to its prompt so a fallback command can still run.
+            try:
+                self._channel.sendall(b"\x03")
+            except OSError:
+                pass
+            raise
+        return _clean_cli_output(buffer, command, self.prompt)
+
+    def close(self):
+        channel = self._channel
+        self._channel = None
+        if channel is not None:
+            try:
+                channel.sendall(b"quit\n")
+            except OSError:
+                pass
+            try:
+                channel.close()
+            except OSError:
+                pass
+        transport = self._transport
+        self._transport = None
+        if transport is not None:
+            try:
+                transport.close()
+            except OSError:
+                pass
 
 
 def _as_bool(value, default=True):
@@ -779,17 +1102,22 @@ def _as_bool(value, default=True):
     return str(value).strip().lower() not in {"0", "false", "no", "off", ""}
 
 
-def _base_url(host, port):
-    scheme = "https" if int(port) in (443, 11443) else "http"
-    return f"{scheme}://{host}:{int(port)}"
-
-
-def _optional_pid(client, pid):
-    """Read an auxiliary PID without turning missing optional data into down."""
-    try:
-        return client.get_pid(pid)
-    except (OSError, RuntimeError, TimeoutError, ValueError, urllib.error.HTTPError):
-        return {}
+def _merge_parsed(target, extra):
+    """Fill missing fields from a second CLI page without overwriting values."""
+    for key, value in extra.items():
+        if key == "counter_direction":
+            continue
+        if key not in target or target[key] in (None, "", []):
+            target[key] = value
+        elif isinstance(target[key], list) and isinstance(value, list):
+            for index, item in enumerate(value):
+                if index < len(target[key]):
+                    if target[key][index] is None and item is not None:
+                        target[key][index] = item
+                elif item is not None:
+                    target[key].append(item)
+    if extra.get("counter_direction") and any(key in extra for key in COUNTER_BASE):
+        target["counter_direction"] = extra["counter_direction"]
 
 
 def _run_error(state, state_file, start, error):
@@ -822,8 +1150,8 @@ def run(config):
         )
         sys.exit(1)
     try:
-        port = int(config.get("port", 80))
-        timeout = int(config.get("timeout", 8))
+        port = int(config.get("ssh_port", DEFAULT_SSH_PORT))
+        timeout = int(config.get("timeout", 10))
     except (TypeError, ValueError):
         print(
             json.dumps(
@@ -837,56 +1165,98 @@ def run(config):
     )
     state = _load_state(state_file)
     started = time.time()
-    monitoring_pids = (
-        "0MONITORING_DSL_GENERAL",
-        "1MON_DSL_STREAM_TABLE",
-        "1MON_DSL_END_TABLE",
-    )
-    monitoring_pids_result = []
-    client = Vigor167Client(
-        _base_url(host, port),
+    client = Vigor167SSHClient(
+        host,
+        port=port,
+        username=str(config.get("username") or "admin"),
+        password=password,
         timeout=timeout,
-        cgi_path=config.get("cgi_path"),
-        login_op=config.get("login_op"),
-        status_op=config.get("status_op"),
-        http_encode=_as_bool(config.get("http_encode"), True),
-        verify_tls=_as_bool(config.get("verify_tls"), True),
-        ca_file=str(config.get("ca_file") or "").strip(),
+        verify_host_key=_as_bool(config.get("verify_host_key"), False),
+        known_hosts=str(config.get("known_hosts") or "").strip(),
     )
+
+    parsed = {}
+    monitoring_ok = False
+    timeout_seen = False
     try:
-        client.login(str(config.get("username") or "admin"), password)
-        status = client.get_pid("1DSL_STS_INFO_LITE")
-        monitoring_pids_result = [_optional_pid(client, pid) for pid in monitoring_pids]
-        monitoring = _merge_responses(*monitoring_pids_result)
-        system = _optional_pid(client, "1SYSTEM_INFO")
-    except urllib.error.HTTPError as exc:
-        # Only 401/403 mean "credentials rejected": a 404 from a wrong CGI path
-        # must not masquerade as an auth problem.
-        error = "auth_error" if exc.code in (401, 403) else f"http_{exc.code}"
-        _run_error(state, state_file, started, error)
+        client.connect()
+        summary_command = str(config.get("dsl_command") or DEFAULT_DSL_COMMAND).strip()
+        if summary_command:
+            try:
+                summary = parse_cli_output(
+                    client.command(summary_command, timeout=timeout)
+                )
+                _merge_parsed(parsed, summary)
+            except TimeoutError:
+                timeout_seen = True
+
+        # Classic DrayOS 4 modems expose the same data through "vdsl status".
+        # Only try these when the primary command did not return a line state.
+        if not parsed.get("line_state"):
+            for command in (
+                "vdsl status more",
+                "vdsl status",
+                "adsl status more",
+                "adsl status",
+            ):
+                try:
+                    candidate = parse_cli_output(
+                        client.command(command, timeout=timeout)
+                    )
+                except TimeoutError:
+                    timeout_seen = True
+                    continue
+                _merge_parsed(parsed, candidate)
+                if parsed.get("line_state") and any(
+                    key in parsed for key in COUNTER_BASE
+                ):
+                    break
+
+        # DrayOS 5's exec dslinfo is a summary.  The monitoring page exposes
+        # the stream/error tables as the same JSON the web API uses; enter it
+        # read-only, print it with "show all" and close the session afterwards.
+        if (
+            not any(key in parsed for key in COUNTER_BASE)
+            or "attenuation" not in parsed
+        ):
+            try:
+                client.command(MONITORING_PAGE_COMMAND, timeout=timeout)
+                monitoring_text = client.command(
+                    MONITORING_SHOW_COMMAND, timeout=timeout
+                )
+                _merge_parsed(parsed, parse_monitoring_json(monitoring_text))
+            except TimeoutError:
+                timeout_seen = True
+            except (OSError, RuntimeError):
+                # The optional counter page must not discard a valid summary.
+                pass
+
+        monitoring_ok = bool(parsed.get("line_state"))
+    except RuntimeError as exc:
+        # The client only raises fixed codes, never payload content.
+        _run_error(state, state_file, started, str(exc) or "cli_error")
         return
-    except (TimeoutError, OSError):
+    except TimeoutError:
+        _run_error(state, state_file, started, "timeout_error")
+        return
+    except OSError:
         _run_error(state, state_file, started, "connection_error")
         return
-    except RuntimeError as exc:
-        # The client only ever raises fixed codes, never payload content.
-        _run_error(state, state_file, started, str(exc) or "cgi_error")
-        return
-    except ValueError:
-        _run_error(state, state_file, started, "cgi_error")
-        return
+    finally:
+        client.close()
 
-    parsed = parse_api_responses(status, monitoring, system)
-    if not parsed:
-        _run_error(state, state_file, started, "parse_error")
+    if not parsed or not parsed.get("line_state"):
+        _run_error(
+            state,
+            state_file,
+            started,
+            "timeout_error" if timeout_seen else "parse_error",
+        )
         return
 
     metrics = compute_poll(state, parsed)
     metrics["vigor_dsl_scrape_duration_seconds"] = round(time.time() - started, 3)
-    metrics["vigor_dsl_monitoring_success"] = int(
-        all(_response_ok(response) for response in monitoring_pids_result)
-    )
-    metrics["vigor_dsl_system_info_success"] = int(bool(_response_ok(system)))
+    metrics["vigor_dsl_monitoring_success"] = int(monitoring_ok)
     if parsed.get("counter_direction"):
         # Keep both names during the migration from vigor130.
         metrics["vigor_dsl_counter_columns"] = parsed["counter_direction"]

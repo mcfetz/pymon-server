@@ -1,11 +1,13 @@
-"""Redacted fixture tests for the Vigor 167 JSON/CGI collector."""
+"""Redacted fixture tests for the Vigor 167 SSH/CLI collector."""
 
-import hashlib
+import contextlib
 import importlib.util
+import io
+import json
 import os
-import ssl
+import shutil
 import sys
-import urllib.request
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -16,124 +18,301 @@ vigor = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(vigor)
 
 
-STATUS = {
+# Real ``exec dslinfo`` output from a Vigor 167 (V5.2.9).  It is a summary:
+# counters and attenuation come from the monitoring page below.
+DSLINFO_TEXT = """
+Status : Showtime
+
+Mode : VDSL2
+
+Profile : 17a
+
+Annex : ANNEX B
+
+DSL Version : 5.12.31.0_B_A60901
+
+Line Uptime : 0d  1h  3m 30s
+
+Downstream Line Rate : 116799 kbps
+
+Upstream Line Rate : 42463 kbps
+
+SNR Downstream : 7.8 dB
+
+SNR Upstream : 11.5 dB
+"""
+
+# Shape of ``show all`` on
+# ``config Monitoring DSL_Status Monitoring_DSL_General``.  Counter values are
+# synthetic so the state-machine tests have deterministic deltas.
+MONITORING = {
     "rid": "0000",
+    "total": 1,
+    "start": 0,
     "ct": [
         {
-            "1DSL_STS_INFO_LITE": [
+            "0MONITORING_DSL_GENERAL": [
                 {
-                    "Name": "1",
+                    "Name": "Setting",
                     "Status": "Showtime",
                     "Mode": "VDSL2",
                     "Profile": "17a",
                     "Annex": "ANNEX B",
                     "DSL_Version": "5.12.31.0_B_A60901",
-                    "Line_Uptime": "0d 3h 4m 5s",
-                    "Downstream_Line_Rate": "109998 kbps",
-                    "Upstream_Line_Rate": "36997 kbps",
-                    "SNR_Downstream": "12.1 dB",
-                    "SNR_Upstream": "9.3 dB",
-                }
-            ],
-            "0MONITORING_DSL_GENERAL": [
-                {
-                    "Name": "Setting",
-                    "Status": "Showtime",
-                    "Mode": "VDSL2",
-                    "Profile": "17a",
                     "Stream_Table": [
-                        {"Name": "CRC", "Downstream": "13", "Upstream": "6"},
-                        {"Name": "ES", "Downstream": "2", "Upstream": "7"},
+                        {
+                            "Name": "Actual Rate",
+                            "Downstream": "116799 kbps",
+                            "Upstream": "42463 kbps",
+                        },
+                        {
+                            "Name": "Attainable Rate",
+                            "Downstream": "142147 kbps",
+                            "Upstream": "50175 kbps",
+                        },
                         {
                             "Name": "Path Mode",
-                            "Downstream": "Interleave",
+                            "Downstream": "Interleaved",
                             "Upstream": "Fast",
+                        },
+                        {
+                            "Name": "Interleave Depth",
+                            "Downstream": "8",
+                            "Upstream": "1",
+                        },
+                        {
+                            "Name": "SNR Margin",
+                            "Downstream": "7.7 dB",
+                            "Upstream": "11.5 dB",
                         },
                     ],
                     "End_Table": [
-                        {"Name": "CRC", "Near_End": "13", "Far_End": "6951"},
-                        {"Name": "ES", "Near_End": "2", "Far_End": "1517"},
-                        {"Name": "UAS", "Near_End": "0", "Far_End": "1722"},
                         {
                             "Name": "Attenuation",
                             "Near_End": "11.2 dB",
                             "Far_End": "4.1 dB",
                         },
+                        {"Name": "CRC", "Near_End": "13", "Far_End": "6951"},
+                        {"Name": "FECS", "Near_End": "-", "Far_End": "-"},
+                        {"Name": "ES", "Near_End": "2 s", "Far_End": "1517 s"},
+                        {"Name": "SES", "Near_End": "0 s", "Far_End": "0 s"},
+                        {"Name": "LOSS", "Near_End": "-", "Far_End": "-"},
+                        {"Name": "UAS", "Near_End": "0 s", "Far_End": "1722 s"},
+                        {"Name": "HEC Errors", "Near_End": "0", "Far_End": "0"},
+                        {
+                            "Name": "RS Corrections",
+                            "Near_End": "-",
+                            "Far_End": "-",
+                        },
+                        {
+                            "Name": "LOS Failure",
+                            "Near_End": "0",
+                            "Far_End": "0",
+                        },
+                        {
+                            "Name": "LOF Failure",
+                            "Near_End": "0",
+                            "Far_End": "0",
+                        },
+                        {
+                            "Name": "LPR Failure",
+                            "Near_End": "0",
+                            "Far_End": "0",
+                        },
+                        {
+                            "Name": "NCD Failure",
+                            "Near_End": "-",
+                            "Far_End": "-",
+                        },
+                        {
+                            "Name": "LCD Failure",
+                            "Near_End": "0",
+                            "Far_End": "0",
+                        },
+                        {"Name": "NFEC", "Near_End": "-", "Far_End": "-"},
+                        {"Name": "RFEC", "Near_End": "10", "Far_End": "8"},
+                        {"Name": "LYSMB", "Near_End": "-", "Far_End": "-"},
                     ],
-                }
-            ],
-        }
-    ],
-}
-
-# Keep the response fixtures independent: the real collector receives these
-# blocks from separate op=501 calls.
-STATUS_ONLY = {
-    "rid": "0000",
-    "ct": [{"1DSL_STS_INFO_LITE": STATUS["ct"][0]["1DSL_STS_INFO_LITE"]}],
-}
-MONITORING_ALL = {
-    "rid": "0000",
-    "ct": [{"0MONITORING_DSL_GENERAL": STATUS["ct"][0]["0MONITORING_DSL_GENERAL"]}],
-}
-MONITORING_ONLY = {
-    "rid": "0000",
-    "ct": [
-        {
-            "0MONITORING_DSL_GENERAL": [
-                {
-                    "Name": "Setting",
-                    "Status": "Showtime",
-                    "Mode": "VDSL2",
-                    "Profile": "17a",
                 }
             ]
         }
     ],
 }
 
-SYSTEM = {
-    "rid": "0000",
-    "ct": [{"1SYSTEM_INFO": [{"System_Uptime": "2d 4h 5m 6s"}]}],
-}
+MONITORING_JSON = json.dumps(MONITORING)
+
+CLASSIC_TEXT = """
+  ---------------------- ATU-R Info (hw: annex B, f/w: annex A/B/C) -----------
+   Running Mode            :      17A       State                : SHOWTIME
+   DS Actual Rate          : 109998000 bps   US Actual Rate       : 36997000 bps
+   DS Attainable Rate      : 120000000 bps   US Attainable Rate   : 40000000 bps
+   DS Path Mode            :  Interleave    US Path Mode         : Fast
+   DS Interleave Depth     :      874       US Interleave Depth  : 1
+   NE Current Attenuation  :       11 dB    Cur SNR Margin       : 12  dB
+  -------------------------------- ATU-C Info ---------------------------------
+   Far Current Attenuation :        4 dB    Far SNR Margin       : 9  dB
+   NE CRC Count            :       13       FE CRC Count         : 6951
+   NE ES Count             :        2       FE  ES Count         : 1517
+"""
+
+MORE_TEXT = """
+  ---------------------- ATU-R Info (hw: annex B, f/w: annex A/B/C) -----------
+   Running Mode            :      17A       State                : SHOWTIME
+   DS Actual Rate          : 109998000 bps   US Actual Rate       : 36997000 bps
+  ---------------------------- ATU-R Info II ----------------------------
+                  Near End        Far End    Note
+ Trellis      :      1               1
+ FECS         :      0               0
+ CRC          :     13            6951
+ ES           :      2            1517
+ SES          :      0               0
+ UAS          :      0            1722
+ LOS          :      0               0
+ LOF          :      0               0
+ LPR          :      0               0
+ NCD          :      0               0
+ LCD          :      0               0
+"""
 
 
-def test_extract_status_and_metadata():
-    parsed = vigor.parse_api_responses(STATUS_ONLY, MONITORING_ALL, SYSTEM)
+def _sample_parsed():
+    parsed = vigor.parse_cli_output(DSLINFO_TEXT)
+    vigor._merge_parsed(parsed, vigor.parse_monitoring_json(MONITORING_JSON))
+    return parsed
+
+
+def test_parse_exec_dslinfo_text():
+    parsed = vigor.parse_cli_output(DSLINFO_TEXT)
     assert parsed["line_state"] == "SHOWTIME"
     assert parsed["mode"] == "VDSL2"
     assert parsed["profile"] == "17a"
     assert parsed["annex"] == "ANNEX B"
     assert parsed["dsl_version"] == "5.12.31.0_B_A60901"
-    assert parsed["actual_rate"] == [109998, 36997]
-    assert parsed["snr_margin"] == [12.1, 9.3]
-    assert parsed["line_uptime_seconds"] == 3 * 3600 + 4 * 60 + 5
-    assert parsed["system_uptime_seconds"] == 2 * 86400 + 4 * 3600 + 5 * 60 + 6
+    assert parsed["actual_rate"] == [116799, 42463]
+    assert parsed["snr_margin"] == [7.8, 11.5]
+    assert parsed["line_uptime_seconds"] == 3600 + 3 * 60 + 30
+    # exec dslinfo is only the summary page.
+    assert "crc" not in parsed
+    assert "attenuation" not in parsed
 
 
-def test_plain_second_uptimes_from_drayos5():
-    # The real Vigor 167 reports System_Uptime as an integer (2681), not "2d 4h".
-    system = {"rid": "0000", "ct": [{"1SYSTEM_INFO": [{"System_Uptime": 2681}]}]}
-    parsed = vigor.parse_api_responses(STATUS_ONLY, MONITORING_ALL, system)
-    assert parsed["system_uptime_seconds"] == 2681
-    assert vigor._to_duration(2681) == 2681
-    assert vigor._to_duration(2681.0) == 2681
-    assert vigor._to_duration(True) is None
-    assert vigor._to_duration("0d  0h 38m 46s") == 38 * 60 + 46
-
-
-def test_preserve_near_far_and_parse_error_tables():
-    parsed = vigor.parse_api_responses(STATUS_ONLY, MONITORING_ALL, SYSTEM)
+def test_parse_monitoring_json():
+    parsed = vigor.parse_monitoring_json(MONITORING_JSON)
+    assert parsed["line_state"] == "SHOWTIME"
+    assert parsed["mode"] == "VDSL2"
+    assert parsed["attainable_rate"] == [142147, 50175]
+    assert parsed["path_mode"] == ["Interleaved", "Fast"]
+    assert parsed["interleave_depth"] == [8, 1]
+    assert parsed["snr_margin"] == [7.7, 11.5]
+    assert parsed["attenuation"] == [11.2, 4.1]
     assert parsed["crc"] == [13, 6951]
     assert parsed["es"] == [2, 1517]
     assert parsed["uas"] == [0, 1722]
+    assert parsed["rfec"] == [10, 8]
     assert parsed["counter_direction"] == "near_end_far_end"
+
+
+def test_parse_classic_vdsl_status_text():
+    parsed = vigor.parse_cli_output(CLASSIC_TEXT)
+    assert parsed["line_state"] == "SHOWTIME"
+    # Classic firmware reports the VDSL profile in "Running Mode".
+    assert parsed["profile"] == "17A"
+    assert parsed["mode"] == "VDSL2"
+    assert parsed["annex"] == "ANNEX B"
+    assert parsed["actual_rate"] == [109998, 36997]
+    assert parsed["attainable_rate"] == [120000, 40000]
     assert parsed["path_mode"] == ["Interleave", "Fast"]
+    assert parsed["interleave_depth"] == [874, 1]
+    assert parsed["snr_margin"] == [12, 9]
+    assert parsed["attenuation"] == [11, 4]
+    assert parsed["crc"] == [13, 6951]
+    assert parsed["es"] == [2, 1517]
+    assert parsed["counter_direction"] == "near_end_far_end"
+
+
+def test_parse_vdsl_status_more_counters():
+    parsed = vigor.parse_cli_output(MORE_TEXT)
+    assert parsed["line_state"] == "SHOWTIME"
+    assert parsed["fecs"] == [0, 0]
+    assert parsed["crc"] == [13, 6951]
+    assert parsed["es"] == [2, 1517]
+    assert parsed["ses"] == [0, 0]
+    assert parsed["uas"] == [0, 1722]
+    assert parsed["los_failure"] == [0, 0]
+    assert parsed["lof_failure"] == [0, 0]
+    assert parsed["lpr_failure"] == [0, 0]
+    assert parsed["ncd_failure"] == [0, 0]
+    assert parsed["lcd_failure"] == [0, 0]
+
+
+def test_parse_downstream_upstream_table():
+    text = """
+Status: SHOWTIME
+Mode: VDSL2
+                                Downstream      Upstream
+Actual Rate                     109998 kbps     36997 kbps
+SNR Margin                      12.1 dB         9.3 dB
+CRC                             13              6
+"""
+    parsed = vigor.parse_cli_output(text)
+    assert parsed["actual_rate"] == [109998, 36997]
+    assert parsed["snr_margin"] == [12.1, 9.3]
+    assert parsed["crc"] == [13, 6]
+    assert parsed["counter_direction"] == "downstream_upstream"
+
+
+def test_lookup_field_direction_and_long_labels():
+    assert vigor._lookup_field("SNR_Downstream") == ("pair", "snr_margin", 0)
+    assert vigor._lookup_field("CRC (Near End)") == ("counter", "crc", 0)
+    assert vigor._lookup_field("Downstream_Line_Attenuation") == (
+        "pair",
+        "attenuation",
+        0,
+    )
+    # "Mode" inside a longer label must not overwrite the DSL mode.
+    assert vigor._lookup_field("Power Management Mode") is None
+
+
+def test_merge_parsed_fills_counters_from_monitoring_json():
+    parsed = vigor.parse_cli_output(DSLINFO_TEXT)
+    monitoring = vigor.parse_monitoring_json(MONITORING_JSON)
+    vigor._merge_parsed(parsed, monitoring)
+    assert parsed["line_state"] == "SHOWTIME"
+    assert parsed["mode"] == "VDSL2"
+    assert parsed["line_uptime_seconds"] == 3600 + 3 * 60 + 30
+    assert parsed["crc"] == [13, 6951]
     assert parsed["attenuation"] == [11.2, 4.1]
+    assert parsed["counter_direction"] == "near_end_far_end"
+
+    # A later page must never overwrite an already parsed line state.
+    vigor._merge_parsed(parsed, {"line_state": "TRAINING", "mode": "ADSL2+"})
+    assert parsed["line_state"] == "SHOWTIME"
+    assert parsed["mode"] == "VDSL2"
+
+
+def test_clean_cli_output_removes_prompt_and_echo():
+    raw = "exec dslinfo\r\nStatus: SHOWTIME\r\nCRC: 13 6951\r\nvigor> "
+    cleaned = vigor._clean_cli_output(raw, "exec dslinfo", "vigor>")
+    assert "Status: SHOWTIME" in cleaned
+    assert "CRC: 13 6951" in cleaned
+    assert "vigor>" not in cleaned
+    assert "exec dslinfo" not in cleaned
+
+
+def test_prompt_detection_ignores_chipset_banner():
+    assert vigor._PROMPT_RE.search("vigor>")
+    assert vigor._PROMPT_RE.search("admin@Vigor167>")
+    assert not vigor._PROMPT_RE.search("DSLAM CHIPSET VENDOR : < BDCM >")
+
+
+def test_invalid_output_is_empty():
+    assert vigor.parse_cli_output("") == {}
+    assert vigor.parse_cli_output("garbage") == {}
+    assert vigor.parse_monitoring_json("garbage") == {}
 
 
 def test_compute_poll_keeps_compatible_metric_names():
-    parsed = vigor.parse_api_responses(STATUS_ONLY, MONITORING_ALL, SYSTEM)
+    parsed = _sample_parsed()
     state = vigor._fresh_state()
     first = vigor.compute_poll(state, parsed, now=1000.0)
     assert first["vigor_dsl_scrape_success"] == 1
@@ -143,21 +322,23 @@ def test_compute_poll_keeps_compatible_metric_names():
     assert first["vigor_dsl_version"] == "5.12.31.0_B_A60901"
     assert first["vigor_dsl_type"] == "VDSL2"
     assert first["vigor_dsl_running_mode"] == "VDSL2"
-    assert first["vigor_dsl_path_mode_downstream"] == "Interleave"
+    assert first["vigor_dsl_path_mode_downstream"] == "Interleaved"
     assert first["vigor_dsl_path_mode_upstream"] == "Fast"
     assert first["vigor_dsl_attenuation_db_downstream"] == 11.2
     assert first["vigor_dsl_attenuation_db_upstream"] == 4.1
-    assert first["vigor_dsl_sync_rate_kbps_downstream"] == 109998
-    assert first["vigor_dsl_sync_rate_kbps_upstream"] == 36997
+    assert first["vigor_dsl_sync_rate_kbps_downstream"] == 116799
+    assert first["vigor_dsl_sync_rate_kbps_upstream"] == 42463
+    assert first["vigor_dsl_attainable_rate_kbps_downstream"] == 142147
+    assert first["vigor_dsl_attainable_rate_kbps_upstream"] == 50175
     assert first["vigor_dsl_crc_total_near_end"] == 13
     assert first["vigor_dsl_crc_total_far_end"] == 6951
     assert first["vigor_dsl_crc_total_downstream"] == 13
     assert first["vigor_dsl_crc_total_upstream"] == 6951
-    assert first["vigor_dsl_line_uptime_seconds"] == 3 * 3600 + 4 * 60 + 5
+    assert first["vigor_dsl_line_uptime_seconds"] == 3600 + 3 * 60 + 30
 
 
 def test_line_loss_and_recovery_are_distinct_from_transport_failure():
-    parsed = vigor.parse_api_responses(STATUS_ONLY, MONITORING_ALL, SYSTEM)
+    parsed = _sample_parsed()
     state = vigor._fresh_state()
     vigor.compute_poll(state, parsed, now=1000.0)
     down = dict(parsed, line_state="TRAINING", actual_rate=[0, 0])
@@ -174,7 +355,7 @@ def test_line_loss_and_recovery_are_distinct_from_transport_failure():
 
 
 def test_counter_delta_and_reset():
-    parsed = vigor.parse_api_responses(STATUS_ONLY, MONITORING_ALL, SYSTEM)
+    parsed = _sample_parsed()
     state = vigor._fresh_state()
     vigor.compute_poll(state, parsed, now=1000.0)
     grown = dict(parsed)
@@ -191,81 +372,64 @@ def test_counter_delta_and_reset():
     assert third["vigor_dsl_resync_total"] == 1
 
 
-def test_login_payload_hash_and_ct_encoding():
-    payload = vigor.build_login_payload("admin", "pw", utc=123)
-    assert payload["ct"][0]["Name"] == "admin"
-    assert payload["ct"][0]["Password"] == hashlib.sha512(b"pw").hexdigest()
-    assert len(payload["ct"][0]["Password"]) == 128
-    body = vigor.build_cgi_body("event", "552", payload)
-    assert body.startswith("pid=event&op=552&ct=")
-    encoded_ct = body.split("&ct=", 1)[1]
-    assert encoded_ct[0] in "012"
-    assert vigor.decode_cgi_response(encoded_ct) == payload
-    assert "%22Password%22" not in body
-    assert "pw" not in body
-
-    legacy_body = vigor.build_cgi_body("event", "552", payload, http_encode=False)
-    assert "%22Password%22" in legacy_body
-    assert "pw" not in legacy_body
-
-
-def test_https_defaults_to_certificate_verification():
-    client = vigor.Vigor167Client("https://192.0.2.1", timeout=1)
-    handler = next(
-        item
-        for item in client.opener.handlers
-        if isinstance(item, urllib.request.HTTPSHandler)
-    )
-    context = getattr(handler, "_context")
-    assert context.check_hostname is True
-    assert context.verify_mode == ssl.CERT_REQUIRED
-
-
-def test_separate_pid_responses_are_merged():
-    status = STATUS_ONLY
-    monitoring = MONITORING_ONLY
-    stream = {
-        "rid": "0000",
-        "ct": [
-            {
-                "1MON_DSL_STREAM_TABLE": STATUS["ct"][0]["0MONITORING_DSL_GENERAL"][0][
-                    "Stream_Table"
-                ]
-            }
-        ],
-    }
-    end = {
-        "rid": "0000",
-        "ct": [
-            {
-                "1MON_DSL_END_TABLE": STATUS["ct"][0]["0MONITORING_DSL_GENERAL"][0][
-                    "End_Table"
-                ]
-            }
-        ],
-    }
-    merged = vigor._merge_responses(monitoring, stream, end)
-    parsed = vigor.parse_api_responses(status, merged, SYSTEM)
-    assert parsed["crc"] == [13, 6951]
-    assert parsed["counter_direction"] == "near_end_far_end"
-
-
-def test_invalid_api_response_is_rejected():
-    assert vigor.parse_api_responses({"rid": "2000", "ct": []}, {}) == {}
-
-
-def test_schema_defaults_to_thirty_second_polling():
+def test_schema_defaults_to_ssh():
     fields = {field["key"]: field for field in vigor.__schema__["fields"]}
     assert fields["sleep"]["default"] == 30
     assert fields["sleep"]["min"] == 30
-    assert fields["http_encode"]["default"] is True
+    assert fields["ssh_port"]["default"] == 22
+    assert fields["dsl_command"]["default"] == "exec dslinfo"
+    assert "system_command" not in fields
+    assert "port" not in fields
+    assert "cgi_path" not in fields
+    assert "http_encode" not in fields
+
+
+def test_run_uses_ssh_cli_and_emits_metrics():
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def connect(self):
+            pass
+
+        def command(self, command, timeout=None):
+            if command == "exec dslinfo":
+                return DSLINFO_TEXT
+            if command == vigor.MONITORING_PAGE_COMMAND:
+                return ""
+            if command == vigor.MONITORING_SHOW_COMMAND:
+                return MONITORING_JSON
+            return ""
+
+        def close(self):
+            pass
+
+    original = vigor.Vigor167SSHClient
+    state_dir = tempfile.mkdtemp(dir="/tmp/opencode")
+    vigor.Vigor167SSHClient = FakeClient
+    try:
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            vigor.run(
+                {
+                    "host": "192.0.2.1",
+                    "password": "pw",
+                    "state_file": os.path.join(state_dir, "state.json"),
+                }
+            )
+        metrics = json.loads(buffer.getvalue())
+        assert metrics["vigor_dsl_scrape_success"] == 1
+        assert metrics["vigor_dsl_monitoring_success"] == 1
+        assert metrics["vigor_dsl_sync_rate_kbps_downstream"] == 116799
+        assert metrics["vigor_dsl_crc_total_near_end"] == 13
+        assert metrics["vigor_dsl_counter_columns"] == "near_end_far_end"
+    finally:
+        vigor.Vigor167SSHClient = original
+        shutil.rmtree(state_dir, ignore_errors=True)
 
 
 def test_run_without_config_exits_nonzero():
     """A run that cannot scrape must exit non-zero so agent:error is set."""
-    import contextlib
-    import io
-
     buffer = io.StringIO()
     with contextlib.redirect_stdout(buffer):
         try:
