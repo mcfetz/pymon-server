@@ -409,6 +409,40 @@ def post_metrics(plugin: str, metrics_list: list[dict], timestamp: str):
 
 CRON_POLL_INTERVAL = 30
 
+# Long-running cron tasks must not block the main loop: while a task runs inline the
+# watchdog sees no progress and kills the agent after WATCHDOG_STALL seconds, which
+# SIGTERMs the running child (verified 11/2026: a 20-min borg backup died after ~2 min).
+# Every task therefore runs in its own daemon thread so the main loop keeps ticking.
+_cron_tasks_running: set[str] = set()
+_cron_tasks_lock = threading.Lock()
+
+
+def _run_cron_task(task_id: str, command: str, timeout: int) -> None:
+    """Execute one cron task in a worker thread and report its metrics."""
+    started = time.time()
+    exit_code = -1
+    try:
+        proc = subprocess.run(command, shell=True, check=False, timeout=timeout)
+        exit_code = proc.returncode
+    except subprocess.TimeoutExpired:
+        logging.error("Cron task '%s' timed out after %ss", task_id, timeout)
+        exit_code = -2
+    except (OSError, subprocess.SubprocessError) as e:
+        logging.error("Cron task '%s' failed: %s", task_id, e)
+    duration = round(time.time() - started, 3)
+    try:
+        post_metrics(
+            "cron",
+            [
+                {f"{task_id}:exitcode": exit_code},
+                {f"{task_id}:duration": duration},
+            ],
+            datetime.now(timezone.utc).isoformat(),
+        )
+    finally:
+        with _cron_tasks_lock:
+            _cron_tasks_running.discard(task_id)
+
 
 def check_cron_tasks() -> None:
     """Fetch due cron tasks, run their commands locally and report metrics."""
@@ -442,27 +476,17 @@ def check_cron_tasks() -> None:
         if timeout < 1:
             timeout = 60
 
-        logging.info("Running cron task '%s': %s (timeout %ss)", task_id, command, timeout)
-        started = time.time()
-        exit_code = -1
-        try:
-            proc = subprocess.run(command, shell=True, check=False, timeout=timeout)
-            exit_code = proc.returncode
-        except subprocess.TimeoutExpired:
-            logging.error("Cron task '%s' timed out after %ss", task_id, timeout)
-            exit_code = -2
-        except (OSError, subprocess.SubprocessError) as e:
-            logging.error("Cron task '%s' failed: %s", task_id, e)
-        duration = round(time.time() - started, 3)
+        with _cron_tasks_lock:
+            if task_id in _cron_tasks_running:
+                logging.info("Cron task '%s' still running, skipping this poll", task_id)
+                continue
+            _cron_tasks_running.add(task_id)
 
-        post_metrics(
-            "cron",
-            [
-                {f"{task_id}:exitcode": exit_code},
-                {f"{task_id}:duration": duration},
-            ],
-            datetime.now(timezone.utc).isoformat(),
-        )
+        logging.info("Running cron task '%s': %s (timeout %ss, worker thread)",
+                     task_id, command, timeout)
+        threading.Thread(
+            target=_run_cron_task, args=(task_id, command, timeout), daemon=True
+        ).start()
 
 
 def signal_handler(sig, frame):
