@@ -10,6 +10,7 @@ from typing import Callable, Literal
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
+from audit import record_audit
 from db_models import Alarm, Metrics
 from functions import get_value_from_row
 from notifications import notify_targets
@@ -472,13 +473,30 @@ def _ack_open_alarms(session: Session, agentid: str, rule: Rule, metric: str, pl
             Alarm.rule_id == rule.id,
             Alarm.pluginid == effective_pluginid,
             Alarm.metric == metric,
-            Alarm.acknowledged == False,
+            Alarm.acknowledged == False,  # noqa: E712
         )
     )
     for alarm in session.execute(q).scalars().all():
         alarm.acknowledged = True
         alarm.acknowledged_at = now
         alarm.ack_method = "auto_close"
+        alarm.acknowledged_by = "system:auto_close"
+        alarm.acknowledged_source = "system"
+        record_audit(
+            "alarm.ack",
+            "alarm",
+            alarm.id,
+            summary=f"auto-closed alarm #{alarm.id} ({rule.id} / {agentid})",
+            details={
+                "rule_id": rule.id,
+                "agentid": agentid,
+                "pluginid": effective_pluginid,
+                "metric": metric,
+                "ack_method": "auto_close",
+            },
+            session=session,
+            actor=("system", "auto_close"),
+        )
 
 
 def create_alarm(

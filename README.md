@@ -245,8 +245,10 @@ Suppress alarms or notifications during scheduled maintenance windows.
 The web frontend authenticates with username/password via `POST /login`, receives
 a JWT (30-day TTL), and sends it as `Authorization: Bearer <token>` on every request.
 
-User accounts are stored in `conf/users.json` with scrypt-hashed passwords.
-Manage accounts via the Account page in the web UI.
+User accounts are stored in `conf/users.json` with scrypt-hashed passwords,
+a display name and role `admin` or `user`. Admins manage accounts on the
+Account page in the web UI. Changing a password or role increments the stored
+`token_version` and invalidates existing JWTs for that user.
 
 ### Agents (API key)
 
@@ -328,8 +330,9 @@ The `plugins/_template.py` file provides a starting skeleton.
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/login` | — | Obtain JWT token |
-| PUT | `/account` | JWT | Change username / password |
+| POST | `/login` | — | Obtain JWT token (includes role/display name) |
+| GET | `/account` | JWT | Current username, role and display name |
+| PUT | `/account` | JWT | Change username / password / display name |
 
 ### Agents & Groups
 
@@ -384,6 +387,9 @@ All admin routes require authentication. Prefix: `/admin/`
 | `/admin/plugins/<name>/source` | GET, PUT |
 | `/admin/plugins/<name>` | DELETE |
 | `/admin/plugins/check` | POST (syntax check) |
+| `/admin/users` | GET, POST |
+| `/admin/users/<username>` | GET, PUT, DELETE |
+| `/admin/audit` | GET (filters: actor, action, target, time range) |
 
 ## Database
 
@@ -392,7 +398,8 @@ SQLite file `metrics.db` is created automatically.
 | Table | Contents |
 |-------|----------|
 | `metrics` | All metric data points (agentid, pluginid, metric, timestamp, value) |
-| `alarms` | Triggered alarms with severity, ack status, link to triggering metric |
+| `alarms` | Triggered alarms with severity, ack status/by, note, link to triggering metric |
+| `audit_log` | Append-only actor/action/target trail for alarm and config changes |
 
 Agent status updates are stored in `metrics` with the dummy plugin ID `agent`,
 metric name `online`, and value `1` for online or `0` for offline.
@@ -400,6 +407,8 @@ metric name `online`, and value `1` for online or `0` for offline.
 ## Security
 
 - Frontend authentication uses JWT (HS256, 30-day TTL)
+- Users have role `admin` (all) or `user` (alarms + config, no user/maintenance management)
+- JWT `ver` is checked against the user's `token_version`, so password/role changes revoke old tokens
 - Agent authentication uses `agentid` + `X-API-Key` with constant-time comparison
 - CORS is restricted to configured origins only (see `PYMON_CORS_ORIGINS`)
 - Login endpoint is rate-limited: max 10 attempts per IP per 60 seconds

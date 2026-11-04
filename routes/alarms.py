@@ -5,7 +5,8 @@ from datetime import UTC, datetime, timedelta
 from flask import jsonify, request
 from core import DB_WRITE_LOCK, app, logger, SessionLocal
 from db_models import Alarm, Metrics
-from auth import require_agent_apikey
+from auth import require_agent_apikey, require_user
+from audit import current_actor, record_audit
 from sqlalchemy import desc, asc, func
 from config import CONF_DIR
 from snooze import load_snoozes, prune_expired_snoozes, save_snoozes, snooze_key
@@ -143,6 +144,8 @@ def _alarm_to_dict(a: Alarm, note_limit: int | None = None) -> dict:
         "acknowledged": a.acknowledged,
         "acknowledged_at": a.acknowledged_at.isoformat() if a.acknowledged_at else None,
         "ack_method": a.ack_method,
+        "acknowledged_by": a.acknowledged_by,
+        "acknowledged_source": a.acknowledged_source,
         "note": note,
         "note_updated_at": a.note_updated_at.isoformat() if a.note_updated_at else None,
         "metrics_id": a.metrics_id,
@@ -222,6 +225,7 @@ def list_snoozed():
 
 @app.route("/alarms/snooze/toggle", methods=["POST"])
 @require_agent_apikey
+@require_user
 def toggle_snooze():
     data = request.get_json(silent=True) or {}
     rule_id = data.get("rule_id")
@@ -241,12 +245,38 @@ def toggle_snooze():
             if duration is None:
                 snoozes.pop(i)
                 _save_snoozes(snoozes)
+                record_audit(
+                    "alarm.unsnooze",
+                    "snooze",
+                    key,
+                    summary=f"cleared snooze for {rule_id} on {agentid}",
+                    details={
+                        "rule_id": rule_id,
+                        "agentid": agentid,
+                        "pluginid": pluginid,
+                        "metric": metric,
+                    },
+                )
                 return jsonify({"status": "unsnoozed"}), 200
 
             expires_at = datetime.now(UTC) + SNOOZE_DURATIONS[duration]
             s["snoozed_at"] = datetime.now(UTC).isoformat()
             s["expires_at"] = expires_at.isoformat()
             _save_snoozes(snoozes)
+            record_audit(
+                "alarm.snooze",
+                "snooze",
+                key,
+                summary=f"snoozed {rule_id} on {agentid} for {duration}",
+                details={
+                    "rule_id": rule_id,
+                    "agentid": agentid,
+                    "pluginid": pluginid,
+                    "metric": metric,
+                    "duration": duration,
+                    "expires_at": s["expires_at"],
+                },
+            )
             return jsonify({"status": "snoozed", "expires_at": s["expires_at"]}), 200
 
     snooze = {
@@ -260,6 +290,21 @@ def toggle_snooze():
         snooze["expires_at"] = (datetime.now(UTC) + SNOOZE_DURATIONS[duration]).isoformat()
     snoozes.append(snooze)
     _save_snoozes(snoozes)
+    record_audit(
+        "alarm.snooze",
+        "snooze",
+        key,
+        summary=f"snoozed {rule_id} on {agentid}"
+        + (f" for {duration}" if duration else " permanently"),
+        details={
+            "rule_id": rule_id,
+            "agentid": agentid,
+            "pluginid": pluginid,
+            "metric": metric,
+            "duration": duration,
+            "expires_at": snooze.get("expires_at"),
+        },
+    )
     response = {"status": "snoozed"}
     if duration is not None:
         response["expires_at"] = snooze["expires_at"]
@@ -488,6 +533,7 @@ def get_alarm_detail(alarmid: int):
 
 @app.route("/alarms/<int:alarmid>/ack", methods=["GET"])
 @require_agent_apikey
+@require_user
 def acknowledge_alarm(alarmid: int):
     """
     Acknowledge an alarm.
@@ -525,9 +571,12 @@ def acknowledge_alarm(alarmid: int):
             if alarm is None:
                 return jsonify({"error": f"Alarm with id {alarmid} not found"}), 404
 
+            actor_type, actor_id = current_actor()
             alarm.acknowledged = True
             alarm.acknowledged_at = datetime.now(UTC)
             alarm.ack_method = "manual"
+            alarm.acknowledged_by = actor_id
+            alarm.acknowledged_source = actor_type
             session.flush()
 
             # Auto-unsnooze when no more open alarms for this combo
@@ -541,6 +590,20 @@ def acknowledge_alarm(alarmid: int):
             if remaining == 0:
                 clear_snooze_for_alarm(alarm.rule_id, alarm.agentid, alarm.pluginid, alarm.metric)
 
+            record_audit(
+                "alarm.ack",
+                "alarm",
+                alarmid,
+                summary=f"acknowledged alarm #{alarmid} ({alarm.rule_id} / {alarm.agentid})",
+                details={
+                    "rule_id": alarm.rule_id,
+                    "agentid": alarm.agentid,
+                    "pluginid": alarm.pluginid,
+                    "metric": alarm.metric,
+                    "ack_method": "manual",
+                },
+                session=session,
+            )
             session.commit()
             return jsonify({"status": "acknowledged", "alarmid": alarmid}), 200
     except Exception as e:
@@ -554,6 +617,7 @@ def acknowledge_alarm(alarmid: int):
 
 @app.route("/alarms/<int:alarmid>/note", methods=["PUT"])
 @require_agent_apikey
+@require_user
 def update_alarm_note(alarmid: int):
     """Save or clear the free-text note of an open alarm."""
     data = request.get_json(silent=True) or {}
@@ -577,6 +641,24 @@ def update_alarm_note(alarmid: int):
             note_updated_at = datetime.now(UTC) if saved_note else None
             alarm.note = saved_note
             alarm.note_updated_at = note_updated_at
+            record_audit(
+                "alarm.note",
+                "alarm",
+                alarmid,
+                summary=(
+                    f"saved note on alarm #{alarmid}"
+                    if saved_note
+                    else f"cleared note on alarm #{alarmid}"
+                ),
+                details={
+                    "rule_id": alarm.rule_id,
+                    "agentid": alarm.agentid,
+                    "metric": alarm.metric,
+                    "has_note": bool(saved_note),
+                    "note_length": len(saved_note or ""),
+                },
+                session=session,
+            )
             session.commit()
             return jsonify(
                 {

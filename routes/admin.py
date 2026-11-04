@@ -14,7 +14,8 @@ from datetime import UTC, datetime, timedelta
 
 from flask import jsonify, request
 
-from auth import require_agent_apikey
+from auth import require_admin, require_agent_apikey, require_frontend_user
+from audit import audit_config, record_audit
 from core import app, logger, SessionLocal, DB_WRITE_LOCK
 from config import CONF_DIR, PLUGINS_DIR, DB_PATH, IS_POSTGRES
 from db_models import Alarm, Metrics
@@ -215,7 +216,6 @@ def touch_agent_last_seen(agentid: str, timestamp: datetime | None = None) -> No
 @require_agent_apikey
 def admin_plugin_schemas():
     """Return schemas for all plugins, reading from plugin files first."""
-    import ast
     plugins_dir = os.path.join(os.path.dirname(__file__), "..", "plugins")
     schemas = {}
     if os.path.isdir(plugins_dir):
@@ -266,6 +266,8 @@ def admin_list_agents():
     result = {}
     for agent_id, agent_data in agents.items():
         data = dict(agent_data)
+        if getattr(request, "frontend_role", None) != "admin":
+            data.pop("apikey", None)
         data["agent_version"] = latest_versions.get(agent_id)
         data["server_agent_hash"] = server_agent_hash
         last_seen_value = data.get("last_seen")
@@ -301,6 +303,7 @@ def admin_list_agents():
 
 @app.route("/admin/maintenance/stats", methods=["GET"])
 @require_agent_apikey
+@require_admin
 def admin_maintenance_stats():
     """Return configuration and stored metric counts for maintenance tools."""
     cfg = _load_json_config()
@@ -339,6 +342,7 @@ def admin_maintenance_stats():
 
 @app.route("/admin/maintenance/vacuum", methods=["POST"])
 @require_agent_apikey
+@require_admin
 def admin_vacuum_db():
     """Rebuild the database to reclaim space freed by deletes (SQLite only)."""
     if IS_POSTGRES:
@@ -359,11 +363,17 @@ def admin_vacuum_db():
 
     after = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
     logger.info("Database vacuumed: %d -> %d bytes", before, after)
+    record_audit(
+        "maintenance.vacuum", "database", "metrics",
+        summary="vacuumed metrics database",
+        details={"before_bytes": before, "after_bytes": after},
+    )
     return jsonify({"status": "vacuumed", "before": before, "after": after})
 
 
 @app.route("/admin/maintenance/metrics", methods=["DELETE"])
 @require_agent_apikey
+@require_admin
 def admin_cleanup_metrics():
     """Delete stored metrics older than the given age in days, optionally
     filtered by agent, plugin and/or metric name. Alarms referencing deleted
@@ -438,11 +448,24 @@ def admin_cleanup_metrics():
         "Metric cleanup: deleted %d metrics and %d alarms (days=%d, agent=%s, plugin=%s, metric=%s)",
         deleted_metrics, deleted_alarms, days, agent, plugin, metric,
     )
+    record_audit(
+        "maintenance.cleanup", "metrics", "metrics",
+        summary=f"deleted {deleted_metrics} metrics and {deleted_alarms} alarms",
+        details={
+            "days": days,
+            "agent": agent,
+            "plugin": plugin,
+            "metric": metric,
+            "metrics": deleted_metrics,
+            "alarms": deleted_alarms,
+        },
+    )
     return jsonify({"status": "deleted", "metrics": deleted_metrics, "alarms": deleted_alarms})
 
 
 @app.route("/admin/maintenance/cleanup-job", methods=["GET"])
 @require_agent_apikey
+@require_admin
 def admin_cleanup_job_get():
     """Return automatic cleanup job settings and last run statistics."""
     from cleanup_job import get_state
@@ -451,6 +474,7 @@ def admin_cleanup_job_get():
 
 @app.route("/admin/maintenance/cleanup-job", methods=["PUT"])
 @require_agent_apikey
+@require_admin
 def admin_cleanup_job_save():
     """Update automatic cleanup job settings."""
     from cleanup_job import apply_settings
@@ -459,11 +483,17 @@ def admin_cleanup_job_save():
     if isinstance(result, tuple):
         error, status = result
         return jsonify(error), status
+    record_audit(
+        "maintenance.cleanup_settings", "cleanup_job", "cleanup",
+        summary="updated automatic metric cleanup settings",
+        details=payload,
+    )
     return jsonify(result)
 
 
 @app.route("/admin/agents", methods=["POST"])
 @require_agent_apikey
+@require_frontend_user
 def admin_create_agent():
     """Create a new agent."""
     import secrets
@@ -487,24 +517,34 @@ def admin_create_agent():
             "plugins": {},
         }
         _save_json_config(cfg)
+    audit_config(
+        "config.agent.create", "agent", agent_id, before=None,
+        after=cfg["agents"][agent_id], summary=f"created agent {agent_id}",
+    )
     return jsonify({"status": "created", "agentid": agent_id, "apikey": api_key}), 201
 
 
 @app.route("/admin/agents/<agentid>", methods=["DELETE"])
 @require_agent_apikey
+@require_frontend_user
 def admin_delete_agent(agentid: str):
     """Delete an agent."""
     with _locked(CONFIG_JSON):
         cfg = _load_json_config()
         if agentid not in cfg.get("agents", {}):
             return jsonify({"error": "not found"}), 404
-        del cfg["agents"][agentid]
+        before = cfg["agents"].pop(agentid)
         _save_json_config(cfg)
+    audit_config(
+        "config.agent.delete", "agent", agentid, before=before, after=None,
+        summary=f"deleted agent {agentid}",
+    )
     return jsonify({"status": "deleted"})
 
 
 @app.route("/admin/agents/<agentid>/enabled", methods=["PUT"])
 @require_agent_apikey
+@require_frontend_user
 def admin_toggle_agent_enabled(agentid: str):
     """Enable or disable an agent."""
     data = request.get_json(silent=True) or {}
@@ -513,13 +553,20 @@ def admin_toggle_agent_enabled(agentid: str):
         agents = cfg.get("agents", {})
         if agentid not in agents:
             return jsonify({"error": "not found"}), 404
+        before = dict(agents[agentid])
         agents[agentid]["enabled"] = bool(data.get("enabled", True))
+        after = dict(agents[agentid])
         _save_json_config(cfg)
+    audit_config(
+        "config.agent.enabled", "agent", agentid, before=before, after=after,
+        summary=f"set agent {agentid} enabled={after['enabled']}",
+    )
     return jsonify({"status": "updated", "enabled": agents[agentid]["enabled"]})
 
 
 @app.route("/admin/agents/<agentid>", methods=["PUT"])
 @require_agent_apikey
+@require_frontend_user
 def admin_update_agent(agentid: str):
     """Update agent metadata (title, description, etc.)."""
     data = request.get_json(silent=True) or {}
@@ -528,16 +575,23 @@ def admin_update_agent(agentid: str):
         agents = cfg.get("agents", {})
         if agentid not in agents:
             return jsonify({"error": "not found"}), 404
+        before = dict(agents[agentid])
         if "title" in data:
             agents[agentid]["title"] = data["title"]
         if "description" in data:
             agents[agentid]["description"] = data["description"]
+        after = dict(agents[agentid])
         _save_json_config(cfg)
+    audit_config(
+        "config.agent.save", "agent", agentid, before=before, after=after,
+        summary=f"updated agent {agentid}",
+    )
     return jsonify({"status": "updated"})
 
 
 @app.route("/admin/agents/<agentid>/groups", methods=["PUT"])
 @require_agent_apikey
+@require_frontend_user
 def admin_set_agent_groups(agentid: str):
     """Update agent group membership."""
     data = request.get_json(silent=True) or {}
@@ -546,8 +600,14 @@ def admin_set_agent_groups(agentid: str):
         cfg = _load_json_config()
         if agentid not in cfg.get("agents", {}):
             return jsonify({"error": "not found"}), 404
+        before = list(cfg["agents"][agentid].get("groups") or [])
         cfg["agents"][agentid]["groups"] = groups
         _save_json_config(cfg)
+    audit_config(
+        "config.agent.groups", "agent", agentid,
+        before={"groups": before}, after={"groups": groups},
+        summary=f"updated groups for agent {agentid}",
+    )
     return jsonify({"status": "updated", "groups": groups})
 
 
@@ -564,6 +624,7 @@ def admin_get_agent_plugins(agentid: str):
 
 @app.route("/admin/agents/<agentid>/plugins/<pluginid>", methods=["PUT"])
 @require_agent_apikey
+@require_frontend_user
 def admin_set_plugin_config(agentid: str, pluginid: str):
     """Update plugin config for an agent."""
     data = request.get_json(silent=True) or {}
@@ -596,11 +657,17 @@ def admin_set_plugin_config(agentid: str, pluginid: str):
                 clean[key] = default
         agent.setdefault("plugins", {})[pluginid] = clean
         _save_json_config(cfg)
+    audit_config(
+        "config.plugin.save", "plugin", f"{agentid}/{pluginid}",
+        before=existing, after=clean,
+        summary=f"updated plugin {pluginid} on {agentid}",
+    )
     return jsonify({"status": "updated", "config": clean})
 
 
 @app.route("/admin/agents/<agentid>/plugins/<pluginid>", methods=["DELETE"])
 @require_agent_apikey
+@require_frontend_user
 def admin_remove_plugin(agentid: str, pluginid: str):
     """Remove a plugin from an agent."""
     with _locked(CONFIG_JSON):
@@ -608,8 +675,13 @@ def admin_remove_plugin(agentid: str, pluginid: str):
         agent = cfg.get("agents", {}).get(agentid)
         if agent is None:
             return jsonify({"error": "not found"}), 404
-        agent.get("plugins", {}).pop(pluginid, None)
+        before = (agent.get("plugins") or {}).pop(pluginid, None)
         _save_json_config(cfg)
+    audit_config(
+        "config.plugin.delete", "plugin", f"{agentid}/{pluginid}",
+        before=before, after=None,
+        summary=f"removed plugin {pluginid} from {agentid}",
+    )
     return jsonify({"status": "removed"})
 
 
@@ -774,6 +846,7 @@ def admin_list_rules():
 
 @app.route("/admin/rules/<rule_id>", methods=["PUT"])
 @require_agent_apikey
+@require_frontend_user
 def admin_update_rule(rule_id: str):
     """Create or update a rule."""
     data = request.get_json(silent=True) or {}
@@ -785,26 +858,37 @@ def admin_update_rule(rule_id: str):
     data["id"] = rule_id
     with _locked(RULES_JSON):
         rules_map = _load_rules()
+        before = rules_map.get(rule_id)
         rules_map[rule_id] = data
         _save_rules(rules_map)
+    audit_config(
+        "config.rule.save", "rule", rule_id, before=before, after=data,
+        summary=f"saved rule {rule_id}",
+    )
     return jsonify({"status": "saved", "rule": data})
 
 
 @app.route("/admin/rules/<rule_id>", methods=["DELETE"])
 @require_agent_apikey
+@require_frontend_user
 def admin_delete_rule(rule_id: str):
     """Delete a rule."""
     with _locked(RULES_JSON):
         rules_map = _load_rules()
         if rule_id not in rules_map:
             return jsonify({"error": "not found"}), 404
-        del rules_map[rule_id]
+        before = rules_map.pop(rule_id)
         _save_rules(rules_map)
+    audit_config(
+        "config.rule.delete", "rule", rule_id, before=before, after=None,
+        summary=f"deleted rule {rule_id}",
+    )
     return jsonify({"status": "deleted"})
 
 
 @app.route("/admin/groups/<groupid>", methods=["PUT"])
 @require_agent_apikey
+@require_frontend_user
 def admin_set_group(groupid: str):
     """Set group data: title, description, plugins."""
     data = request.get_json(silent=True) or {}
@@ -813,23 +897,33 @@ def admin_set_group(groupid: str):
     description = data.get("description", "")
     with _locked(CONFIG_JSON):
         cfg = _load_json_config()
+        before = (cfg.get("groups") or {}).get(groupid)
         cfg.setdefault("groups", {})[groupid] = {
             "title": title,
             "description": description,
             "plugins": plugins,
         }
         _save_json_config(cfg)
+    audit_config(
+        "config.group.save", "group", groupid, before=before, after=cfg["groups"][groupid],
+        summary=f"saved group {groupid}",
+    )
     return jsonify({"status": "updated"})
 
 
 @app.route("/admin/groups/<groupid>", methods=["DELETE"])
 @require_agent_apikey
+@require_frontend_user
 def admin_delete_group(groupid: str):
     """Delete a group."""
     with _locked(CONFIG_JSON):
         cfg = _load_json_config()
-        cfg.get("groups", {}).pop(groupid, None)
+        before = (cfg.get("groups") or {}).pop(groupid, None)
         _save_json_config(cfg)
+    audit_config(
+        "config.group.delete", "group", groupid, before=before, after=None,
+        summary=f"deleted group {groupid}",
+    )
     return jsonify({"status": "deleted"})
 
 
@@ -860,6 +954,7 @@ def admin_list_executors():
 
 @app.route("/admin/executors/<exec_id>", methods=["PUT"])
 @require_agent_apikey
+@require_admin
 def admin_save_executor(exec_id: str):
     data = request.get_json(silent=True) or {}
     if data.get("id") and data["id"] != exec_id:
@@ -875,20 +970,30 @@ def admin_save_executor(exec_id: str):
     data["id"] = exec_id
     with _locked(EXECUTORS_JSON):
         exec_map = _load_executors()
+        before = exec_map.get(exec_id)
         exec_map[exec_id] = data
         _save_executors(exec_map)
+    audit_config(
+        "config.executor.save", "executor", exec_id, before=before, after=data,
+        summary=f"saved executor {exec_id}",
+    )
     return jsonify({"status": "saved"})
 
 
 @app.route("/admin/executors/<exec_id>", methods=["DELETE"])
 @require_agent_apikey
+@require_admin
 def admin_delete_executor(exec_id: str):
     with _locked(EXECUTORS_JSON):
         exec_map = _load_executors()
         if exec_id not in exec_map:
             return jsonify({"error": "not found"}), 404
-        del exec_map[exec_id]
+        before = exec_map.pop(exec_id)
         _save_executors(exec_map)
+    audit_config(
+        "config.executor.delete", "executor", exec_id, before=before, after=None,
+        summary=f"deleted executor {exec_id}",
+    )
     return jsonify({"status": "deleted"})
 
 
@@ -953,6 +1058,7 @@ def admin_notify_schema():
 
 @app.route("/admin/notifications/<notify_id>", methods=["PUT"])
 @require_agent_apikey
+@require_frontend_user
 def admin_save_notify(notify_id: str):
     data = request.get_json(silent=True) or {}
     if data.get("id") and data["id"] != notify_id:
@@ -960,25 +1066,36 @@ def admin_save_notify(notify_id: str):
     data["id"] = notify_id
     with _locked(NOTIFY_JSON):
         notify_map = _load_notify()
+        before = notify_map.get(notify_id)
         notify_map[notify_id] = data
         _save_notify(notify_map)
+    audit_config(
+        "config.notification.save", "notification", notify_id,
+        before=before, after=data, summary=f"saved notification {notify_id}",
+    )
     return jsonify({"status": "saved"})
 
 
 @app.route("/admin/notifications/<notify_id>", methods=["DELETE"])
 @require_agent_apikey
+@require_frontend_user
 def admin_delete_notify(notify_id: str):
     with _locked(NOTIFY_JSON):
         notify_map = _load_notify()
         if notify_id not in notify_map:
             return jsonify({"error": "not found"}), 404
-        del notify_map[notify_id]
+        before = notify_map.pop(notify_id)
         _save_notify(notify_map)
+    audit_config(
+        "config.notification.delete", "notification", notify_id,
+        before=before, after=None, summary=f"deleted notification {notify_id}",
+    )
     return jsonify({"status": "deleted"})
 
 
 @app.route("/admin/notifications/test", methods=["POST"])
 @require_agent_apikey
+@require_frontend_user
 def admin_test_notify():
     """Send a test notification."""
     data = request.get_json(silent=True) or {}
@@ -1123,6 +1240,7 @@ def admin_list_plugins():
 
 @app.route("/admin/plugins/template", methods=["GET"])
 @require_agent_apikey
+@require_admin
 def admin_plugin_template():
     """Return the plugin template source code."""
     tpath = os.path.join(PLUGIN_DIR, "_template.py")
@@ -1134,6 +1252,7 @@ def admin_plugin_template():
 
 @app.route("/admin/plugins/<name>/source", methods=["GET"])
 @require_agent_apikey
+@require_admin
 def admin_get_plugin_source(name: str):
     """Get plugin source code."""
     fpath = _safe_plugin_path(name)
@@ -1147,6 +1266,7 @@ def admin_get_plugin_source(name: str):
 
 @app.route("/admin/plugins/<name>/source", methods=["PUT"])
 @require_agent_apikey
+@require_admin
 def admin_save_plugin_source(name: str):
     """Update plugin source code."""
     fpath = _safe_plugin_path(name)
@@ -1161,11 +1281,17 @@ def admin_save_plugin_source(name: str):
     except OSError as e:
         logger.error("Error writing plugin source for '%s': %s", name, e)
         return jsonify({"error": "could not save plugin source"}), 500
+    record_audit(
+        "config.plugin.source", "plugin", name,
+        summary=f"saved source for plugin {name}",
+        details={"bytes": len(data.encode("utf-8"))},
+    )
     return jsonify({"status": "saved"}), 200
 
 
 @app.route("/admin/plugins/<name>", methods=["DELETE"])
 @require_agent_apikey
+@require_admin
 def admin_delete_plugin(name: str):
     """Delete a plugin file."""
     fpath = _safe_plugin_path(name)
@@ -1174,38 +1300,57 @@ def admin_delete_plugin(name: str):
     if not fpath.exists():
         return jsonify({"error": "not found"}), 404
     os.remove(fpath)
+    record_audit(
+        "config.plugin.delete", "plugin", name,
+        summary=f"deleted plugin {name}",
+    )
     return jsonify({"status": "deleted"}), 200
 
 
 @app.route("/admin/plugins/<name>/enabled", methods=["PUT"])
 @require_agent_apikey
+@require_admin
 def admin_toggle_plugin(name: str):
     """Toggle plugin enabled state."""
     data = request.get_json(silent=True) or {}
     enabled = data.get("enabled", True)
     meta = _load_plugin_meta()
+    before = dict(meta.get(name) or {})
     meta[name] = {"enabled": enabled}
     _save_plugin_meta(meta)
+    audit_config(
+        "config.plugin.enabled", "plugin", name,
+        before=before, after=meta[name],
+        summary=f"set plugin {name} enabled={enabled}",
+    )
     return jsonify({"status": "updated", "enabled": enabled})
 
 
 @app.route("/admin/plugins/<name>/meta", methods=["PUT"])
 @require_agent_apikey
+@require_admin
 def admin_save_plugin_meta(name: str):
     """Save plugin metadata (label, description)."""
     data = request.get_json(silent=True) or {}
     meta = _load_plugin_meta()
+    before = dict(meta.get(name) or {})
     entry = meta.setdefault(name, {})
     if "label" in data:
         entry["label"] = data["label"]
     if "description" in data:
         entry["description"] = data["description"]
     _save_plugin_meta(meta)
+    audit_config(
+        "config.plugin.meta", "plugin", name,
+        before=before, after=entry,
+        summary=f"updated metadata for plugin {name}",
+    )
     return jsonify({"status": "updated"})
 
 
 @app.route("/admin/plugins/check", methods=["POST"])
 @require_agent_apikey
+@require_admin
 def admin_check_plugin():
     """Check Python source for syntax errors and optionally run ruff."""
     data = request.get_data(as_text=True)
@@ -1220,7 +1365,10 @@ def admin_check_plugin():
         errors.append({"type": "syntax", "line": e.lineno, "msg": e.msg})
 
     # 2. ruff check (if available)
-    import subprocess, tempfile, os
+    import os
+    import subprocess
+    import tempfile
+
     with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as f:
         f.write(data)
         tmp = f.name
@@ -1254,7 +1402,6 @@ def admin_check_plugin():
 
 def _validate_against_schema(data: dict, schema: dict) -> dict:
     """Strip unknown fields and apply defaults from schema."""
-    valid_keys = {f["key"] for f in schema.get("fields", [])}
     result = {}
     for field in schema.get("fields", []):
         key = field["key"]
@@ -1318,6 +1465,7 @@ def admin_blackout_schema():
 
 @app.route("/admin/blackouts/<blackout_id>", methods=["PUT"])
 @require_agent_apikey
+@require_frontend_user
 def admin_save_blackout(blackout_id: str):
     data = request.get_json(silent=True)
     if not data:
@@ -1328,21 +1476,30 @@ def admin_save_blackout(blackout_id: str):
     item["id"] = blackout_id
     with _locked(BLACKOUTS_JSON):
         blackouts = _load_blackouts()
+        before = blackouts.get(blackout_id)
         blackouts[blackout_id] = item
         _save_blackouts(blackouts)
-    return jsonify({"status": "saved", "id": blackout_id})
-    _save_blackouts(blackouts)
+    audit_config(
+        "config.blackout.save", "blackout", blackout_id,
+        before=before, after=item, summary=f"saved blackout {blackout_id}",
+    )
     return jsonify({"status": "saved", "id": blackout_id})
 
 
 @app.route("/admin/blackouts/<blackout_id>", methods=["DELETE"])
 @require_agent_apikey
+@require_frontend_user
 def admin_delete_blackout(blackout_id: str):
     with _locked(BLACKOUTS_JSON):
         blackouts = _load_blackouts()
-        if blackout_id in blackouts:
-            del blackouts[blackout_id]
+        before = blackouts.pop(blackout_id, None)
+        if before is not None:
             _save_blackouts(blackouts)
+    if before is not None:
+        audit_config(
+            "config.blackout.delete", "blackout", blackout_id,
+            before=before, after=None, summary=f"deleted blackout {blackout_id}",
+        )
     return jsonify({"status": "deleted"})
 
 
@@ -1375,6 +1532,7 @@ def admin_list_variables():
 
 @app.route("/admin/variables/<var_id>", methods=["PUT"])
 @require_agent_apikey
+@require_frontend_user
 def admin_save_variable(var_id: str):
     data = request.get_json(silent=True) or {}
     name = data.get("name", "").strip().upper()
@@ -1390,20 +1548,30 @@ def admin_save_variable(var_id: str):
         for vid, v in variables.items():
             if v.get("name") == name and vid != var_id:
                 return jsonify({"error": f"variable name {name} already exists"}), 409
+        before = variables.get(var_id)
         variables[var_id] = data
         _save_variables(variables)
+    audit_config(
+        "config.variable.save", "variable", var_id,
+        before=before, after=data, summary=f"saved variable {name}",
+    )
     return jsonify({"status": "saved", "variable": data})
 
 
 @app.route("/admin/variables/<var_id>", methods=["DELETE"])
 @require_agent_apikey
+@require_frontend_user
 def admin_delete_variable(var_id: str):
     with _variables_lock:
         variables = _load_variables()
         if var_id not in variables:
             return jsonify({"error": "not found"}), 404
-        del variables[var_id]
+        before = variables.pop(var_id)
         _save_variables(variables)
+    audit_config(
+        "config.variable.delete", "variable", var_id,
+        before=before, after=None, summary=f"deleted variable {var_id}",
+    )
     return jsonify({"status": "deleted"})
 
 
@@ -1482,6 +1650,7 @@ def admin_list_dashboards():
 
 @app.route("/admin/dashboards/<dash_id>", methods=["PUT"])
 @require_agent_apikey
+@require_frontend_user
 def admin_save_dashboard(dash_id: str):
     data = request.get_json(silent=True) or {}
     normalized = _normalize_dashboard(data)
@@ -1490,20 +1659,31 @@ def admin_save_dashboard(dash_id: str):
     normalized["id"] = dash_id
     with _dashboards_lock:
         dashboards = _load_dashboards()
+        before = dashboards.get(dash_id)
         dashboards[dash_id] = normalized
         _save_dashboards(dashboards)
+    audit_config(
+        "config.dashboard.save", "dashboard", dash_id,
+        before=before, after=normalized,
+        summary=f"saved dashboard {normalized.get('name') or dash_id}",
+    )
     return jsonify({"status": "saved", "dashboard": normalized})
 
 
 @app.route("/admin/dashboards/<dash_id>", methods=["DELETE"])
 @require_agent_apikey
+@require_frontend_user
 def admin_delete_dashboard(dash_id: str):
     with _dashboards_lock:
         dashboards = _load_dashboards()
         if dash_id not in dashboards:
             return jsonify({"error": "not found"}), 404
-        del dashboards[dash_id]
+        before = dashboards.pop(dash_id)
         _save_dashboards(dashboards)
+    audit_config(
+        "config.dashboard.delete", "dashboard", dash_id,
+        before=before, after=None, summary=f"deleted dashboard {dash_id}",
+    )
     return jsonify({"status": "deleted"})
 
 
@@ -1532,12 +1712,14 @@ def _save_cron_tasks(data: dict) -> None:
 
 @app.route("/admin/cron-tasks", methods=["GET"])
 @require_agent_apikey
+@require_admin
 def admin_list_cron_tasks():
     return jsonify(_load_cron_tasks())
 
 
 @app.route("/admin/cron-tasks/<task_id>", methods=["PUT"])
 @require_agent_apikey
+@require_admin
 def admin_save_cron_task(task_id: str):
     from cron_scheduler import parse_schedule
 
@@ -1576,18 +1758,29 @@ def admin_save_cron_task(task_id: str):
     }
     with _cron_tasks_lock:
         tasks = _load_cron_tasks()
+        before = tasks.get(task_id)
         tasks[task_id] = task
         _save_cron_tasks(tasks)
+    audit_config(
+        "config.cron.save", "cron_task", task_id,
+        before=before, after=task,
+        summary=f"saved cron task {task.get('title') or task_id}",
+    )
     return jsonify({"status": "saved", "task": task})
 
 
 @app.route("/admin/cron-tasks/<task_id>", methods=["DELETE"])
 @require_agent_apikey
+@require_admin
 def admin_delete_cron_task(task_id: str):
     with _cron_tasks_lock:
         tasks = _load_cron_tasks()
         if task_id not in tasks:
             return jsonify({"error": "not found"}), 404
-        del tasks[task_id]
+        before = tasks.pop(task_id)
         _save_cron_tasks(tasks)
+    audit_config(
+        "config.cron.delete", "cron_task", task_id,
+        before=before, after=None, summary=f"deleted cron task {task_id}",
+    )
     return jsonify({"status": "deleted"})

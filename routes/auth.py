@@ -1,19 +1,25 @@
-import json
 import os
 import time
 import threading
 from collections import defaultdict
-from functools import wraps
 from datetime import datetime, timedelta, timezone
 
 import jwt
 from flask import request, jsonify
-from werkzeug.security import check_password_hash, generate_password_hash
 
 from core import app, logger
 from config import CONF_DIR
+from users import (
+    UserError,
+    UserExists,
+    UserNotFound,
+    get_user,
+    public_user,
+    update_account as update_user_account,
+    verify_credentials,
+)
+from audit import record_audit
 
-USERS_FILE  = os.path.join(CONF_DIR, "users.json")
 SECRET_FILE = os.path.join(CONF_DIR, "jwt_secret.txt")
 
 JWT_ALGO = "HS256"
@@ -57,13 +63,6 @@ def _load_secret() -> str:
         raise RuntimeError(f"Cannot read JWT secret: {e}") from e
 
 
-def _load_users() -> dict[str, str]:
-    if not os.path.exists(USERS_FILE):
-        return {}
-    with open(USERS_FILE) as f:
-        return json.load(f)
-
-
 @app.before_request
 def check_frontend_auth():
     if request.path == "/login":
@@ -84,11 +83,25 @@ def check_frontend_auth():
     token = auth[7:]
     try:
         payload = jwt.decode(token, _load_secret(), algorithms=[JWT_ALGO])
-        request.frontend_user = payload.get("sub")
     except jwt.ExpiredSignatureError:
         return jsonify({"error": "token expired"}), 401
     except jwt.InvalidTokenError:
         return jsonify({"error": "invalid token"}), 401
+
+    username = payload.get("sub")
+    user = get_user(username)
+    if not user:
+        return jsonify({"error": "invalid token"}), 401
+    try:
+        token_version = int(payload.get("ver", 0))
+    except (TypeError, ValueError):
+        token_version = 0
+    if token_version != int(user.get("token_version") or 0):
+        return jsonify({"error": "session expired"}), 401
+
+    request.frontend_user = username
+    request.frontend_role = user.get("role", "user")
+    request.frontend_display_name = user.get("display_name") or username
 
 
 @app.route("/login", methods=["POST"])
@@ -105,56 +118,99 @@ def login():
     if not username or not password:
         return jsonify({"error": "username and password required"}), 400
 
-    users = _load_users()
-    pw_hash = users.get(username)
-    if not pw_hash or not check_password_hash(pw_hash, password):
+    user = get_user(username)
+    if not user or not verify_credentials(username, password):
         return jsonify({"error": "invalid credentials"}), 401
 
     payload = {
         "sub": username,
+        "role": user.get("role", "user"),
+        "ver": int(user.get("token_version") or 0),
         "iat": datetime.now(timezone.utc),
         "exp": datetime.now(timezone.utc) + timedelta(days=JWT_TTL_DAYS),
     }
     token = jwt.encode(payload, _load_secret(), algorithm=JWT_ALGO)
-    return jsonify({"token": token, "username": username}), 200
+    return jsonify(
+        {
+            "token": token,
+            "username": username,
+            "role": user.get("role", "user"),
+            "display_name": user.get("display_name") or username,
+        }
+    ), 200
+
+
+@app.route("/account", methods=["GET"])
+def get_account():
+    username = getattr(request, "frontend_user", None)
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    user = get_user(username)
+    if not user:
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify(public_user(username, user)), 200
 
 
 @app.route("/account", methods=["PUT"])
 def update_account():
-    user = getattr(request, "frontend_user", None)
-    if not user:
+    username = getattr(request, "frontend_user", None)
+    if not username:
         return jsonify({"error": "unauthorized"}), 401
 
     data = request.get_json(silent=True) or {}
     current_pw = data.get("current_password", "")
-    new_username = data.get("new_username", "").strip()
-    new_password = data.get("new_password", "")
+    new_username = str(data.get("new_username") or "").strip()
+    new_password = data.get("new_password") or ""
+    display_name = data.get("display_name")
 
-    users = _load_users()
-    pw_hash = users.get(user)
-    if not pw_hash or not check_password_hash(pw_hash, current_pw):
+    if not verify_credentials(username, current_pw):
         return jsonify({"error": "current password is wrong"}), 403
-
-    if not new_username and not new_password:
+    if not new_username and not new_password and display_name is None:
         return jsonify({"error": "nothing to update"}), 400
 
-    if new_username and new_username != user and new_username in users:
-        return jsonify({"error": "username already taken"}), 409
-
-    if new_username:
-        users[new_username] = users.pop(user)
-        user = new_username
-
+    changed = []
+    if new_username and new_username != username:
+        changed.append("username")
     if new_password:
-        users[user] = generate_password_hash(new_password)
+        changed.append("password")
+    if display_name is not None:
+        changed.append("display_name")
 
-    with open(USERS_FILE, "w") as f:
-        json.dump(users, f, indent=2)
+    try:
+        target, user = update_user_account(
+            username,
+            new_username=new_username or None,
+            new_password=new_password or None,
+            display_name=display_name,
+        )
+    except UserExists:
+        return jsonify({"error": "username already taken"}), 409
+    except UserNotFound:
+        return jsonify({"error": "unauthorized"}), 401
+    except UserError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    record_audit(
+        "user.account_update",
+        "user",
+        target,
+        summary=f"updated own account ({', '.join(changed)})",
+        details={"changed_fields": changed},
+    )
 
     payload = {
-        "sub": user,
+        "sub": target,
+        "role": user.get("role", "user"),
+        "ver": int(user.get("token_version") or 0),
         "iat": datetime.now(timezone.utc),
         "exp": datetime.now(timezone.utc) + timedelta(days=JWT_TTL_DAYS),
     }
     token = jwt.encode(payload, _load_secret(), algorithm=JWT_ALGO)
-    return jsonify({"token": token, "username": user}), 200
+    return jsonify(
+        {
+            "token": token,
+            "username": target,
+            "role": user.get("role", "user"),
+            "display_name": user.get("display_name") or target,
+        }
+    ), 200

@@ -88,6 +88,12 @@ with engine.begin() as connection:
         if 'ack_method' not in existing_cols:
             logger.info("Migration: adding alarms.ack_method")
             connection.execute(text("ALTER TABLE alarms ADD COLUMN ack_method VARCHAR"))
+        if 'acknowledged_by' not in existing_cols:
+            logger.info("Migration: adding alarms.acknowledged_by")
+            connection.execute(text("ALTER TABLE alarms ADD COLUMN acknowledged_by VARCHAR"))
+        if 'acknowledged_source' not in existing_cols:
+            logger.info("Migration: adding alarms.acknowledged_source")
+            connection.execute(text("ALTER TABLE alarms ADD COLUMN acknowledged_source VARCHAR"))
         if 'note' not in existing_cols:
             logger.info("Migration: adding alarms.note")
             connection.execute(text("ALTER TABLE alarms ADD COLUMN note TEXT"))
@@ -170,6 +176,12 @@ with engine.begin() as connection:
         if 'ack_method' not in existing_cols:
             logger.info("Migration: adding alarms.ack_method")
             connection.execute(text("ALTER TABLE alarms ADD COLUMN ack_method VARCHAR"))
+        if 'acknowledged_by' not in existing_cols:
+            logger.info("Migration: adding alarms.acknowledged_by")
+            connection.execute(text("ALTER TABLE alarms ADD COLUMN acknowledged_by VARCHAR"))
+        if 'acknowledged_source' not in existing_cols:
+            logger.info("Migration: adding alarms.acknowledged_source")
+            connection.execute(text("ALTER TABLE alarms ADD COLUMN acknowledged_source VARCHAR"))
         if 'note' not in existing_cols:
             logger.info("Migration: adding alarms.note")
             connection.execute(text("ALTER TABLE alarms ADD COLUMN note TEXT"))

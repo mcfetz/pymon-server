@@ -48,3 +48,40 @@ def require_agent_apikey(func):
         return func(*args, **kwargs)
 
     return wrapper
+
+
+def require_admin(func):
+    """Allow only a logged-in frontend user with role=admin."""
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        if getattr(request, "frontend_role", None) != "admin":
+            return jsonify({"error": "admin required"}), 403
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
+def require_user(func):
+    """Allow frontend users (admin/user) and authenticated agents."""
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        role = getattr(request, "frontend_role", None)
+        if role in ("admin", "user") or getattr(request, "agentid", None):
+            return func(*args, **kwargs)
+        return jsonify({"error": "user required"}), 403
+
+    return wrapper
+
+
+def require_frontend_user(func):
+    """Allow frontend users (admin/user) but not agent API keys."""
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        if getattr(request, "frontend_role", None) in ("admin", "user"):
+            return func(*args, **kwargs)
+        return jsonify({"error": "user required"}), 403
+
+    return wrapper

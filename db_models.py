@@ -64,6 +64,8 @@ class Alarm(Base):
     acknowledged = Column(Boolean, default=False)
     acknowledged_at = Column(DateTime, nullable=True)
     ack_method = Column(String, nullable=True)
+    acknowledged_by = Column(String, nullable=True)
+    acknowledged_source = Column(String, nullable=True)
     note = Column(Text, nullable=True)
     note_updated_at = Column(DateTime, nullable=True)
     metrics_id = Column(Integer, ForeignKey("metrics.id"), nullable=False, index=True)
@@ -74,6 +76,28 @@ class Alarm(Base):
             "rule_id",
             "created_at",
         ),
+    )
+
+
+class AuditLog(Base):
+    """Append-only record of who changed what."""
+
+    __tablename__ = "audit_log"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False, index=True)
+    actor_type = Column(String, nullable=False, index=True)
+    actor_id = Column(String, nullable=False, index=True)
+    action = Column(String, nullable=False, index=True)
+    target_type = Column(String, nullable=False, index=True)
+    target_id = Column(String, nullable=True, index=True)
+    summary = Column(Text, nullable=True)
+    details = Column(Text, nullable=True)
+    ip = Column(String, nullable=True)
+    user_agent = Column(String, nullable=True)
+
+    __table_args__ = (
+        Index("idx_audit_target_ts", "target_type", "target_id", "created_at"),
     )
 
 
