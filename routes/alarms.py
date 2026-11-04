@@ -26,6 +26,12 @@ INCIDENT_GAP_MINUTES = 60
 STATS_WINDOW_DAYS = 90
 STATS_MAX_ALARMS = 5000
 
+# Free-text note attached to an open alarm (e.g. why it was snoozed).
+MAX_NOTE_LENGTH = 4000
+# List endpoints only need a short preview; the detail endpoint returns the
+# full text, so 500 alarms cannot bloat the open/history payload.
+LIST_NOTE_PREVIEW = 200
+
 
 def _pct(values: list[float], q: float) -> float | None:
     """Linear-interpolated percentile; None for an empty sample."""
@@ -120,7 +126,10 @@ def _rule_incident_stats(session, rule_id: str, now: datetime | None = None) -> 
     }
 
 
-def _alarm_to_dict(a: Alarm) -> dict:
+def _alarm_to_dict(a: Alarm, note_limit: int | None = None) -> dict:
+    note = a.note
+    if note and note_limit is not None and len(note) > note_limit:
+        note = note[:note_limit].rstrip() + "…"
     return {
         "id": a.id,
         "agentid": a.agentid,
@@ -134,6 +143,8 @@ def _alarm_to_dict(a: Alarm) -> dict:
         "acknowledged": a.acknowledged,
         "acknowledged_at": a.acknowledged_at.isoformat() if a.acknowledged_at else None,
         "ack_method": a.ack_method,
+        "note": note,
+        "note_updated_at": a.note_updated_at.isoformat() if a.note_updated_at else None,
         "metrics_id": a.metrics_id,
     }
 
@@ -196,7 +207,7 @@ def list_snoozed():
                 Alarm.agentid == s["agentid"],
                 Alarm.pluginid == s["pluginid"],
                 Alarm.metric == s["metric"],
-                Alarm.acknowledged == False,
+                Alarm.acknowledged == False,  # noqa: E712
             ).count()
             if remaining > 0:
                 clean.append(s)
@@ -317,7 +328,7 @@ def list_alarms():
 
         result = []
         for a in alarms:
-            result.append(_alarm_to_dict(a))
+            result.append(_alarm_to_dict(a, note_limit=LIST_NOTE_PREVIEW))
         resp = jsonify(result)
         if truncated:
             resp.headers["X-Truncated"] = "true"
@@ -340,7 +351,7 @@ def list_open_alarms():
         truncated = len(alarms) > 500
         if truncated:
             alarms = alarms[:500]
-        result = [_alarm_to_dict(a) for a in alarms]
+        result = [_alarm_to_dict(a, note_limit=LIST_NOTE_PREVIEW) for a in alarms]
         resp = jsonify(result)
         if truncated:
             resp.headers["X-Truncated"] = "true"
@@ -391,7 +402,9 @@ def get_alarm_detail(alarmid: int):
         )
 
         surrounding = list(reversed(before)) + after
-        result["surrounding"] = [_alarm_to_dict(a) for a in surrounding]
+        result["surrounding"] = [
+            _alarm_to_dict(a, note_limit=LIST_NOTE_PREVIEW) for a in surrounding
+        ]
         result["surrounding_before"] = len(before)
         result["surrounding_after"] = len(after)
         # True totals per side, so the UI can report "10 of 78 before" instead of
@@ -534,6 +547,51 @@ def acknowledge_alarm(alarmid: int):
         with DB_WRITE_LOCK:
             session.rollback()
         logger.error("Error while acknowledging alarm %s: %s", alarmid, e)
+        return jsonify({"error": "internal error"}), 500
+    finally:
+        session.close()
+
+
+@app.route("/alarms/<int:alarmid>/note", methods=["PUT"])
+@require_agent_apikey
+def update_alarm_note(alarmid: int):
+    """Save or clear the free-text note of an open alarm."""
+    data = request.get_json(silent=True) or {}
+    note = data.get("note")
+    if not isinstance(note, str):
+        return jsonify({"error": "note must be a string"}), 400
+    note = note.strip()
+    if len(note) > MAX_NOTE_LENGTH:
+        return jsonify({"error": f"note too long (max {MAX_NOTE_LENGTH})"}), 400
+
+    session = SessionLocal()
+    try:
+        with DB_WRITE_LOCK:
+            alarm = session.get(Alarm, alarmid)
+            if alarm is None:
+                return jsonify({"error": f"Alarm with id {alarmid} not found"}), 404
+            if alarm.acknowledged:
+                return jsonify({"error": "alarm is acknowledged"}), 409
+
+            saved_note = note or None
+            note_updated_at = datetime.now(UTC) if saved_note else None
+            alarm.note = saved_note
+            alarm.note_updated_at = note_updated_at
+            session.commit()
+            return jsonify(
+                {
+                    "status": "saved",
+                    "alarmid": alarmid,
+                    "note": saved_note,
+                    "note_updated_at": (
+                        note_updated_at.isoformat() if note_updated_at else None
+                    ),
+                }
+            ), 200
+    except Exception as e:
+        with DB_WRITE_LOCK:
+            session.rollback()
+        logger.error("Error while saving note for alarm %s: %s", alarmid, e)
         return jsonify({"error": "internal error"}), 500
     finally:
         session.close()

@@ -9,7 +9,7 @@ from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker
 
 from db_models import Base
-from config import DB_PATH, CONF_DIR, DATABASE_URL, IS_POSTGRES
+from config import DB_PATH, DATABASE_URL, IS_POSTGRES
 
 logging.basicConfig(
     level=logging.INFO,
@@ -88,6 +88,12 @@ with engine.begin() as connection:
         if 'ack_method' not in existing_cols:
             logger.info("Migration: adding alarms.ack_method")
             connection.execute(text("ALTER TABLE alarms ADD COLUMN ack_method VARCHAR"))
+        if 'note' not in existing_cols:
+            logger.info("Migration: adding alarms.note")
+            connection.execute(text("ALTER TABLE alarms ADD COLUMN note TEXT"))
+        if 'note_updated_at' not in existing_cols:
+            logger.info("Migration: adding alarms.note_updated_at")
+            connection.execute(text("ALTER TABLE alarms ADD COLUMN note_updated_at TIMESTAMP"))
         existing_metric_cols = {
             row[0]
             for row in connection.execute(text(
@@ -164,6 +170,12 @@ with engine.begin() as connection:
         if 'ack_method' not in existing_cols:
             logger.info("Migration: adding alarms.ack_method")
             connection.execute(text("ALTER TABLE alarms ADD COLUMN ack_method VARCHAR"))
+        if 'note' not in existing_cols:
+            logger.info("Migration: adding alarms.note")
+            connection.execute(text("ALTER TABLE alarms ADD COLUMN note TEXT"))
+        if 'note_updated_at' not in existing_cols:
+            logger.info("Migration: adding alarms.note_updated_at")
+            connection.execute(text("ALTER TABLE alarms ADD COLUMN note_updated_at DATETIME"))
         existing_metric_cols = {row[1] for row in connection.execute(text(
             "PRAGMA table_info(metrics)"
         ))}

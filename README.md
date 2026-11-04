@@ -354,6 +354,7 @@ The `plugins/_template.py` file provides a starting skeleton.
 | GET | `/alarms` | agent/JWT | List alarms (filters: `acknowledged`, `agentid`, `limit`) |
 | GET | `/alarms/open` | agent/JWT | List open (unacknowledged) alarms |
 | GET | `/alarms/<id>/ack` | agent/JWT | Acknowledge an alarm |
+| PUT | `/alarms/<id>/note` | agent/JWT | Save or clear the note of an open alarm |
 | GET | `/alarms/snoozed` | agent/JWT | List active snoozes |
 | POST | `/alarms/snooze/toggle` | agent/JWT | Toggle snooze; optional `duration`: `1h`, `6h`, `1d`, or `1w` |
 

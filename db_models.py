@@ -1,6 +1,6 @@
 from datetime import datetime, UTC
 from sqlalchemy import Column, Integer, String, Float, Text, DateTime, Index, Boolean, ForeignKey
-from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
 
@@ -64,6 +64,8 @@ class Alarm(Base):
     acknowledged = Column(Boolean, default=False)
     acknowledged_at = Column(DateTime, nullable=True)
     ack_method = Column(String, nullable=True)
+    note = Column(Text, nullable=True)
+    note_updated_at = Column(DateTime, nullable=True)
     metrics_id = Column(Integer, ForeignKey("metrics.id"), nullable=False, index=True)
 
     __table_args__ = (
