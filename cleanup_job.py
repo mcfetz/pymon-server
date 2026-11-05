@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 
 from config import CONF_DIR, LOCAL_TZ
 from core import DB_WRITE_LOCK, SessionLocal, logger
-from db_models import Alarm, Metrics
+from db_models import Alarm, MetricNote, Metrics
 
 CLEANUP_JSON = os.path.join(CONF_DIR, "cleanup_job.json")
 CHECK_INTERVAL_SECONDS = 30
@@ -102,6 +102,9 @@ def _cleanup(retention_days: int, batch_size: int) -> tuple[int | None, int | No
         from sqlalchemy import select
         with DB_WRITE_LOCK:
             metric_ids = select(Metrics.id).where(*filters)
+            session.query(MetricNote).filter(
+                MetricNote.metrics_id.in_(metric_ids)
+            ).delete(synchronize_session=False)
             deleted_alarms = (
                 session.query(Alarm)
                 .filter(Alarm.metrics_id.in_(metric_ids))
@@ -119,6 +122,9 @@ def _cleanup(retention_days: int, batch_size: int) -> tuple[int | None, int | No
                 ]
                 if not batch_ids:
                     break
+                session.query(MetricNote).filter(
+                    MetricNote.metrics_id.in_(batch_ids)
+                ).delete(synchronize_session=False)
                 deleted_metrics += (
                     session.query(Metrics)
                     .filter(Metrics.id.in_(batch_ids))

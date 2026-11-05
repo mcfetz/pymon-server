@@ -349,6 +349,7 @@ The `plugins/_template.py` file provides a starting skeleton.
 |--------|------|------|-------------|
 | POST | `/push/<agentid>` | agent | Ingest metrics from an agent |
 | GET | `/metrics/query` | agent/JWT | Query stored metrics (time range, agent, plugin, metric filters) |
+| PUT | `/metrics/<id>/note` | JWT | Save or clear the note on one stored metric value |
 
 ### Alarms
 
@@ -398,6 +399,7 @@ SQLite file `metrics.db` is created automatically.
 | Table | Contents |
 |-------|----------|
 | `metrics` | All metric data points (agentid, pluginid, metric, timestamp, value) |
+| `metric_notes` | Human notes attached to individual metric values |
 | `alarms` | Triggered alarms with severity, ack status/by, note, link to triggering metric |
 | `audit_log` | Append-only actor/action/target trail for alarm and config changes |
 

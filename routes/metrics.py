@@ -1,23 +1,20 @@
 from datetime import UTC, datetime
-import json
-import os
-
-import logging
 
 from flask import jsonify, request
 from sqlalchemy import and_, text
-from sqlalchemy.orm import joinedload
 
-from db_models import Alarm, MetricLastSeen, Metrics
+from db_models import Alarm, MetricNote, Metrics
 from functions import _parse_time_param, dict_value_to_metric, get_value_from_row
 from rules import evaluate_rules_for_payload
 from core import DB_WRITE_LOCK, SessionLocal, app, logger
-from auth import require_agent_apikey
+from auth import require_agent_apikey, require_frontend_user
+from audit import record_audit
 from routes.admin import _load_json_config, touch_agent_last_seen
 
 
 # Keys that configure server-side post-processing and must never reach the agent.
 POST_PROCESS_CONFIG_KEYS = ("discard_with_heartbeat", "heartbeat")
+MAX_METRIC_NOTE_LENGTH = 4000
 
 
 def _to_float(value, default: float = 0.0) -> float:
@@ -684,8 +681,11 @@ def collect_metrics():
 
 def _resolve_group_agents(group_name: str) -> list[str]:
     """Resolve a group name to agent IDs using agents.json."""
+    import json
+    import os
+
     from config import CONF_DIR
-    import json, os
+
     fpath = os.path.join(CONF_DIR, "agents.json")
     try:
         with open(fpath) as f:
@@ -815,9 +815,20 @@ def query_metrics():
             if am_id not in alarm_map:
                 alarm_map[am_id] = (a_id, a_ack)
 
+        # Human notes are only exposed to frontend users, not agent API keys.
+        note_map: dict[int, MetricNote] = {}
+        if getattr(request, "frontend_role", None) in ("admin", "user") and metric_ids:
+            note_rows = (
+                session.query(MetricNote)
+                .filter(MetricNote.metrics_id.in_(metric_ids))
+                .all()
+            )
+            note_map = {note.metrics_id: note for note in note_rows}
+
         result = []
         for metric_row in rows:
             alarm_id, acknowledged = alarm_map.get(metric_row.id, (None, None))
+            note = note_map.get(metric_row.id)
             result.append({
                 "id": metric_row.id,
                 "timestamp": metric_row.timestamp.isoformat(),
@@ -827,10 +838,106 @@ def query_metrics():
                 "value": get_value_from_row(metric_row),
                 "alarm_id": alarm_id,
                 "acknowledged": acknowledged,
+                "note_id": note.id if note else None,
+                "note": note.note if note else None,
+                "note_by": (note.updated_by or note.created_by) if note else None,
+                "note_updated_at": note.updated_at.isoformat() if note else None,
             })
         return jsonify(result), 200
     except Exception as e:
         logger.error("Error in metrics query: %s", e)
+        return jsonify({"error": "internal error"}), 500
+    finally:
+        session.close()
+
+
+@app.route("/metrics/<int:metricid>/note", methods=["PUT"])
+@require_agent_apikey
+@require_frontend_user
+def update_metric_note(metricid: int):
+    """Create, update or clear the note on one stored metric value."""
+    data = request.get_json(silent=True) or {}
+    note = data.get("note")
+    if not isinstance(note, str):
+        return jsonify({"error": "note must be a string"}), 400
+    note = note.strip()
+    if len(note) > MAX_METRIC_NOTE_LENGTH:
+        return jsonify({"error": f"note too long (max {MAX_METRIC_NOTE_LENGTH})"}), 400
+
+    session = SessionLocal()
+    try:
+        with DB_WRITE_LOCK:
+            metric = session.get(Metrics, metricid)
+            if metric is None:
+                return jsonify({"error": f"Metric with id {metricid} not found"}), 404
+
+            actor = getattr(request, "frontend_user", None) or "unknown"
+            now = datetime.now(UTC)
+            entry = (
+                session.query(MetricNote)
+                .filter(MetricNote.metrics_id == metricid)
+                .first()
+            )
+            if not note:
+                if entry is not None:
+                    session.delete(entry)
+                result = {
+                    "status": "saved",
+                    "metric_id": metricid,
+                    "note_id": None,
+                    "note": None,
+                    "note_by": None,
+                    "note_updated_at": None,
+                }
+                summary = f"cleared note on metric {metric.metric} ({metric.agentid}/{metric.pluginid})"
+            else:
+                if entry is None:
+                    entry = MetricNote(
+                        metrics_id=metricid,
+                        note=note,
+                        created_by=actor,
+                        created_at=now,
+                        updated_by=actor,
+                        updated_at=now,
+                    )
+                    session.add(entry)
+                else:
+                    entry.note = note
+                    entry.updated_by = actor
+                    entry.updated_at = now
+                session.flush()
+                result = {
+                    "status": "saved",
+                    "metric_id": metricid,
+                    "note_id": entry.id,
+                    "note": entry.note,
+                    "note_by": entry.updated_by or entry.created_by,
+                    "note_updated_at": entry.updated_at.isoformat(),
+                }
+                summary = f"saved note on metric {metric.metric} ({metric.agentid}/{metric.pluginid})"
+
+            record_audit(
+                "metric.note",
+                "metric",
+                metricid,
+                summary=summary,
+                details={
+                    "agentid": metric.agentid,
+                    "pluginid": metric.pluginid,
+                    "metric": metric.metric,
+                    "timestamp": metric.timestamp.isoformat(),
+                    "value": get_value_from_row(metric),
+                    "has_note": bool(note),
+                    "note_length": len(note),
+                },
+                session=session,
+            )
+            session.commit()
+            return jsonify(result), 200
+    except Exception as e:
+        with DB_WRITE_LOCK:
+            session.rollback()
+        logger.error("Error while saving note for metric %s: %s", metricid, e)
         return jsonify({"error": "internal error"}), 500
     finally:
         session.close()

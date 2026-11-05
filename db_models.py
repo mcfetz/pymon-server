@@ -49,6 +49,26 @@ class Metrics(Base):
     )
 
 
+class MetricNote(Base):
+    """One human annotation attached to a single stored metric value."""
+
+    __tablename__ = "metric_notes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    metrics_id = Column(
+        Integer,
+        ForeignKey("metrics.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    note = Column(Text, nullable=False)
+    created_by = Column(String, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
+    updated_by = Column(String, nullable=True)
+    updated_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
+
+
 class Alarm(Base):
     __tablename__ = "alarms"
 

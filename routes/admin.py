@@ -18,7 +18,7 @@ from auth import require_admin, require_agent_apikey, require_frontend_user
 from audit import audit_config, record_audit
 from core import app, logger, SessionLocal, DB_WRITE_LOCK
 from config import CONF_DIR, PLUGINS_DIR, DB_PATH, IS_POSTGRES
-from db_models import Alarm, Metrics
+from db_models import Alarm, MetricNote, Metrics
 
 CONF_DIR    = CONF_DIR   # re-export for local use (keeps existing references)
 CONFIG_JSON    = os.path.join(CONF_DIR, "agents.json")
@@ -412,6 +412,9 @@ def admin_cleanup_metrics():
         from sqlalchemy import select
         with DB_WRITE_LOCK:
             metric_ids = select(Metrics.id).where(*filters)
+            session.query(MetricNote).filter(
+                MetricNote.metrics_id.in_(metric_ids)
+            ).delete(synchronize_session=False)
             deleted_alarms = (
                 session.query(Alarm)
                 .filter(Alarm.metrics_id.in_(metric_ids))
@@ -429,6 +432,9 @@ def admin_cleanup_metrics():
                 ]
                 if not batch_ids:
                     break
+                session.query(MetricNote).filter(
+                    MetricNote.metrics_id.in_(batch_ids)
+                ).delete(synchronize_session=False)
                 deleted_metrics += (
                     session.query(Metrics)
                     .filter(Metrics.id.in_(batch_ids))

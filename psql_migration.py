@@ -113,14 +113,23 @@ def run_sqlite_to_psql_migration() -> None:
             n_last_seen = _copy_small(src_conn, dst_conn, "_metric_last_seen")
             logger.info("migrate: copied %d push subscriptions, %d last-seen rows", n_push, n_last_seen)
 
-            # Bulk tables in dependency order: metrics before alarms.
+            # Bulk tables in dependency order: metrics before notes/alarms.
             n_metrics = _copy_batched(src_conn, dst_conn, "metrics")
+            n_notes = 0
+            if inspect(src_conn).has_table("metric_notes"):
+                n_notes = _copy_batched(src_conn, dst_conn, "metric_notes")
             n_alarms = _copy_small(
                 src_conn, dst_conn, "alarms",
                 where=("metrics_id IS NULL OR EXISTS "
                        "(SELECT 1 FROM metrics m WHERE m.id = alarms.metrics_id)"),
             )
-            logger.info("migrate: copied %d alarms", n_alarms)
+            n_audit = 0
+            if inspect(src_conn).has_table("audit_log"):
+                n_audit = _copy_batched(src_conn, dst_conn, "audit_log")
+            logger.info(
+                "migrate: copied %d metric notes, %d alarms, %d audit rows",
+                n_notes, n_alarms, n_audit,
+            )
 
             # Carry over the trigger-maintained metric counter.
             stats = src_conn.execute(text("SELECT * FROM _db_stats")).mappings().all()
