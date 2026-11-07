@@ -185,11 +185,12 @@ def run_sqlite_to_psql_migration() -> None:
         Base.metadata.create_all(bind=dst)
 
     # This is a one-shot copy, not a sync. Refuse to run against a target that
-    # already contains metrics: a second run would collide on primary keys and
-    # leave a half-copied database. Drop/recreate the target schema to re-run.
+    # already contains metrics unless the operator explicitly resumes after a
+    # failed small-table copy. A blind second run would collide on primary keys.
+    resume = os.environ.get("PYMON_MIGRATE_RESUME", "0").strip() == "1"
     with dst.connect() as conn:
         existing_metrics = conn.execute(text("SELECT COUNT(*) FROM metrics")).scalar() or 0
-    if existing_metrics:
+    if existing_metrics and not resume:
         logger.error(
             "migrate: target database already contains %d metrics — refusing to copy again",
             existing_metrics,
@@ -197,91 +198,129 @@ def run_sqlite_to_psql_migration() -> None:
         return
 
     try:
-        with src.connect() as src_conn, dst.connect() as dst_conn:
-            # Small reference tables first (no FK dependencies among them).
-            n_push = _copy_small(src_conn, dst_conn, "push_subscriptions")
-            n_last_seen = _copy_small(src_conn, dst_conn, "_metric_last_seen")
-            logger.info("migrate: copied %d push subscriptions, %d last-seen rows", n_push, n_last_seen)
-
-            # Bulk tables in dependency order: metrics before notes/alarms.
-            n_metrics = 0
-            fast_metrics = os.environ.get("PYMON_MIGRATE_FAST", "1") != "0"
-            if fast_metrics:
-                try:
-                    n_metrics = _copy_metrics_fast()
-                except Exception:
-                    # Committed chunks may already exist, so a batched fallback
-                    # would duplicate rows. Drop/recreate the target database
-                    # before retrying a failed COPY.
-                    logger.exception(
-                        "migrate: COPY path failed; target may be partially populated"
+        with src.connect() as src_conn:
+            n_metrics = existing_metrics
+            if resume and existing_metrics:
+                source_metrics = src_conn.execute(
+                    text("SELECT value FROM _db_stats WHERE name = 'metrics'")
+                ).scalar()
+                if source_metrics is not None and int(source_metrics) != int(existing_metrics):
+                    logger.error(
+                        "migrate: resume count mismatch (source=%s, target=%d) — refusing",
+                        source_metrics, existing_metrics,
                     )
-                    raise
+                    return
+                with dst.connect() as dst_conn:
+                    target_counts = {
+                        table: dst_conn.execute(
+                            text(f"SELECT COUNT(*) FROM {table}")
+                        ).scalar() or 0
+                        for table in ("metric_notes", "alarms", "audit_log")
+                    }
+                if any(target_counts.values()):
+                    logger.error(
+                        "migrate: target already contains note/alarm/audit rows %s — refusing resume",
+                        target_counts,
+                    )
+                    return
+                logger.info(
+                    "migrate: resuming with %d metrics already present; skipping reference tables",
+                    existing_metrics,
+                )
             else:
-                n_metrics = _copy_batched(src_conn, dst_conn, "metrics")
-            n_notes = 0
-            if inspect(src_conn).has_table("metric_notes"):
-                n_notes = _copy_batched(src_conn, dst_conn, "metric_notes")
-            n_alarms = _copy_small(
-                src_conn, dst_conn, "alarms",
-                where=("metrics_id IS NULL OR EXISTS "
-                       "(SELECT 1 FROM metrics m WHERE m.id = alarms.metrics_id)"),
-            )
-            n_audit = 0
-            if inspect(src_conn).has_table("audit_log"):
-                n_audit = _copy_batched(src_conn, dst_conn, "audit_log")
-            logger.info(
-                "migrate: copied %d metric notes, %d alarms, %d audit rows",
-                n_notes, n_alarms, n_audit,
-            )
-            with dst_conn.begin():
-                target_metrics = dst_conn.execute(
-                    text("SELECT COUNT(*) FROM metrics")
-                ).scalar() or 0
-            logger.info(
-                "migrate: target metrics rows=%d (source copied=%d)",
-                target_metrics, n_metrics,
-            )
-            if int(target_metrics) != int(n_metrics):
-                logger.error(
-                    "migrate: metric row-count mismatch (target=%d, copied=%d)",
-                    target_metrics, n_metrics,
+                # Short-lived connection: it must not sit idle during the long
+                # metrics copy (Docker/Swarm networking can drop idle TCP).
+                with dst.connect() as dst_conn:
+                    n_push = _copy_small(src_conn, dst_conn, "push_subscriptions")
+                    n_last_seen = _copy_small(src_conn, dst_conn, "_metric_last_seen")
+                logger.info(
+                    "migrate: copied %d push subscriptions, %d last-seen rows",
+                    n_push, n_last_seen,
                 )
 
-            # Carry over the trigger-maintained metric counter.
-            stats = src_conn.execute(text("SELECT * FROM _db_stats")).mappings().all()
-            for row in stats:
+                # Bulk table first: notes and alarms reference metric ids.
+                n_metrics = 0
+                fast_metrics = os.environ.get("PYMON_MIGRATE_FAST", "1") != "0"
+                if fast_metrics:
+                    try:
+                        n_metrics = _copy_metrics_fast()
+                    except Exception:
+                        # Committed chunks may already exist, so a batched
+                        # fallback would duplicate rows. Drop/recreate the
+                        # target database before retrying a failed COPY.
+                        logger.exception(
+                            "migrate: COPY path failed; target may be partially populated"
+                        )
+                        raise
+                else:
+                    with dst.connect() as dst_conn:
+                        n_metrics = _copy_batched(src_conn, dst_conn, "metrics")
+
+            # Fresh connection for the post-copy work; the pre-copy connection
+            # is deliberately not reused after the long metrics copy.
+            with dst.connect() as dst_conn:
+                n_notes = 0
+                if inspect(src_conn).has_table("metric_notes"):
+                    n_notes = _copy_batched(src_conn, dst_conn, "metric_notes")
+                n_alarms = _copy_small(
+                    src_conn, dst_conn, "alarms",
+                    where=("metrics_id IS NULL OR EXISTS "
+                           "(SELECT 1 FROM metrics m WHERE m.id = alarms.metrics_id)"),
+                )
+                n_audit = 0
+                if inspect(src_conn).has_table("audit_log"):
+                    n_audit = _copy_batched(src_conn, dst_conn, "audit_log")
+                logger.info(
+                    "migrate: copied %d metric notes, %d alarms, %d audit rows",
+                    n_notes, n_alarms, n_audit,
+                )
                 with dst_conn.begin():
-                    dst_conn.execute(
-                        text(
-                            "INSERT INTO _db_stats (name, value) VALUES (:name, :value) "
-                            "ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value"
-                        ),
-                        {"name": row["name"], "value": int(row["value"])},
+                    target_metrics = dst_conn.execute(
+                        text("SELECT COUNT(*) FROM metrics")
+                    ).scalar() or 0
+                logger.info(
+                    "migrate: target metrics rows=%d (source copied=%d)",
+                    target_metrics, n_metrics,
+                )
+                if int(target_metrics) != int(n_metrics):
+                    raise RuntimeError(
+                        f"metric row-count mismatch (target={target_metrics}, copied={n_metrics})"
                     )
 
-            # Repair identity sequences so future inserts don't collide.
-            # Every table with an auto-increment id must be repaired, not just
-            # the large ones: an un-repaired sequence restarts at 1 and the
-            # first new note/audit row would collide with a copied row.
-            # Keep this in one explicit transaction; a bare connection close
-            # would roll the setval() calls back.
-            with dst_conn.begin():
-                for table in (
-                    "metrics", "alarms", "push_subscriptions",
-                    "metric_notes", "audit_log",
-                ):
-                    seq = dst_conn.execute(
-                        sa.text("SELECT pg_get_serial_sequence(:t, 'id')").bindparams(t=table)
-                    ).scalar()
-                    if not seq:
-                        continue
-                    dst_conn.execute(
-                        sa.text(
-                            "SELECT setval(:seq, COALESCE((SELECT MAX(id) FROM %s), 1))" % table
-                        ).bindparams(seq=seq)
-                    )
-                    logger.info("migrate: sequence %s repaired", seq)
+                # Carry over the trigger-maintained metric counter.
+                stats = src_conn.execute(text("SELECT * FROM _db_stats")).mappings().all()
+                for row in stats:
+                    with dst_conn.begin():
+                        dst_conn.execute(
+                            text(
+                                "INSERT INTO _db_stats (name, value) VALUES (:name, :value) "
+                                "ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value"
+                            ),
+                            {"name": row["name"], "value": int(row["value"])},
+                        )
+
+                # Repair identity sequences so future inserts don't collide.
+                # Every table with an auto-increment id must be repaired, not
+                # just the large ones: an un-repaired sequence restarts at 1
+                # and the first new note/audit row would collide with a copied
+                # row. Keep this in one explicit transaction; a bare connection
+                # close would roll the setval() calls back.
+                with dst_conn.begin():
+                    for table in (
+                        "metrics", "alarms", "push_subscriptions",
+                        "metric_notes", "audit_log",
+                    ):
+                        seq = dst_conn.execute(
+                            sa.text("SELECT pg_get_serial_sequence(:t, 'id')").bindparams(t=table)
+                        ).scalar()
+                        if not seq:
+                            continue
+                        dst_conn.execute(
+                            sa.text(
+                                "SELECT setval(:seq, COALESCE((SELECT MAX(id) FROM %s), 1))" % table
+                            ).bindparams(seq=seq)
+                        )
+                        logger.info("migrate: sequence %s repaired", seq)
     finally:
         # Release the migration engines' FDs even on failure — they are not
         # the application's main engine.
