@@ -133,6 +133,9 @@ with engine.begin() as connection:
             "ON metrics (pluginid, metric, agentid, received_at)"
         ))
         connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON metrics (timestamp)"
+        ))
+        connection.execute(text(
             "CREATE TABLE IF NOT EXISTS _db_stats (name TEXT PRIMARY KEY, value BIGINT NOT NULL DEFAULT 0)"
         ))
         if connection.execute(text(
@@ -219,6 +222,11 @@ with engine.begin() as connection:
         connection.execute(text(
             "CREATE INDEX IF NOT EXISTS idx_metrics_plugin_metric_agent_received "
             "ON metrics (pluginid, metric, agentid, received_at)"
+        ))
+        # Time-range queries and the default DESC ordering need a timestamp-first
+        # index; the composite indexes above cannot serve that access pattern.
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON metrics (timestamp)"
         ))
         # Persistent, trigger-maintained metric counter so maintenance stats
         # never have to scan the (potentially huge) metrics table.

@@ -46,6 +46,13 @@ class Metrics(Base):
             "pluginid",
             "metric",
         ),
+        # Time-range queries and the default DESC ordering need their own index;
+        # the other indexes all start with agent/plugin/metric and cannot serve
+        # a query that only filters by timestamp.
+        Index(
+            "idx_metrics_timestamp",
+            "timestamp",
+        ),
     )
 
 
