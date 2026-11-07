@@ -83,3 +83,83 @@ volumes:
 curl -fsS -X POST \
   "https://portainer.familie-heise.de/api/webhooks/<token>"
 ```
+
+## PostgreSQL backend
+
+The default remains the SQLite file. A deployment can switch to a dedicated
+PostgreSQL service without touching the existing `conf/` files.
+
+### 1. Create the database service
+
+Run this on the Swarm manager (docker13), pinned to the pymon node so the
+local volume stays with the service:
+
+```bash
+docker service create \
+  --name pymon-db \
+  --network pymon \
+  --constraint 'node.labels.app.pymon==1' \
+  --replicas 1 \
+  --mount type=volume,source=pymon-pgdata,target=/var/lib/postgresql/data \
+  --env POSTGRES_DB=pymon \
+  --env POSTGRES_USER=pymon \
+  --env POSTGRES_PASSWORD='<strong-password>' \
+  --health-cmd 'pg_isready -U pymon -d pymon' \
+  --health-interval 10s \
+  --health-timeout 5s \
+  --health-retries 10 \
+  postgres:17-alpine
+```
+
+Keep the password out of git and shell history where possible. The database is
+only reachable on the internal `pymon` overlay network.
+
+### 2. Stop the app and copy once
+
+The migration is intentionally one-shot. Stop `pymon-server`, then run the
+migration in a temporary container against the existing `pymon-server` volume:
+
+```bash
+docker service scale pymon-server=0
+
+docker run --rm --network pymon \
+  -v pymon-server:/data \
+  -e PYMON_DATA_DIR=/data \
+  -e PYMON_DATABASE_URL='postgresql://pymon:<strong-password>@pymon-db:5432/pymon' \
+  -e PYMON_MIGRATE_SQLITE_TO_PSQL=1 \
+  -e PYMON_MIGRATE_FAST=1 \
+  ghcr.io/mcfetz/pymon-server:latest \
+  python -c 'from psql_migration import run_sqlite_to_psql_migration; run_sqlite_to_psql_migration()'
+```
+
+The fast path streams `metrics` with PostgreSQL `COPY`; small tables are copied
+in batches. It refuses to run if the target already contains metrics. The
+source SQLite volume is left untouched for rollback.
+
+### 3. Start the app on PostgreSQL
+
+```bash
+docker service update \
+  --env-add 'PYMON_DATABASE_URL=postgresql://pymon:<strong-password>@pymon-db:5432/pymon' \
+  --replicas 1 \
+  pymon-server
+```
+
+Do **not** set `PYMON_MIGRATE_SQLITE_TO_PSQL=1` on the long-running service;
+it is only for the one-off copy.
+
+### 4. Verify
+
+- `GET /api/admin/maintenance/stats` reports the migrated metric count
+- A metric query, alarm list and metric note work
+- New metric notes and audit entries get fresh IDs (sequences are repaired)
+- `docker service logs -f pymon-server` has no migration/DB errors
+
+### Rollback
+
+```bash
+docker service update --env-rm PYMON_DATABASE_URL pymon-server
+```
+
+This returns to SQLite. Any rows written to PostgreSQL after the switch are not
+in SQLite, so decide the rollback window before starting the migration.

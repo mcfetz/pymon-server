@@ -30,6 +30,11 @@ DB_PATH        = os.path.join(DATA_DIR, "metrics.db")
 # PYMON_DATABASE_URL=postgresql://pymon:pass@pymon-db:5432/pymon) the server
 # uses PostgreSQL instead of the default SQLite file.
 DATABASE_URL = os.environ.get("PYMON_DATABASE_URL", "").strip() or f"sqlite:///{DB_PATH}"
+# SQLAlchemy 2.1 resolves the bare "postgresql://" scheme to psycopg 3. The
+# image already ships psycopg2-binary, so make the common URL form explicit
+# instead of requiring callers to remember the driver suffix.
+if DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = "postgresql+psycopg2://" + DATABASE_URL[len("postgresql://"):]
 IS_POSTGRES = DATABASE_URL.startswith("postgresql")
 # Set to "1" to migrate the existing SQLite database into PostgreSQL at startup.
 MIGRATE_SQLITE_TO_PSQL = os.environ.get("PYMON_MIGRATE_SQLITE_TO_PSQL", "").strip() == "1"
