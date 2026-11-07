@@ -128,6 +128,15 @@ with engine.begin() as connection:
             connection.execute(text(
                 "UPDATE metrics SET received_at = timestamp WHERE received_at IS NULL"
             ))
+        value_int_type = connection.execute(text(
+            "SELECT data_type FROM information_schema.columns "
+            "WHERE table_name = 'metrics' AND column_name = 'value_int'"
+        )).scalar()
+        if value_int_type == 'integer':
+            logger.info("Migration: widening metrics.value_int to BIGINT")
+            connection.execute(text(
+                "ALTER TABLE metrics ALTER COLUMN value_int TYPE BIGINT"
+            ))
         connection.execute(text(
             "CREATE INDEX IF NOT EXISTS idx_metrics_plugin_metric_agent_received "
             "ON metrics (pluginid, metric, agentid, received_at)"

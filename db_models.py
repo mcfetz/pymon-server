@@ -1,5 +1,8 @@
 from datetime import datetime, UTC
-from sqlalchemy import Column, Integer, String, Float, Text, DateTime, Index, Boolean, ForeignKey
+from sqlalchemy import (
+    BigInteger, Boolean, Column, DateTime, Float, ForeignKey, Index,
+    Integer, String, Text,
+)
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -24,7 +27,9 @@ class Metrics(Base):
     received_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=True)
     metric = Column(String, nullable=False)
     value_float = Column(Float, nullable=True)
-    value_int = Column(Integer, nullable=True)
+    # SQLite integers are 64-bit; PostgreSQL INTEGER is only 32-bit. Some
+    # plugin counters exceed 2^31, so use BIGINT on both backends.
+    value_int = Column(BigInteger, nullable=True)
     value_str = Column(Text, nullable=True)
 
     __table_args__ = (
