@@ -351,6 +351,10 @@ The `plugins/_template.py` file provides a starting skeleton.
 | GET | `/metrics/query` | agent/JWT | Query stored metrics (time range, agent, plugin, metric filters) |
 | PUT | `/metrics/<id>/note` | JWT | Save or clear the note on one stored metric value |
 
+`/metrics/query` treats `metric` as a case-insensitive substring by default. Set
+`metric_regex=1` to use it as a case-insensitive regular expression instead
+(works on the default SQLite file and on PostgreSQL).
+
 ### Alarms
 
 | Method | Path | Auth | Description |

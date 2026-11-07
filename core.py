@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import threading
 
 from flask import Flask, request
@@ -46,10 +47,25 @@ engine = create_engine(
 )
 
 
+def _sqlite_regexp(pattern: str, value) -> int:
+    """SQLite REGEXP implementation used by the metric search filter."""
+    if value is None:
+        return 0
+    try:
+        return 1 if re.search(pattern, str(value), re.IGNORECASE) else 0
+    except re.error:
+        # The API validates patterns before querying; keep SQLite from raising
+        # if a malformed pattern ever reaches the database anyway.
+        return 0
+
+
 @event.listens_for(engine, "connect")
 def _configure_sqlite(dbapi_connection, _connection_record):
     if IS_POSTGRES:
         return
+    # SQLite ships no REGEXP implementation. Register one so metric queries can
+    # use the same `column REGEXP pattern` expression as PostgreSQL.
+    dbapi_connection.create_function("REGEXP", 2, _sqlite_regexp, deterministic=True)
     cursor = dbapi_connection.cursor()
     try:
         cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")

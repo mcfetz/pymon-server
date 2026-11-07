@@ -1,8 +1,10 @@
+import re
 from datetime import UTC, datetime
 
 from flask import jsonify, request
 from sqlalchemy import and_, text
 
+from config import IS_POSTGRES
 from db_models import Alarm, MetricNote, Metrics
 from functions import _parse_time_param, dict_value_to_metric, get_value_from_row
 from rules import evaluate_rules_for_payload
@@ -732,7 +734,13 @@ def query_metrics():
         required: false
         schema:
           type: string
-        description: Filter by metric name (case-insensitive LIKE)
+        description: Filter by metric name (case-insensitive LIKE, or regex when metric_regex is set)
+      - in: query
+        name: metric_regex
+        required: false
+        schema:
+          type: boolean
+        description: Treat the metric filter as a case-insensitive regular expression
       - in: query
         name: from
         required: false
@@ -761,6 +769,9 @@ def query_metrics():
     agentid_raw = request.args.get("agentid")
     pluginid_param = request.args.get("pluginid")
     metric_param = request.args.get("metric")
+    metric_regex = request.args.get("metric_regex", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
     time_from_param = request.args.get("from")
     time_to_param = request.args.get("to")
     limit = request.args.get("limit", 200, type=int)
@@ -785,6 +796,12 @@ def query_metrics():
     elif requested_agentids:
         agentids = requested_agentids
 
+    if metric_param and metric_regex:
+        try:
+            re.compile(metric_param)
+        except re.error as exc:
+            return jsonify({"error": f"invalid regular expression: {exc}"}), 400
+
     session = SessionLocal()
     try:
         q = session.query(Metrics)
@@ -794,7 +811,13 @@ def query_metrics():
         if pluginid_param:
             q = q.filter(Metrics.pluginid == pluginid_param)
         if metric_param:
-            q = q.filter(Metrics.metric.ilike(f"%{metric_param}%"))
+            if metric_regex:
+                if IS_POSTGRES:
+                    q = q.filter(Metrics.metric.op("~*")(metric_param))
+                else:
+                    q = q.filter(Metrics.metric.op("REGEXP")(metric_param))
+            else:
+                q = q.filter(Metrics.metric.ilike(f"%{metric_param}%"))
         if time_from is not None:
             q = q.filter(Metrics.timestamp >= time_from)
         if time_to is not None:
