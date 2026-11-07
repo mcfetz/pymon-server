@@ -15,7 +15,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 
-from config import CONF_DIR, LOCAL_TZ
+from config import CONF_DIR, IS_POSTGRES, LOCAL_TZ
 from core import DB_WRITE_LOCK, SessionLocal, logger
 from db_models import Alarm, MetricNote, Metrics
 
@@ -133,8 +133,11 @@ def _cleanup(retention_days: int, batch_size: int) -> tuple[int | None, int | No
                 session.commit()
             if len(batch_ids) < batch_size:
                 break
-            # Low-load: pause between batches so ingest is never starved.
-            time.sleep(BATCH_SLEEP_SECONDS)
+            # SQLite has one writer; pause so ingest is never starved.
+            # PostgreSQL handles concurrent writers and row-level locks, so
+            # the sleep only makes the nightly cleanup needlessly slow.
+            if not IS_POSTGRES:
+                time.sleep(BATCH_SLEEP_SECONDS)
     except Exception:
         session.rollback()
         logger.error("Cleanup job run failed", exc_info=True)
