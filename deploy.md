@@ -100,7 +100,7 @@ docker service create \
   --network pymon \
   --constraint 'node.labels.app.pymon==1' \
   --replicas 1 \
-  --mount type=volume,source=pymon-pgdata,target=/var/lib/postgresql/data \
+  --mount type=volume,source=pymon-db-data,target=/var/lib/postgresql/data \
   --env POSTGRES_DB=pymon \
   --env POSTGRES_USER=pymon \
   --env POSTGRES_PASSWORD='<strong-password>' \
@@ -135,6 +135,17 @@ docker run --rm --network pymon \
 The fast path streams `metrics` with PostgreSQL `COPY`; small tables are copied
 in batches. It refuses to run if the target already contains metrics. The
 source SQLite volume is left untouched for rollback.
+
+If the metrics copy completed but a later step failed (for example an idle TCP
+connection during the small-table copy), verify that the target metric count
+matches `_db_stats` in SQLite and finish with:
+
+```bash
+-e PYMON_MIGRATE_RESUME=1
+```
+
+Resume skips the already-copied metrics and reference tables, requiring the
+target to have matching metric rows and no note/alarm/audit rows yet.
 
 ### 3. Start the app on PostgreSQL
 
