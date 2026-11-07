@@ -12,6 +12,7 @@ import os
 import sqlite3
 from datetime import datetime
 
+import psycopg2
 import sqlalchemy as sa
 from sqlalchemy import create_engine, inspect, text
 
@@ -98,21 +99,37 @@ _METRIC_COPY_CHUNK = int(os.environ.get("PYMON_MIGRATE_COPY_CHUNK", "50000"))
 _CSV_QUOTING = getattr(csv, "QUOTE_NOTNULL", csv.QUOTE_MINIMAL)
 
 
-def _copy_metrics_fast(dst_conn) -> int:
+def _psycopg2_dsn() -> str:
+    """Translate the SQLAlchemy URL into a psycopg2 connection string."""
+    return DATABASE_URL.replace("postgresql+psycopg2://", "postgresql://", 1)
+
+
+def _copy_metrics_fast() -> int:
     """Stream the metrics table from SQLite into PostgreSQL with COPY.
 
     The generic batched INSERT path is fine for alarms, notes and audit rows,
     but it is far too slow for the multi-million-row metrics table. COPY keeps
     the migration in the range of minutes instead of hours.
+
+    Each chunk is committed separately. A single transaction over 17M rows
+    would retain all WAL until the end and can fill the data disk; committing
+    per chunk lets PostgreSQL recycle WAL while the copy runs.
     """
     src = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
     src.row_factory = sqlite3.Row
+    raw_conn = psycopg2.connect(_psycopg2_dsn())
+    raw_conn.autocommit = False
     total = 0
     try:
         cursor = src.execute(
             f"SELECT {', '.join(_METRIC_COLUMNS)} FROM metrics ORDER BY id"
         )
-        raw_conn = dst_conn.connection.driver_connection
+        # The stats trigger updates one _db_stats row per metric. It is useful
+        # for live ingest but makes a bulk copy much slower. Disable it for the
+        # copy; the source counter is carried over explicitly later.
+        with raw_conn.cursor() as pg_cursor:
+            pg_cursor.execute("ALTER TABLE metrics DISABLE TRIGGER trg_metrics_insert")
+        raw_conn.commit()
         while True:
             rows = cursor.fetchmany(_METRIC_COPY_CHUNK)
             if not rows:
@@ -128,10 +145,20 @@ def _copy_metrics_fast(dst_conn) -> int:
                     "FROM STDIN WITH (FORMAT csv)",
                     payload,
                 )
+            raw_conn.commit()
             total += len(rows)
             logger.info("migrate: metrics — %d rows copied (COPY)", total)
     finally:
-        src.close()
+        try:
+            raw_conn.rollback()
+            with raw_conn.cursor() as pg_cursor:
+                pg_cursor.execute("ALTER TABLE metrics ENABLE TRIGGER trg_metrics_insert")
+            raw_conn.commit()
+        except Exception:
+            logger.exception("migrate: could not re-enable metrics insert trigger")
+        finally:
+            raw_conn.close()
+            src.close()
     return total
 
 
@@ -181,25 +208,16 @@ def run_sqlite_to_psql_migration() -> None:
             fast_metrics = os.environ.get("PYMON_MIGRATE_FAST", "1") != "0"
             if fast_metrics:
                 try:
-                    with dst_conn.begin():
-                        # The stats trigger updates one _db_stats row per metric.
-                        # It is useful for live ingest but makes a bulk copy much
-                        # slower; disable it for the copy and carry the source
-                        # counter over explicitly below.
-                        dst_conn.execute(text(
-                            "ALTER TABLE metrics DISABLE TRIGGER trg_metrics_insert"
-                        ))
-                        n_metrics = _copy_metrics_fast(dst_conn)
-                        dst_conn.execute(text(
-                            "ALTER TABLE metrics ENABLE TRIGGER trg_metrics_insert"
-                        ))
+                    n_metrics = _copy_metrics_fast()
                 except Exception:
-                    logger.warning(
-                        "migrate: COPY path failed; falling back to batched INSERT",
-                        exc_info=True,
+                    # Committed chunks may already exist, so a batched fallback
+                    # would duplicate rows. Drop/recreate the target database
+                    # before retrying a failed COPY.
+                    logger.exception(
+                        "migrate: COPY path failed; target may be partially populated"
                     )
-                    n_metrics = 0
-            if not fast_metrics or n_metrics == 0:
+                    raise
+            else:
                 n_metrics = _copy_batched(src_conn, dst_conn, "metrics")
             n_notes = 0
             if inspect(src_conn).has_table("metric_notes"):
