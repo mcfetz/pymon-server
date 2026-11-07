@@ -617,8 +617,17 @@ def evaluate_single_rule(
 
     elif rule.scope == "moving_avg":
         window = rule.window_size or 10
-        q = select(func.avg(func.coalesce(Metrics.value_float, Metrics.value_int))).where(*base_filter).order_by(desc(Metrics.timestamp)).limit(window)
-        avg_value = session.execute(q).scalar()
+        # PostgreSQL rejects ORDER BY on a non-grouped aggregate. Select the
+        # newest window in a subquery, then average that window in the outer
+        # query; this is valid on both PostgreSQL and SQLite.
+        window_rows = (
+            select(func.coalesce(Metrics.value_float, Metrics.value_int).label("v"))
+            .where(*base_filter)
+            .order_by(desc(Metrics.timestamp))
+            .limit(window)
+            .subquery()
+        )
+        avg_value = session.execute(select(func.avg(window_rows.c.v))).scalar()
         if avg_value is None:
             return
         try:

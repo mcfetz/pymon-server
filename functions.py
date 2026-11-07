@@ -23,14 +23,16 @@ def _parse_time_param(value: str | None) -> datetime | None:
 
 def dict_value_to_metric(value, metric: Metrics):
     value_float = value_int = value_str = None
-    if isinstance(value, float):
+    # bool is a subclass of int, so it must be handled first. PostgreSQL will
+    # not implicitly cast a boolean parameter into the BIGINT value_int column.
+    if isinstance(value, bool):
+        value_int = 1 if value else 0
+    elif isinstance(value, float):
         value_float = value
     elif isinstance(value, int):
         value_int = value
     elif isinstance(value, str):
         value_str = value
-    elif isinstance(value, bool):
-        value_int = 1 if value else 0
     elif value:
         value_str = str(value)
 
