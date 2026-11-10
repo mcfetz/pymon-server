@@ -3,6 +3,7 @@
 
 import json
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -54,6 +55,15 @@ __schema__ = {
             "default": False,
             "optional": True,
         },
+        {
+            "key": "timeout",
+            "label": "HTTP timeout (s)",
+            "type": "number",
+            "default": 25,
+            "min": 5,
+            "max": 25,
+            "optional": True,
+        },
     ],
 }
 
@@ -61,6 +71,15 @@ API_AUTH = "SYNO.API.Auth"
 API_UTIL = "SYNO.Core.System.Utilization"
 API_STOR = "SYNO.Storage.CGI.Storage"
 API_SHARE = "SYNO.Core.Share"
+
+# The DSM API login stalls for well over 15 s while the NAS runs its nightly
+# tasks, so a tight per-request timeout produced spurious agent:error runs.
+# The agent kills a plugin after PLUGIN_TIMEOUT (30 s) and reports that as
+# agent:error=2; clamping every request to what is left of TOTAL_BUDGET keeps
+# the run inside that window, so a slow NAS yields a readable exit(1) instead.
+DEFAULT_TIMEOUT = 25.0
+MAX_TIMEOUT = 25.0
+TOTAL_BUDGET = 28.0
 
 
 def _opener(verify):
@@ -75,16 +94,33 @@ def _opener(verify):
     )
 
 
-def _get(opener, url, timeout=15):
+def _resolve_timeout(value):
+    """Clamp the configured per-request timeout into [5, MAX_TIMEOUT] seconds."""
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError):
+        timeout = DEFAULT_TIMEOUT
+    return max(5.0, min(timeout, MAX_TIMEOUT))
+
+
+def _slice(want, deadline):
+    """Cap a per-request timeout to what is left of the run's time budget."""
+    left = deadline - time.monotonic()
+    if left <= 1.0:
+        raise TimeoutError("plugin time budget exhausted")
+    return min(want, left)
+
+
+def _get(opener, url, timeout, deadline):
     req = urllib.request.Request(url)
-    with opener.open(req, timeout=timeout) as resp:
+    with opener.open(req, timeout=_slice(timeout, deadline)) as resp:
         return json.loads(resp.read().decode())
 
 
-def _post(opener, url, data, timeout=15):
+def _post(opener, url, data, timeout, deadline):
     req = urllib.request.Request(url, data=data.encode())
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
-    with opener.open(req, timeout=timeout) as resp:
+    with opener.open(req, timeout=_slice(timeout, deadline)) as resp:
         return json.loads(resp.read().decode())
 
 
@@ -102,7 +138,7 @@ def _api_url(host, port, https, api, version, method, sid=None, **params):
     return f"{scheme}://{host}:{port}/webapi/entry.cgi?{qs}"
 
 
-def _login(opener, host, port, https, username, password):
+def _login(opener, host, port, https, username, password, timeout, deadline):
     scheme = "https" if https else "http"
     url = f"{scheme}://{host}:{port}/webapi/auth.cgi"
     data = urllib.parse.urlencode(
@@ -116,17 +152,19 @@ def _login(opener, host, port, https, username, password):
             "format": "sid",
         }
     )
-    resp = _post(opener, url, data)
+    resp = _post(opener, url, data, timeout, deadline)
     if not resp.get("success"):
         msg = resp.get("error", {}).get("code", "unknown")
         return None, f"login failed (code {msg})"
     return resp["data"]["sid"], None
 
 
-def _collect(opener, host, port, https, sid):
+def _collect(opener, host, port, https, sid, timeout, deadline):
     metrics = {}
 
-    util = _get(opener, _api_url(host, port, https, API_UTIL, 1, "get", sid))
+    util = _get(
+        opener, _api_url(host, port, https, API_UTIL, 1, "get", sid), timeout, deadline
+    )
     if util.get("success"):
         d = util.get("data", {})
         cpu = d.get("cpu", {})
@@ -160,7 +198,12 @@ def _collect(opener, host, port, https, sid):
         if "tx" in net:
             metrics["net_tx_bytes"] = net["tx"]
 
-    storage = _get(opener, _api_url(host, port, https, API_STOR, 1, "load_info", sid))
+    storage = _get(
+        opener,
+        _api_url(host, port, https, API_STOR, 1, "load_info", sid),
+        timeout,
+        deadline,
+    )
     if storage.get("success"):
         disks = storage.get("data", {}).get("disks", [])
         metrics["disk_total"] = len(disks)
@@ -199,7 +242,12 @@ def _collect(opener, host, port, https, sid):
             metrics[f"raid:{raid_id}:status"] = r.get("status", "unknown")
             metrics[f"raid:{raid_id}:type"] = r.get("raid_type", "?")
 
-    share = _get(opener, _api_url(host, port, https, API_SHARE, 1, "list", sid))
+    share = _get(
+        opener,
+        _api_url(host, port, https, API_SHARE, 1, "list", sid),
+        timeout,
+        deadline,
+    )
     if share.get("success"):
         for s in share.get("data", {}).get("shares", []):
             name = s.get("name", "?")
@@ -222,20 +270,30 @@ if __name__ == "__main__":
     username = config.get("username", "admin").strip()
     password = config.get("password", "").strip()
     verify = bool(config.get("verify_ssl", False))
+    timeout = _resolve_timeout(config.get("timeout", DEFAULT_TIMEOUT))
 
     if not host or not password:
         print(json.dumps({"error": "host and password required"}))
         sys.exit(1)
 
+    deadline = time.monotonic() + TOTAL_BUDGET
     opener = _opener(verify)
 
-    sid, err = _login(opener, host, port, https, username, password)
+    try:
+        sid, err = _login(
+            opener, host, port, https, username, password, timeout, deadline
+        )
+    except Exception as e:
+        # Keep the diagnostic on stderr so the agent logs it (stdout is
+        # discarded on a non-zero exit).
+        print(f"synology: login request failed: {e!r}", file=sys.stderr)
+        sys.exit(1)
     if err:
         print(json.dumps({"error": f"synology: {err}"}))
         sys.exit(1)
 
     try:
-        metrics = _collect(opener, host, port, https, sid)
+        metrics = _collect(opener, host, port, https, sid, timeout, deadline)
         print(json.dumps(metrics))
     except urllib.error.HTTPError as e:
         print(json.dumps({"error": f"synology api error {e.code}"}))
