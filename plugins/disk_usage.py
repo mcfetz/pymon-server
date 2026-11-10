@@ -50,7 +50,10 @@ __schema__ = {
             "key": "skip_fstypes",
             "label": "Skipped filesystem types (regex)",
             "type": "array:string",
-            "default": list(DEFAULT_SKIP_FSTYPES),
+            # Literal copy of DEFAULT_SKIP_FSTYPES: the server reads __schema__
+            # with ast.literal_eval and cannot evaluate a call. tests/test_disk_usage.py
+            # keeps both in sync.
+            "default": ["squashfs", "devtmpfs", "ramfs", "autofs", "iso9660"],
             "optional": True,
         },
         {

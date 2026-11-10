@@ -329,6 +329,41 @@ def case_schema_contract():
     check("11/7 sleep kept for compatibility", fields["sleep"]["default"], 60)
 
 
+def case_schema_ast_readable():
+    """The server reads __schema__ with ast.literal_eval - a call like
+    list(DEFAULT_SKIP_FSTYPES) makes it fall back to DEFAULT_SCHEMA (sleep only),
+    which then strips every other key on the next config PUT."""
+    import ast
+
+    with open(PLUGIN_PATH, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    literal = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "__schema__" for t in node.targets
+        ):
+            literal = ast.literal_eval(node.value)
+    check_true("12/1 __schema__ is a plain literal", literal is not None)
+    if literal is None:
+        return
+    check(
+        "12/2 literal exposes all four fields",
+        sorted(f["key"] for f in literal["fields"]),
+        ["excludes", "skip_fstypes", "skip_readonly", "sleep"],
+    )
+    literal_fields = {f["key"]: f for f in literal["fields"]}
+    check(
+        "12/3 literal skip_fstypes default matches the code default",
+        literal_fields["skip_fstypes"]["default"],
+        plugin.DEFAULT_SKIP_FSTYPES,
+    )
+    check(
+        "12/4 literal label is set",
+        literal["label"],
+        "Disk",
+    )
+
+
 def main():
     print("disk_usage plugin tests")
     case_read_mounts_parsing()
@@ -341,6 +376,7 @@ def main():
     case_invalid_regex()
     case_plugin_contract()
     case_schema_contract()
+    case_schema_ast_readable()
 
     print()
     failed = [r for r in RESULTS if not r[1]]
