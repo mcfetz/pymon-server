@@ -7,6 +7,7 @@ import random
 import sys
 import ssl
 import time
+import urllib.error
 import urllib.request
 
 __schema__ = {
@@ -19,8 +20,27 @@ __schema__ = {
         {'key': 'password', 'label': 'Local admin password', 'type': 'string'},
         {'key': 'site', 'label': 'Site name', 'type': 'string', 'default': 'default', 'optional': True},
         {'key': 'verify_ssl', 'label': 'Verify SSL', 'type': 'boolean', 'default': False, 'optional': True},
+        {
+            'key': 'timeout',
+            'label': 'HTTP timeout (s)',
+            'type': 'number',
+            'default': 25,
+            'min': 5,
+            'max': 25,
+            'optional': True,
+        },
     ],
 }
+
+# The UniFi OS controller stalls for well over 15 s while it is busy (and the
+# old hardcoded 15 s ceiling produced "The read operation timed out" runs). The
+# agent kills a plugin after PLUGIN_TIMEOUT (30 s) and reports that as
+# agent:error=2, so every request is clamped to what is left of TOTAL_BUDGET:
+# a slow controller then yields a readable exit(1) instead of a subprocess kill.
+# Muster: plugins/synology_dsm.py.
+DEFAULT_TIMEOUT = 25.0
+MAX_TIMEOUT = 25.0
+TOTAL_BUDGET = 28.0
 
 
 def _opener(verify):
@@ -34,6 +54,23 @@ def _opener(verify):
         urllib.request.HTTPCookieProcessor(jar),
     )
     return opener, jar
+
+
+def _resolve_timeout(value):
+    """Clamp the configured per-request timeout into [5, MAX_TIMEOUT] seconds."""
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError):
+        timeout = DEFAULT_TIMEOUT
+    return max(5.0, min(timeout, MAX_TIMEOUT))
+
+
+def _slice(want, deadline):
+    """Cap a per-request timeout to what is left of the run's time budget."""
+    left = deadline - time.monotonic()
+    if left <= 1.0:
+        raise TimeoutError('plugin time budget exhausted')
+    return min(want, left)
 
 
 def _extract_csrf_from_jar(jar):
@@ -50,41 +87,49 @@ def _extract_csrf_from_jar(jar):
     return None
 
 
-def _login(opener, host, username, password, jar):
-    url = f'https://{host}/api/auth/login'
+def _login(opener, url, username, password, jar, timeout, deadline):
     body = json.dumps({'username': username, 'password': password, 'remember': True}).encode()
     for attempt in range(4):
         try:
             req = urllib.request.Request(url, data=body, headers={'Content-Type': 'application/json'})
-            with opener.open(req, timeout=15) as resp:
+            with opener.open(req, timeout=_slice(timeout, deadline)) as resp:
                 resp.read()
             csrf = _extract_csrf_from_jar(jar)
             if csrf:
                 return None, csrf
             return 'no TOKEN cookie found after login', None
         except urllib.error.HTTPError as e:
-            if e.code == 429 and attempt < 3:
+            if e.code == 429:
+                if attempt >= 3:
+                    return 'rate limited after retries', None
                 delay = (2 ** attempt) + random.uniform(0, 1)
+                # Never sleep past the run budget: a rate limit at the end of
+                # the budget is reported, not waited out.
+                if deadline - time.monotonic() <= delay + 1.0:
+                    return 'rate limited after retries', None
                 time.sleep(delay)
                 continue
             raise
     return 'rate limited after retries', None
 
 
-def _api_get(opener, host, site, path, csrf=None):
-    url = f'https://{host}/proxy/network/api/s/{site}{path}'
+def _api_get(opener, url, csrf, timeout, deadline):
     headers = {}
     if csrf:
         headers['X-CSRF-Token'] = csrf
     req = urllib.request.Request(url, headers=headers)
-    with opener.open(req, timeout=15) as resp:
+    with opener.open(req, timeout=_slice(timeout, deadline)) as resp:
         return json.loads(resp.read().decode())
 
 
-def _collect(opener, host, site, csrf):
+def _collect(opener, host, site, csrf, timeout, deadline):
     metrics = {}
 
-    health = _api_get(opener, host, site, '/stat/health', csrf)
+    def api(path):
+        url = f'https://{host}/proxy/network/api/s/{site}{path}'
+        return _api_get(opener, url, csrf, timeout, deadline)
+
+    health = api('/stat/health')
     for h in health.get('data', []):
         subsystem = h.get('subsystem', '')
         status = h.get('status', 'unknown')
@@ -100,7 +145,7 @@ def _collect(opener, host, site, csrf):
             if num_sta is not None:
                 metrics['clients_wireless'] = num_sta
 
-    devices = _api_get(opener, host, site, '/stat/device', csrf)
+    devices = api('/stat/device')
     device_list = devices.get('data', [])
     metrics['devices_total'] = len(device_list)
     metrics['devices_online'] = sum(1 for d in device_list if d.get('state') == 1)
@@ -190,7 +235,7 @@ def _collect(opener, host, site, csrf):
             if vap_clients_5g:
                 metrics[f'ap:{name}:clients_5g'] = vap_clients_5g
 
-    clients = _api_get(opener, host, site, '/stat/sta', csrf)
+    clients = api('/stat/sta')
     sta_list = clients.get('data', [])
     metrics['clients_total'] = len(sta_list)
     metrics['clients_wired'] = sum(1 for c in sta_list if c.get('is_wired', False))
@@ -205,20 +250,31 @@ if __name__ == '__main__':
     password = config.get('password', '').strip()
     site = config.get('site', 'default').strip()
     verify = config.get('verify_ssl', False)
+    timeout = _resolve_timeout(config.get('timeout', DEFAULT_TIMEOUT))
 
     if not host or not password:
         print(json.dumps({'error': 'api_host and password required'}))
         sys.exit(1)
 
+    deadline = time.monotonic() + TOTAL_BUDGET
     opener, jar = _opener(verify)
+    login_url = f'https://{host}/api/auth/login'
 
-    err, csrf = _login(opener, host, username, password, jar)
+    try:
+        err, csrf = _login(opener, login_url, username, password, jar, timeout, deadline)
+    except Exception as e:
+        # Keep the diagnostic on stderr so the agent logs it (stdout carries the
+        # machine-readable contract) and always exit(1) instead of crashing with
+        # a traceback.
+        print(f'unifi: login request failed: {e!r}', file=sys.stderr)
+        print(json.dumps({'error': f'unifi login failed: {e}'}))
+        sys.exit(1)
     if err:
         print(json.dumps({'error': f'unifi login failed: {err}'}))
         sys.exit(1)
 
     try:
-        metrics = _collect(opener, host, site, csrf)
+        metrics = _collect(opener, host, site, csrf, timeout, deadline)
         print(json.dumps(metrics))
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors='replace')[:200]
