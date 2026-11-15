@@ -14,7 +14,10 @@ for alerting is exposed as numbers:
   external_ip_value         the resolved address (string)
 
 A total provider failure never marks the address as changed, so connection
-problems cannot trigger a false IP-change alarm.
+problems cannot trigger a false IP-change alarm. Neither is a fresh state a
+change: when the state file is missing (new agent container on an ephemeral
+container filesystem) the first successful poll adopts the resolved address as
+its baseline and reports changed=0.
 """
 import ipaddress
 import json
@@ -78,12 +81,22 @@ def _default_state_file():
 
 
 def _load_state(path):
-    fresh = {"_version": STATE_VERSION, "last_ip": None, "change_count": 0, "last_change_ts": None}
+    fresh = {
+        "_version": STATE_VERSION,
+        "baseline": False,
+        "last_ip": None,
+        "change_count": 0,
+        "last_change_ts": None,
+    }
     try:
         with open(path, encoding="utf-8") as f:
             state = json.load(f)
         if not isinstance(state, dict):
             return fresh
+        # State written before the baseline flag existed: a known address already
+        # counts as an established baseline, so a real change is still reported.
+        if "baseline" not in state and state.get("last_ip"):
+            state["baseline"] = True
         for k, v in fresh.items():
             state.setdefault(k, v)
         state["_version"] = STATE_VERSION
@@ -115,7 +128,13 @@ def run(config):
         return
 
     changed = 0
-    if state.get("last_ip") != ip:
+    if not state.get("baseline"):
+        # Fresh state (first run ever, or the container was replaced and the
+        # state file with it): adopt the current address as the baseline without
+        # reporting a change, otherwise every agent restart fires a false alarm.
+        state["baseline"] = True
+        state["last_ip"] = ip
+    elif state.get("last_ip") != ip:
         state["last_ip"] = ip
         state["change_count"] = state.get("change_count", 0) + 1
         state["last_change_ts"] = time.time()
