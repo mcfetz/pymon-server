@@ -13,12 +13,13 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
 from flask import jsonify, request
+from sqlalchemy import func
 
 from auth import require_admin, require_agent_apikey, require_frontend_user
 from audit import audit_config, record_audit
 from core import app, logger, SessionLocal, DB_WRITE_LOCK
 from config import CONF_DIR, PLUGINS_DIR, DB_PATH, IS_POSTGRES
-from db_models import Alarm, MetricNote, Metrics
+from db_models import Alarm, MetricLastSeen, MetricNote, Metrics
 
 CONF_DIR    = CONF_DIR   # re-export for local use (keeps existing references)
 CONFIG_JSON    = os.path.join(CONF_DIR, "agents.json")
@@ -183,31 +184,42 @@ def _agent_script_hash() -> str:
         return ""
 
 
-def touch_agent_last_seen(agentid: str, timestamp: datetime | None = None) -> None:
-    """Store the newest accepted metric timestamp in agent metadata."""
-    seen_at = timestamp or datetime.now(UTC)
-    if seen_at.tzinfo is None:
+def _parse_last_seen(value) -> datetime | None:
+    """Parse a stored last_seen value into an aware datetime (or None)."""
+    try:
+        seen_at = datetime.fromisoformat(value) if value else None
+    except (TypeError, ValueError):
+        return None
+    if seen_at is not None and seen_at.tzinfo is None:
         seen_at = seen_at.replace(tzinfo=UTC)
+    return seen_at
 
-    with _locked(CONFIG_JSON):
-        cfg = _load_json_config()
-        agent = cfg.get("agents", {}).get(agentid)
-        if agent is None:
-            return
 
-        current_value = agent.get("last_seen")
-        try:
-            current = datetime.fromisoformat(current_value) if current_value else None
-        except (TypeError, ValueError):
-            current = None
-        if current is not None:
-            if current.tzinfo is None:
-                current = current.replace(tzinfo=UTC)
-            if current >= seen_at:
-                return
+def _agent_last_seen_from_db(session) -> dict[str, datetime]:
+    """Newest accepted metric timestamp per agent, from the ingest tracker.
 
-        agent["last_seen"] = seen_at.isoformat()
-        _save_json_config(cfg)
+    ``_metric_last_seen`` is upserted on every accepted ingest (including
+    discarded unchanged values), so it is the authoritative source for
+    "agent was last heard from". ``agents.json`` is only written on admin
+    changes and no longer carries a per-POST last_seen.
+    """
+    rows = (
+        session.query(
+            MetricLastSeen.agentid,
+            func.max(MetricLastSeen.last_received_at).label("last_received_at"),
+        )
+        .where(MetricLastSeen.last_received_at.is_not(None))
+        .group_by(MetricLastSeen.agentid)
+        .all()
+    )
+    result: dict[str, datetime] = {}
+    for agentid, last_received_at in rows:
+        if last_received_at is None:
+            continue
+        if last_received_at.tzinfo is None:
+            last_received_at = last_received_at.replace(tzinfo=UTC)
+        result[agentid] = last_received_at
+    return result
 
 
 # ── Routes ──
@@ -243,6 +255,7 @@ def admin_list_agents():
 
     # Latest reported agent.py hash per agent (stored as metric by the agent)
     latest_versions: dict[str, str] = {}
+    db_last_seen: dict[str, datetime] = {}
     session = SessionLocal()
     try:
         rows = (
@@ -256,6 +269,7 @@ def admin_list_agents():
             if agent_id not in seen:
                 latest_versions[agent_id] = version
                 seen.add(agent_id)
+        db_last_seen = _agent_last_seen_from_db(session)
     except Exception as e:
         logger.error("Error loading agent versions: %s", e)
     finally:
@@ -270,13 +284,12 @@ def admin_list_agents():
             data.pop("apikey", None)
         data["agent_version"] = latest_versions.get(agent_id)
         data["server_agent_hash"] = server_agent_hash
-        last_seen_value = data.get("last_seen")
-        try:
-            last_seen = datetime.fromisoformat(last_seen_value) if last_seen_value else None
-        except (TypeError, ValueError):
-            last_seen = None
-        if last_seen is not None and last_seen.tzinfo is None:
-            last_seen = last_seen.replace(tzinfo=UTC)
+        last_seen = _parse_last_seen(data.get("last_seen"))
+        # The ingest tracker is authoritative; the value kept in agents.json is
+        # only a fallback for agents that never reported to this database.
+        db_seen = db_last_seen.get(agent_id)
+        if db_seen is not None and (last_seen is None or db_seen > last_seen):
+            last_seen = db_seen
         data["last_seen"] = last_seen.isoformat() if last_seen else None
 
         # Compute offline threshold: min sleep across all configured plugins

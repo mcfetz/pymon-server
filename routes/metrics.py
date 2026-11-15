@@ -11,7 +11,7 @@ from rules import evaluate_rules_for_payload
 from core import DB_WRITE_LOCK, SessionLocal, app, logger
 from auth import require_agent_apikey, require_frontend_user
 from audit import record_audit
-from routes.admin import _load_json_config, touch_agent_last_seen
+from routes.admin import _load_json_config
 
 
 # Keys that configure server-side post-processing and must never reach the agent.
@@ -657,12 +657,6 @@ def collect_metrics():
             logger.error("Failed payload detail: agent=%s plugin=%s metrics_count=%d", agentid_payload, pluginid, len(db_metrics))
             logger.error("Traceback:", exc_info=True)
             return jsonify({"status": "error", "message": str(e)}), 500
-
-        if db_metrics:
-            try:
-                touch_agent_last_seen(agentid_payload, received_at)
-            except Exception:
-                logger.error("Error updating last_seen for agent '%s'", agentid_payload, exc_info=True)
 
         for action in post_commit_actions:
             try:
