@@ -2,11 +2,16 @@ import re
 from datetime import UTC, datetime
 
 from flask import jsonify, request
-from sqlalchemy import and_, text
+from sqlalchemy import and_
 
 from config import IS_POSTGRES
 from db_models import Alarm, MetricNote, Metrics
-from functions import _parse_time_param, dict_value_to_metric, get_value_from_row
+from functions import (
+    _parse_time_param,
+    dict_value_to_metric,
+    get_value_from_row,
+    touch_metric_last_seen,
+)
 from rules import evaluate_rules_for_payload
 from core import DB_WRITE_LOCK, SessionLocal, app, logger
 from auth import require_agent_apikey, require_frontend_user
@@ -563,6 +568,16 @@ def collect_metrics():
 
                 metrics_list = payload.get("metrics", [])
 
+                # Any accepted push proves the agent itself is alive. Keep the
+                # agent-level liveness metric fresh here as well: the agent only
+                # calls /agents/status on start and stop, so a rule on
+                # pluginid=agent/metric=online would otherwise never see this
+                # agent again — and a killed agent (SIGKILL/OOM) would stay
+                # invisible for good.
+                touch_metric_last_seen(
+                    session, agentid_payload, "agent", "online", received_at
+                )
+
                 # Post-processing: discard values that haven't changed (optionally
                 # keeping at least one value per heartbeat interval).
                 post_cfg = _load_plugin_post_config(agentid_payload, pluginid)
@@ -577,20 +592,12 @@ def collect_metrics():
                                 # Track the latest receipt time per metric even when
                                 # the value is discarded, so no-data rules do not
                                 # false-alarm for stable metrics.
-                                session.execute(
-                                    text(
-                                        "INSERT INTO _metric_last_seen "
-                                        "(agentid, pluginid, metric, last_received_at) "
-                                        "VALUES (:agentid, :pluginid, :metric, :last_received_at) "
-                                        "ON CONFLICT (agentid, pluginid, metric) "
-                                        "DO UPDATE SET last_received_at = EXCLUDED.last_received_at"
-                                    ),
-                                    {
-                                        "agentid": agentid_payload,
-                                        "pluginid": pluginid,
-                                        "metric": metric_name,
-                                        "last_received_at": received_at,
-                                    },
+                                touch_metric_last_seen(
+                                    session,
+                                    agentid_payload,
+                                    pluginid,
+                                    metric_name,
+                                    received_at,
                                 )
                                 if discard_enabled:
                                     should_discard, last_row = _should_discard(

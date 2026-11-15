@@ -1,6 +1,35 @@
+from sqlalchemy import text
+
 from db_models import Metrics
 from datetime import datetime
 from dateutil import parser as dateutil_parser
+
+
+def touch_metric_last_seen(
+    session, agentid: str, pluginid: str, metric: str, received_at
+) -> None:
+    """Upsert the ingest tracker row for one (agentid, pluginid, metric) triple.
+
+    no-data rules read exclusively ``_metric_last_seen``, so every code path that
+    accepts data for a metric has to refresh its row — the push ingest and the
+    agent status endpoint alike. Without this the metric exists in ``metrics``
+    but the rule engine never sees it.
+    """
+    session.execute(
+        text(
+            "INSERT INTO _metric_last_seen "
+            "(agentid, pluginid, metric, last_received_at) "
+            "VALUES (:agentid, :pluginid, :metric, :last_received_at) "
+            "ON CONFLICT (agentid, pluginid, metric) "
+            "DO UPDATE SET last_received_at = EXCLUDED.last_received_at"
+        ),
+        {
+            "agentid": agentid,
+            "pluginid": pluginid,
+            "metric": metric,
+            "last_received_at": received_at,
+        },
+    )
 
 
 def _parse_time_param(value: str | None) -> datetime | None:

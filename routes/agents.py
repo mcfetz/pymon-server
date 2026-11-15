@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from dateutil import parser as dateutil_parser
 from auth import require_agent_apikey
 from db_models import Metrics, Alarm
+from functions import touch_metric_last_seen
 from config import CONF_DIR, PLUGINS_DIR
 import base64
 import hashlib
@@ -91,6 +92,16 @@ def status():
                     value_int=status_value,
                 )
             )
+            if status_value == 1:
+                # Liveness for no-data rules on agent/online + agent/version.
+                # Only a running agent refreshes this: an "offline" report must
+                # not, otherwise a clean shutdown would postpone the alarm by a
+                # whole threshold window.
+                touch_metric_last_seen(session, agentid, "agent", "online", received_at)
+                if isinstance(version, str) and version:
+                    touch_metric_last_seen(
+                        session, agentid, "agent", "version", received_at
+                    )
             if isinstance(version, str) and version:
                 session.add(
                     Metrics(
