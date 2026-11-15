@@ -19,7 +19,10 @@ Some fields include per-container resource usage from the Docker stats API:
 
   container:<name>:cpu_percent       CPU share since the clostest sample (can
                                      exceed 100 across multiple cores)
-  container:<name>:mem_usage_bytes   current memory usage
+  container:<name>:mem_usage_bytes   current memory usage, net of the
+                                     reclaimable page cache (same calculation
+                                     as 'docker stats'; the cache the kernel
+                                     can drop does not count as usage)
   container:<name>:mem_limit_bytes   container memory limit
   container:<name>:mem_percent       usage/limit in percent
   container:<name>:pids              current number of processes
@@ -382,6 +385,37 @@ def _update_checks(client, candidates, services, metrics, config):
     _save_cache(base_url, cache)
 
 
+def _mem_usage_without_cache(mem):
+    """Return the container's memory usage minus its reclaimable page cache.
+
+    ``memory_stats.usage`` is the cgroup's ``memory.current``: it counts every
+    page the container ever touched, including the file-backed page cache.
+    The kernel may drop that cache at any time, so a container that only read
+    a lot of files climbs to its limit in this metric without any process
+    actually holding the memory — every threshold on top of it fires on a
+    measurement artefact.
+
+    Docker's own ``docker stats`` therefore subtracts the inactive file pages,
+    and this mirrors that calculation exactly (cgroup v2 ``inactive_file``,
+    cgroup v1 ``total_inactive_file``). The raw ``cache`` field is deliberately
+    not used as a fallback: it includes the *active* file pages, which are not
+    reclaimable, so subtracting it would understate the usage in the other
+    direction. A stat larger than ``usage`` is ignored instead of producing a
+    negative value.
+    """
+    stats = mem.get("stats") or {}
+    usage = int(mem.get("usage") or 0)
+    cache = stats.get("total_inactive_file")
+    if cache is None:
+        cache = stats.get("inactive_file")
+    if cache is None:
+        return usage
+    cache = int(cache)
+    if 0 <= cache < usage:
+        return usage - cache
+    return usage
+
+
 def _stats_one(container):
     """Extract one container's resource metrics from the Docker stats API.
 
@@ -412,6 +446,7 @@ def _stats_one(container):
     usage = mem.get("usage")
     limit = mem.get("limit")
     if usage is not None:
+        usage = _mem_usage_without_cache(mem)
         values["mem_usage_bytes"] = int(usage)
         if limit:
             values["mem_limit_bytes"] = int(limit)

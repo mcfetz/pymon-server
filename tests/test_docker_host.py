@@ -265,6 +265,7 @@ def _stats_payload(
     online_cpus=2,
     mem_usage=100,
     mem_limit=1000,
+    mem_stats=None,
     pids=5,
     read=1,
     write=2,
@@ -272,6 +273,13 @@ def _stats_payload(
     tx=4,
 ):
     """Docker stats payload; defaults yield cpu_percent 40.0 and 10.0 % memory."""
+    memory_stats = {
+        "usage": mem_usage,
+        "limit": mem_limit,
+        "pids_stats": {"current": pids},
+    }
+    if mem_stats is not None:
+        memory_stats["stats"] = mem_stats
     return {
         "cpu_stats": {
             "cpu_usage": {"total_usage": total_usage},
@@ -283,11 +291,7 @@ def _stats_payload(
             "system_cpu_usage": precpu_system,
             "online_cpus": online_cpus,
         },
-        "memory_stats": {
-            "usage": mem_usage,
-            "limit": mem_limit,
-            "pids_stats": {"current": pids},
-        },
+        "memory_stats": memory_stats,
         "blkio_stats": {
             "io_service_bytes_recursive": [
                 {"op": "read", "value": read},
@@ -399,6 +403,56 @@ def test_stats_one_returns_name_and_suffixes_without_touching_metrics():
     }
     broken = FakeStatsContainer("  ", short_id="abc", error=RuntimeError())
     assert docker_host._stats_one(broken) is None
+
+
+def test_mem_usage_subtracts_the_reclaimable_page_cache():
+    # Real numbers from the hermes-agent-andrea container: 3.81 GiB cgroup
+    # usage, of which 2.53 GiB was file cache. Docker stats reported 1.28 GiB
+    # (its calculation subtracts the inactive file pages); the old metric read
+    # the full 3.81 GiB and alarmed at 95 % of a 4 GiB limit although only
+    # ~1 GiB was actually held by processes.
+    payload = _stats_payload(
+        mem_usage=4096778240,
+        mem_limit=4294967296,
+        mem_stats={"anon": 1123590144, "file": 2720219136, "inactive_file": 2720219136},
+    )
+    _, values = docker_host._stats_one(FakeStatsContainer("agent", payload=payload))
+    assert values["mem_usage_bytes"] == 1376559104
+    assert values["mem_percent"] == 32.1
+    assert values["mem_usage_bytes"] + 2720219136 == 4096778240
+
+
+def test_mem_usage_uses_cgroup1_total_inactive_file():
+    # cgroup v1 reports 'total_inactive_file' plus a raw 'cache' field that
+    # also covers the active, non-reclaimable pages: the inactive figure wins.
+    payload = _stats_payload(
+        mem_usage=1000,
+        mem_limit=4000,
+        mem_stats={"cache": 900, "total_inactive_file": 600, "inactive_file": 700},
+    )
+    _, values = docker_host._stats_one(FakeStatsContainer("c1", payload=payload))
+    assert values["mem_usage_bytes"] == 400
+    assert values["mem_percent"] == 10.0
+
+
+def test_mem_usage_without_cache_stats_stays_at_raw_usage():
+    payload = _stats_payload(mem_usage=100, mem_limit=1000)
+    _, values = docker_host._stats_one(FakeStatsContainer("plain", payload=payload))
+    assert values["mem_usage_bytes"] == 100
+    assert values["mem_percent"] == 10.0
+
+
+def test_mem_usage_never_goes_negative_on_an_absurd_cache_value():
+    # A stats payload reporting more cache than usage is nonsense; it must be
+    # ignored rather than subtracting into a negative (or absurdly low) value.
+    payload = _stats_payload(
+        mem_usage=100,
+        mem_limit=1000,
+        mem_stats={"inactive_file": 5000},
+    )
+    _, values = docker_host._stats_one(FakeStatsContainer("odd", payload=payload))
+    assert values["mem_usage_bytes"] == 100
+    assert values["mem_percent"] == 10.0
 
 
 def main():
