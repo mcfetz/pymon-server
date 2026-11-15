@@ -44,6 +44,11 @@ Summaries:
   containers_updates_skipped       running containers not checked at container
                                    level: unhealthy containers and swarm task
                                    containers (their image is checked per service)
+  containers_stats_collected       running containers that got per-container
+                                   resource samples in this poll
+  containers_stats_missing         running containers without samples in this
+                                   poll (stats budget spent); a value > 0 means
+                                   the resource metrics below are incomplete
 
 Per-container state:
   container:<name>:running     1 = running, 0 = not (only for non-swarm
@@ -99,6 +104,9 @@ except ImportError:
 UPDATE_BUDGET = 20.0
 TOKEN_TIMEOUT = 6
 MANIFEST_TIMEOUT = 8
+# Parallel stats calls: one docker stats call costs ~2s, so a handful of
+# workers samples every running container of a node within the poll budget.
+_STATS_WORKERS = 8
 _ssl_ctx = ssl.create_default_context()
 
 MANIFEST_ACCEPT = ", ".join([
@@ -374,63 +382,102 @@ def _update_checks(client, candidates, services, metrics, config):
     _save_cache(base_url, cache)
 
 
+def _stats_one(container):
+    """Extract one container's resource metrics from the Docker stats API.
+
+    Returns ``(name, {suffix: value})`` — the name to publish under and the
+    per-container metric suffixes — or ``None`` when the stats call fails:
+    a broken stats call must never fail the whole poll. Runs inside a worker
+    thread, so it only reads from the daemon and never writes to the shared
+    metrics dict (the caller merges in the main thread).
+    """
+    name = container.name.strip() or container.short_id
+    try:
+        s = container.stats(stream=False)
+    except Exception:
+        return None
+
+    values = {}
+    cpu = s.get("cpu_stats", {}) or {}
+    precpu = s.get("precpu_stats", {}) or {}
+    cpu_delta = (cpu.get("cpu_usage", {}).get("total_usage", 0)
+                 - precpu.get("cpu_usage", {}).get("total_usage", 0))
+    sys_delta = (cpu.get("system_cpu_usage", 0)
+                 - precpu.get("system_cpu_usage", 0))
+    online = cpu.get("online_cpus") or precpu.get("online_cpus") or 1
+    if sys_delta > 0 and cpu_delta >= 0:
+        values["cpu_percent"] = round(cpu_delta / sys_delta * online * 100.0, 1)
+
+    mem = s.get("memory_stats", {}) or {}
+    usage = mem.get("usage")
+    limit = mem.get("limit")
+    if usage is not None:
+        values["mem_usage_bytes"] = int(usage)
+        if limit:
+            values["mem_limit_bytes"] = int(limit)
+            values["mem_percent"] = round(100.0 * usage / limit, 1)
+    pids = (mem.get("pids_stats", {}) or {}).get("current")
+    if pids is not None:
+        values["pids"] = int(pids)
+
+    read_b = write_b = 0
+    for b in (s.get("blkio_stats", {}) or {}).get("io_service_bytes_recursive", []) or []:
+        op = (b.get("op") or "").lower()
+        if op == "read":
+            read_b += b.get("value", 0)
+        elif op == "write":
+            write_b += b.get("value", 0)
+    if read_b or write_b:
+        values["io_read_bytes"] = int(read_b)
+        values["io_write_bytes"] = int(write_b)
+
+    net = s.get("networks", {}) or {}
+    rx = sum(((v or {}).get("rx_bytes") or 0) for v in net.values())
+    tx = sum(((v or {}).get("tx_bytes") or 0) for v in net.values())
+    if rx or tx:
+        values["net_rx_bytes"] = int(rx)
+        values["net_tx_bytes"] = int(tx)
+
+    return name, values
+
+
 def _resource_stats(running, metrics, budget=8.0):
     """Collect per-container CPU/memory/IO/net/pids via the Docker stats API.
 
     Uses the daemon's ``precpu_stats`` so CPU percent is computed without a
-    second sample. Each container gets a try/except so one broken stats call
-    never fails the whole poll. Stops early once the budget is spent.
+    second sample. The stats calls run in a thread pool (as the image update
+    checks do) because one call costs about two seconds: sequentially the
+    budget covered only the first handful of containers, in parallel every
+    running container is sampled in one wave. Each container gets a try/except
+    so one broken stats call never fails the whole poll, and results are merged
+    into ``metrics`` in the main thread only, in the original container order.
+    The budget now bounds only how long the results are waited for; whatever is
+    still missing is reported via ``containers_stats_*``.
     """
+    if not running:
+        metrics["containers_stats_collected"] = 0
+        metrics["containers_stats_missing"] = 0
+        return
     deadline = time.time() + budget
-    for c in running:
-        if time.time() >= deadline:
-            break
-        name = c.name.strip() or c.short_id
-        try:
-            s = c.stats(stream=False)
-        except Exception:
-            continue
-
-        cpu = s.get("cpu_stats", {}) or {}
-        precpu = s.get("precpu_stats", {}) or {}
-        cpu_delta = (cpu.get("cpu_usage", {}).get("total_usage", 0)
-                     - precpu.get("cpu_usage", {}).get("total_usage", 0))
-        sys_delta = (cpu.get("system_cpu_usage", 0)
-                     - precpu.get("system_cpu_usage", 0))
-        online = cpu.get("online_cpus") or precpu.get("online_cpus") or 1
-        if sys_delta > 0 and cpu_delta >= 0:
-            metrics[f"container:{name}:cpu_percent"] = round(
-                cpu_delta / sys_delta * online * 100.0, 1)
-
-        mem = s.get("memory_stats", {}) or {}
-        usage = mem.get("usage")
-        limit = mem.get("limit")
-        if usage is not None:
-            metrics[f"container:{name}:mem_usage_bytes"] = int(usage)
-            if limit:
-                metrics[f"container:{name}:mem_limit_bytes"] = int(limit)
-                metrics[f"container:{name}:mem_percent"] = round(100.0 * usage / limit, 1)
-        pids = (mem.get("pids_stats", {}) or {}).get("current")
-        if pids is not None:
-            metrics[f"container:{name}:pids"] = int(pids)
-
-        read_b = write_b = 0
-        for b in (s.get("blkio_stats", {}) or {}).get("io_service_bytes_recursive", []) or []:
-            op = (b.get("op") or "").lower()
-            if op == "read":
-                read_b += b.get("value", 0)
-            elif op == "write":
-                write_b += b.get("value", 0)
-        if read_b or write_b:
-            metrics[f"container:{name}:io_read_bytes"] = int(read_b)
-            metrics[f"container:{name}:io_write_bytes"] = int(write_b)
-
-        net = s.get("networks", {}) or {}
-        rx = sum(((v or {}).get("rx_bytes") or 0) for v in net.values())
-        tx = sum(((v or {}).get("tx_bytes") or 0) for v in net.values())
-        if rx or tx:
-            metrics[f"container:{name}:net_rx_bytes"] = int(rx)
-            metrics[f"container:{name}:net_tx_bytes"] = int(tx)
+    collected = 0
+    with ThreadPoolExecutor(max_workers=min(_STATS_WORKERS, len(running))) as pool:
+        futures = [pool.submit(_stats_one, c) for c in running]
+        for fut in futures:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            try:
+                result = fut.result(timeout=remaining)
+            except Exception:
+                continue
+            if result is None:
+                continue
+            name, values = result
+            for suffix, value in values.items():
+                metrics[f"container:{name}:{suffix}"] = value
+            collected += 1
+    metrics["containers_stats_collected"] = collected
+    metrics["containers_stats_missing"] = len(running) - collected
 
 
 def _swarm_service_id(c):

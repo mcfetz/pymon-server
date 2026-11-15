@@ -3,7 +3,9 @@
 Everything is mocked: no Docker daemon and no swarm are required. The core
 guarantee is that a container carrying a swarm service label never emits
 ``container:<name>:running`` — its restart during a rollout is expected and is
-tracked at ``service:<name>:up`` instead.
+tracked at ``service:<name>:up`` instead. The resource stats are covered too:
+every running container must get its sample in one poll (the sequential budget
+used to cut coverage off after a handful of containers).
 
 Run with:  python tests/test_docker_host.py
 """
@@ -11,6 +13,7 @@ Run with:  python tests/test_docker_host.py
 import importlib.util
 import os
 import sys
+import time
 from contextlib import contextmanager
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -247,6 +250,155 @@ def test_update_checks_emits_stable_service_metric_not_task_metric():
     assert metrics["service:app:image"] == "app:1"
     assert metrics["containers_updates_available"] == 1
     assert not any("app.1" in key for key in metrics)
+
+
+# ---------------------------------------------------------------------------
+# per-container resource stats
+# ---------------------------------------------------------------------------
+
+
+def _stats_payload(
+    total_usage=200,
+    precpu_total=100,
+    system_cpu=1000,
+    precpu_system=500,
+    online_cpus=2,
+    mem_usage=100,
+    mem_limit=1000,
+    pids=5,
+    read=1,
+    write=2,
+    rx=3,
+    tx=4,
+):
+    """Docker stats payload; defaults yield cpu_percent 40.0 and 10.0 % memory."""
+    return {
+        "cpu_stats": {
+            "cpu_usage": {"total_usage": total_usage},
+            "system_cpu_usage": system_cpu,
+            "online_cpus": online_cpus,
+        },
+        "precpu_stats": {
+            "cpu_usage": {"total_usage": precpu_total},
+            "system_cpu_usage": precpu_system,
+            "online_cpus": online_cpus,
+        },
+        "memory_stats": {
+            "usage": mem_usage,
+            "limit": mem_limit,
+            "pids_stats": {"current": pids},
+        },
+        "blkio_stats": {
+            "io_service_bytes_recursive": [
+                {"op": "read", "value": read},
+                {"op": "write", "value": write},
+            ]
+        },
+        "networks": {"eth0": {"rx_bytes": rx, "tx_bytes": tx}},
+    }
+
+
+class FakeStatsContainer(FakeContainer):
+    """FakeContainer whose stats() sleeps, then returns a canned payload."""
+
+    def __init__(self, name, payload=None, delay=0.0, error=None, **kwargs):
+        super().__init__(name, **kwargs)
+        self.payload = payload if payload is not None else _stats_payload()
+        self.delay = delay
+        self.error = error
+        self.stats_calls = 0
+
+    def stats(self, stream=False):
+        self.stats_calls += 1
+        if self.delay:
+            time.sleep(self.delay)
+        if self.error:
+            raise self.error
+        return self.payload
+
+
+def test_resource_stats_samples_every_running_container_in_one_wave():
+    # Regression against the sequential 8s budget, which sampled only the
+    # first ~5 containers and left the rest without any metric.
+    running = [FakeStatsContainer(f"c{i}", delay=0.5) for i in range(8)]
+    metrics = {}
+    start = time.monotonic()
+    docker_host._resource_stats(running, metrics)
+    elapsed = time.monotonic() - start
+    for c in running:
+        assert f"container:{c.name}:mem_percent" in metrics
+        assert f"container:{c.name}:io_write_bytes" in metrics
+    assert metrics["containers_stats_collected"] == 8
+    assert metrics["containers_stats_missing"] == 0
+    assert elapsed < 3.0, f"stats ran sequentially ({elapsed:.2f}s)"
+
+
+def test_resource_stats_keeps_going_when_one_stats_call_fails():
+    running = [
+        FakeStatsContainer("a"),
+        FakeStatsContainer("b"),
+        FakeStatsContainer("broken", error=RuntimeError("daemon went away")),
+        FakeStatsContainer("d"),
+    ]
+    metrics = {}
+    docker_host._resource_stats(running, metrics)
+    assert "container:a:mem_percent" in metrics
+    assert "container:b:mem_percent" in metrics
+    assert "container:d:mem_percent" in metrics
+    assert not any("broken" in key for key in metrics)
+    assert metrics["containers_stats_collected"] == 3
+    assert metrics["containers_stats_missing"] == 1
+
+
+def test_resource_stats_on_empty_list_reports_zero_counters():
+    metrics = {}
+    docker_host._resource_stats([], metrics)
+    assert metrics == {"containers_stats_collected": 0, "containers_stats_missing": 0}
+
+
+def test_stats_counters_ignore_values_of_broken_container():
+    # A stats call raising a non-RuntimeError (e.g. the SDK's APIError) is
+    # swallowed as well and only shows up in the missing counter.
+    running = [
+        FakeStatsContainer("ok1"),
+        FakeStatsContainer("ok2", payload=_stats_payload(mem_usage=500)),
+        FakeStatsContainer("dead", error=Exception("409 conflict")),
+    ]
+    metrics = {}
+    docker_host._resource_stats(running, metrics)
+    assert metrics["containers_stats_collected"] == 2
+    assert metrics["containers_stats_missing"] == 1
+
+
+def test_stats_values_land_under_the_right_container_name():
+    # Both containers carry the same suffixes; the merge must not cross them.
+    a = FakeStatsContainer("alpha", payload=_stats_payload(mem_usage=100))
+    b = FakeStatsContainer("bravo", payload=_stats_payload(mem_usage=500))
+    metrics = {}
+    docker_host._resource_stats([a, b], metrics)
+    assert metrics["container:alpha:mem_percent"] == 10.0
+    assert metrics["container:bravo:mem_percent"] == 50.0
+    assert metrics["container:alpha:mem_usage_bytes"] == 100
+    assert metrics["container:bravo:mem_usage_bytes"] == 500
+
+
+def test_stats_one_returns_name_and_suffixes_without_touching_metrics():
+    values = docker_host._stats_one(FakeStatsContainer("web"))
+    name, extracted = values
+    assert name == "web"
+    assert extracted == {
+        "cpu_percent": 40.0,
+        "mem_usage_bytes": 100,
+        "mem_limit_bytes": 1000,
+        "mem_percent": 10.0,
+        "pids": 5,
+        "io_read_bytes": 1,
+        "io_write_bytes": 2,
+        "net_rx_bytes": 3,
+        "net_tx_bytes": 4,
+    }
+    broken = FakeStatsContainer("  ", short_id="abc", error=RuntimeError())
+    assert docker_host._stats_one(broken) is None
 
 
 def main():
