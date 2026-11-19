@@ -1,13 +1,21 @@
 """Automatic daily metric cleanup job.
 
 Runs once per day at the configured local server time and deletes metrics
-older than the configured retention period in small batches, releasing the
-DB write lock between batches so agent ingest is never blocked for long.
+older than the configured retention period in small batches.
+
+On SQLite (one writer at a time) the cleanup holds the process-wide
+``DB_WRITE_LOCK`` between batches so agent ingest is never blocked for long.
+On PostgreSQL the lock is skipped entirely: the row-level locks of the
+database are sufficient, and holding the global lock for the whole run
+serialized every ingest behind the cleanup (measured 2026-11-19: ingest
+latency p50 0.4 s -> 14 s, p90 32 s during the 02:00 UTC cleanup window,
+which made every agent hit its 15 s read timeout).
 
 Last run statistics (start, duration, deleted rows) are persisted so the UI
 can show them even after a restart.
 """
 
+import contextlib
 import json
 import os
 import tempfile
@@ -88,6 +96,20 @@ def _should_run(data: dict) -> bool:
     return data.get("last_run_date") != today
 
 
+def _write_lock():
+    """Lock that serializes the cleanup with concurrent writers.
+
+    SQLite allows a single writer at a time, so the cleanup has to share the
+    process-wide ``DB_WRITE_LOCK`` with the agent ingest there. PostgreSQL
+    resolves concurrent writers with row-level locks, where the cleanup only
+    touches rows far older than the retention cutoff — taking the global lock
+    there buys nothing and blocks every ingest for the whole run.
+    """
+    if IS_POSTGRES:
+        return contextlib.nullcontext()
+    return DB_WRITE_LOCK
+
+
 def _cleanup(retention_days: int, batch_size: int) -> tuple[int | None, int | None]:
     """Delete metrics older than the cutoff in small batches.
 
@@ -100,7 +122,8 @@ def _cleanup(retention_days: int, batch_size: int) -> tuple[int | None, int | No
     deleted_alarms = 0
     try:
         from sqlalchemy import select
-        with DB_WRITE_LOCK:
+
+        with _write_lock():
             metric_ids = select(Metrics.id).where(*filters)
             session.query(MetricNote).filter(
                 MetricNote.metrics_id.in_(metric_ids)
@@ -112,7 +135,7 @@ def _cleanup(retention_days: int, batch_size: int) -> tuple[int | None, int | No
             )
             session.commit()
         while True:
-            with DB_WRITE_LOCK:
+            with _write_lock():
                 batch_ids = [
                     row[0]
                     for row in session.query(Metrics.id)
