@@ -174,3 +174,18 @@ docker service update --env-rm PYMON_DATABASE_URL pymon-server
 
 This returns to SQLite. Any rows written to PostgreSQL after the switch are not
 in SQLite, so decide the rollback window before starting the migration.
+
+## One-off database schema changes
+
+`migrations/` holds SQL that the application does **not** run at startup. The
+ORM (`Base.metadata.create_all`) never drops anything, so index cleanups on an
+existing database are manual, reviewed operations:
+
+```bash
+docker exec -i "$(docker ps -qf name=pymon-db)" \
+  psql -U pymon -d pymon -f - < migrations/<date>-<name>.sql
+```
+
+Anything in there uses `DROP INDEX CONCURRENTLY` / `CREATE INDEX CONCURRENTLY`
+and must stay outside a transaction block (no `BEGIN`, no `psql -1`). Each file
+documents what it changes, the measurement behind it and its rollback.
