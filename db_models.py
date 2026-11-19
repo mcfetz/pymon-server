@@ -20,7 +20,11 @@ class PushSubscription(Base):
 class Metrics(Base):
     __tablename__ = "metrics"
 
-    id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    # No index=True here: PRIMARY KEY already creates a unique btree on id
+    # (metrics_pkey). index=True produced a second, identical btree
+    # (ix_metrics_id) that was 584 MB on the live database (measured
+    # 2026-11-19) and served no query the primary key cannot serve.
+    id = Column(Integer, primary_key=True, autoincrement=True)
     agentid = Column(String, nullable=False)
     pluginid = Column(String, nullable=False)
     timestamp = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
@@ -40,17 +44,23 @@ class Metrics(Base):
             "metric",
             "timestamp",
         ),
+        # Not a prefix duplicate of the index above: this is the only index
+        # that makes the timestamp *range* an index condition for queries that
+        # filter on agent+plugin without a metric (GET /metrics/<agent>/<plugin>
+        # with time-from/time-to). Measured on the live database 2026-11-19:
+        # 32 ms with it, 1729 ms via a prefix bitmap scan of the 4-column index.
         Index(
             "idx_metrics_agent_plugin_ts",
             "agentid",
             "pluginid",
             "timestamp",
         ),
-        Index(
-            "idx_metrics_plugin_metric",
-            "pluginid",
-            "metric",
-        ),
+        # No (pluginid, metric) index here: it was a strict prefix of
+        # idx_metrics_plugin_metric_agent_received (created in core.py) and a
+        # 205 MB index bought no measurable plan improvement (measured
+        # 2026-11-19: 762-1051 ms with it, 916-1015 ms without, both dominated
+        # by heap fetches).
+        #
         # Time-range queries and the default DESC ordering need their own index;
         # the other indexes all start with agent/plugin/metric and cannot serve
         # a query that only filters by timestamp.
