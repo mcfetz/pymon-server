@@ -660,47 +660,57 @@ def _topology(all_containers, host_ids, host_label) -> dict:
     """
     nodes = []
     edges = []
+    skipped = 0
     for container in all_containers:
-        name = (container.name or container.short_id).strip()
-        labels = container.labels or {}
-        service_name = labels.get("com.docker.swarm.service.name")
-        label = (service_name or name).strip() or container.short_id
-        ports = _container_ports(container)
-
-        ids = [f"abstract:docker:{host_label}/{label}"]
-        for port in ports:
-            for host_id in host_ids:
-                kind, _, value = host_id.partition(":")
-                if kind in ("host", "ip") and value:
-                    ids.append(f"endpoint:{value}:{port}")
-
-        image = ""
         try:
-            image = (container.image.tags or [""])[0] or container.attrs.get("Config", {}).get("Image", "")
-        except (AttributeError, TypeError):
+            name = (container.name or container.short_id).strip()
+            labels = container.labels or {}
+            service_name = labels.get("com.docker.swarm.service.name")
+            label = (service_name or name).strip() or container.short_id
+            ports = _container_ports(container)
+
+            ids = [f"abstract:docker:{host_label}/{label}"]
+            for port in ports:
+                for host_id in host_ids:
+                    kind, _, value = host_id.partition(":")
+                    if kind in ("host", "ip") and value:
+                        ids.append(f"endpoint:{value}:{port}")
+
+            # Never touch container.image: it is a lazy attribute that re-fetches
+            # the image from the daemon and raises 404 once the image has been
+            # pruned - a routine state on a host that cleans up its images. The
+            # name in the container config needs no API call and is always there.
             image = ""
-        if not image:
-            image = container.attrs.get("Config", {}).get("Image", "") or ""
+            try:
+                image = ((container.attrs.get("Config") or {}).get("Image") or "").strip()
+            except (AttributeError, TypeError):
+                image = ""
 
-        attrs = {"status": container.status, "ports": ports}
-        if image:
-            attrs["image"] = image
-        if service_name:
-            attrs["swarm_service"] = service_name
+            attrs = {"status": container.status, "ports": ports}
+            if image:
+                attrs["image"] = image
+            if service_name:
+                attrs["swarm_service"] = service_name
 
-        nodes.append({
-            "ids": ids,
-            "kind": "service" if service_name else "container",
-            "label": label,
-            "attrs": attrs,
-        })
-        edges.append({
-            "src": host_ids[0] if host_ids else f"abstract:docker:{host_label}",
-            "dst": ids[0],
-            "kind": "runs",
-            "label": ", ".join(str(p) for p in ports) if ports else "",
-            "attrs": {"ports": ports},
-        })
+            nodes.append({
+                "ids": ids,
+                "kind": "service" if service_name else "container",
+                "label": label,
+                "attrs": attrs,
+            })
+            edges.append({
+                "src": host_ids[0] if host_ids else f"abstract:docker:{host_label}",
+                "dst": ids[0],
+                "kind": "runs",
+                "label": ", ".join(str(p) for p in ports) if ports else "",
+                "attrs": {"ports": ports},
+            })
+        except Exception as e:
+            # One unreadable container must not cost the whole graph. The host
+            # image hygiene prunes images under running containers routinely.
+            # Counted, not logged: see containers_skipped on the host node.
+            skipped += 1
+            continue
 
     return {
         "v": 2,
@@ -708,7 +718,7 @@ def _topology(all_containers, host_ids, host_label) -> dict:
             "ids": host_ids or [f"abstract:docker:{host_label}"],
             "kind": "docker-host",
             "label": host_label,
-            "attrs": {"containers": len(all_containers)},
+            "attrs": {"containers": len(all_containers), "containers_skipped": skipped},
         }] + nodes,
         "edges": edges,
     }

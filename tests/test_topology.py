@@ -343,3 +343,25 @@ def test_stale_marking_and_source_filter():
         assert other["nodes"] == [] and other["edges"] == []
     finally:
         session.close()
+
+
+if __name__ == "__main__":
+    # The CI runs every tests/test_*.py as a standalone script (no pytest): it
+    # expects an "x/y bestanden" line and a non-zero exit on failure. Without
+    # this block the file imports cleanly and silently tests nothing there.
+    import sys as _sys
+
+    _names = sorted(n for n in dir() if n.startswith("test_"))
+    _failed = []
+    setup_module(None)
+    for _name in _names:
+        try:
+            globals()[_name]()
+        except Exception as _exc:
+            _failed.append(_name)
+            print(f"  FAIL {_name}: {type(_exc).__name__}: {_exc}")
+        else:
+            print(f"  PASS {_name}")
+    teardown_module(None)
+    print(f"{len(_names) - len(_failed)}/{len(_names)} bestanden")
+    _sys.exit(1 if _failed else 0)

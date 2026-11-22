@@ -137,6 +137,20 @@ with engine.begin() as connection:
             connection.execute(text(
                 "ALTER TABLE metrics ALTER COLUMN value_int TYPE BIGINT"
             ))
+        # topology_nodes was created by the first version of the topology
+        # feature, which named a node by a single node_id and had no identifier
+        # list. create_all() does not add columns to an existing table, so a
+        # database that saw that version needs the column explicitly - without
+        # it every topology query fails with UndefinedColumn.
+        topology_cols = {
+            row[0]
+            for row in connection.execute(text(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'topology_nodes'"
+            ))
+        }
+        if topology_cols and 'ids' not in topology_cols:
+            logger.info("Migration: adding topology_nodes.ids")
+            connection.execute(text("ALTER TABLE topology_nodes ADD COLUMN ids TEXT"))
         connection.execute(text(
             "CREATE INDEX IF NOT EXISTS idx_metrics_plugin_metric_agent_received "
             "ON metrics (pluginid, metric, agentid, received_at)"
