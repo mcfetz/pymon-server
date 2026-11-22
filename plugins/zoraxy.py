@@ -109,6 +109,14 @@ def _endpoint_of(origin):
     return f'{host}:{int(port)}'
 
 
+def _target_id(host_part):
+    """A name is a host identifier, an IPv4 literal is an address identifier."""
+    text = str(host_part or '').strip().lower()
+    if re.fullmatch(r'\d{1,3}(?:\.\d{1,3}){3}', text):
+        return f'ip:{text}'
+    return f'host:{text}'
+
+
 def _collect(opener, base, csrf, timeout, instance):
     metrics = {}
     raw = _get(opener, base + '/api/proxy/list?type=host', timeout)
@@ -172,13 +180,20 @@ def _collect(opener, base, csrf, timeout, instance):
             target = _endpoint_of(origin.get('OriginIpOrDomain'))
             if not target:
                 continue
+            host_part, _, port = target.rpartition(':')
             origins_total += 1
+            # A rule targets a host and a port - not a "service" object. So the
+            # edge ends at the host node, and the port is edge information. The
+            # container that happens to serve that port hangs off the host with
+            # its own runs edge, which keeps the graph truthful: the proxy does
+            # not know about containers at all.
             edges.append({
                 'src': name_id,
-                'dst': f'endpoint:{target}',
+                'dst': _target_id(host_part),
                 'kind': 'proxies',
                 'label': target,
-                'attrs': {'tls': origin.get('RequireTLS'), 'weight': origin.get('Weight')},
+                'attrs': {'port': int(port), 'tls': origin.get('RequireTLS'),
+                          'weight': origin.get('Weight')},
             })
 
         # Path routing: a virtual directory sends a prefix to its own backend.
@@ -189,13 +204,14 @@ def _collect(opener, base, csrf, timeout, instance):
             path = vdir.get('Path') or ''
             if not target or not path:
                 continue
+            host_part, _, port = target.rpartition(':')
             origins_total += 1
             edges.append({
                 'src': name_id,
-                'dst': f'endpoint:{target}',
+                'dst': _target_id(host_part),
                 'kind': 'proxies',
                 'label': f'{path} -> {target}',
-                'attrs': {'path': path},
+                'attrs': {'path': path, 'port': int(port)},
             })
 
     # Every active public name is reachable from the internet: that is the point

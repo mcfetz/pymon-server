@@ -80,6 +80,10 @@ def case_endpoint_parsing():
     check("uppercase", zoraxy._endpoint_of("DOCKER11.SRV:8123"), "docker11.srv:8123")
     check("without port", zoraxy._endpoint_of("docker11.srv"), None)
     check("garbage", zoraxy._endpoint_of("http://") , None)
+    # The target is a node, so a name and an address must land in their own
+    # namespaces - otherwise an IP target would not meet the node that has it.
+    check("name target", zoraxy._target_id("Docker11.SRV"), "host:docker11.srv")
+    check("ip target", zoraxy._target_id("192.168.181.213"), "ip:192.168.181.213")
 
 
 def case_topology_from_rules():
@@ -99,13 +103,19 @@ def case_topology_from_rules():
     check("proxy node present", [n["kind"] for n in topo["nodes"]].count("reverse-proxy"), 1)
 
     proxied = sorted(e["dst"] for e in topo["edges"] if e["kind"] == "proxies")
-    check("upstreams become endpoints", proxied, [
-        "endpoint:docker11.srv:5002",
-        "endpoint:docker11.srv:9000",
-        "endpoint:docker11.srv:9100",   # virtual directory
-        "endpoint:docker12.srv:8000",
-        "endpoint:docker13.srv:8000",
+    check("upstreams become host nodes", proxied, [
+        "host:docker11.srv",
+        "host:docker11.srv",
+        "host:docker11.srv",   # virtual directory
+        "host:docker12.srv",
+        "host:docker13.srv",
     ])
+    # The port is edge information, not an identity of its own.
+    ports = sorted(e["attrs"]["port"] for e in topo["edges"] if e["kind"] == "proxies")
+    check("ports live on the edge", ports, [5002, 8000, 8000, 9000, 9100])
+    check_true("no endpoint nodes created",
+               not any("endpoint:" in e["dst"] for e in topo["edges"]),
+               str([e["dst"] for e in topo["edges"] if e["kind"] == "proxies"]))
     check("serves edge per name", sum(1 for e in topo["edges"] if e["kind"] == "serves"), 4)
     check("exposes only active names", sum(1 for e in topo["edges"] if e["kind"] == "exposes"), 3)
     check_true("disabled rule exposes nothing",
