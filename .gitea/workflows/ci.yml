@@ -13,13 +13,13 @@ jobs:
       - uses: actions/checkout@v4
 
       # test_ucg_eth4.py vergleicht die Plugin-Datei des Nachbar-Repos, das lokal unter
-      # ~/development/pymon/pymon-agent liegt. Der Klon muss im **selben Schritt** wie der
-      # Testlauf passieren: das Geschwisterverzeichnis liegt ausserhalb des gemounteten
-      # Workspace und ist im naechsten Schritt wieder weg.
+      # ~/development/pymon/pymon-agent liegt und im Job als Geschwisterverzeichnis
+      # nachgezogen wird — im selben Schritt wie der Testlauf, denn nur das Repo-Verzeichnis
+      # ist als Workspace gemountet.
       #
       # Kein actions/setup-python: dessen CPython bricht auf aelteren CPUs mit
       # "CPU ISA level is lower than required" ab. Das Job-Image bringt python3 mit.
-      - name: Abhaengigkeiten und Nachbar-Repo
+      - name: Abhaengigkeiten
         run: |
           set -euo pipefail
           python3 -m venv .venv || {
@@ -28,9 +28,6 @@ jobs:
           }
           .venv/bin/pip install -q --upgrade pip
           .venv/bin/pip install -q -r requirements.txt
-          git clone -q --depth 1 \
-            "https://daniel:${{ secrets.REGISTRY_TOKEN }}@git.familie-heise.de/daniel/pymon-agent.git" \
-            ../pymon-agent
 
       # Die Tests sind eigenstaendige Skripte (kein pytest): jedes druckt "x/y bestanden"
       # und endet mit 0 oder 1. Alle 20 Dateien laufen hier durch.
@@ -40,9 +37,11 @@ jobs:
           # test_vigor167.py legt sein tmpdir unter /tmp/opencode an — das gibt es lokal,
           # im Job nicht. test_ucg_eth4.py braucht das Nachbar-Repo im Geschwisterpfad.
           mkdir -p /tmp/opencode
-          git clone -q --depth 1 \
+          rm -rf ../pymon-agent
+          git clone --depth 1 \
             "https://daniel:${{ secrets.REGISTRY_TOKEN }}@git.familie-heise.de/daniel/pymon-agent.git" \
-            ../pymon-agent 2>/dev/null || echo "Nachbar-Repo schon vorhanden"
+            ../pymon-agent
+          ls -l ../pymon-agent/plugins/ucg_eth4.py
           failed=0
           for f in tests/test_*.py; do
             echo "== $f"
