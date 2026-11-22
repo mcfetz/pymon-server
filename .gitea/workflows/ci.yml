@@ -12,6 +12,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # test_ucg_eth4.py vergleicht die Plugin-Datei des Nachbar-Repos, das lokal unter
+      # ~/development/pymon/pymon-agent liegt. Hier wird es als Geschwisterverzeichnis
+      # nachgezogen, damit der Test nicht uebersprungen werden muss.
+      - name: Nachbar-Repo pymon-agent
+        run: |
+          set -euo pipefail
+          git clone -q --depth 1 \
+            "https://daniel:${{ secrets.REGISTRY_TOKEN }}@git.familie-heise.de/daniel/pymon-agent.git" \
+            ../pymon-agent
+
       # Kein actions/setup-python: dessen CPython bricht auf aelteren CPUs mit
       # "CPU ISA level is lower than required" ab. Das Job-Image bringt python3 mit.
       - name: Abhaengigkeiten
@@ -29,6 +39,9 @@ jobs:
       - name: Tests
         run: |
           set -euo pipefail
+          # test_vigor167.py legt sein tmpdir unter /tmp/opencode an — das gibt es lokal,
+          # im Job nicht.
+          mkdir -p /tmp/opencode
           failed=0
           for f in tests/test_*.py; do
             echo "== $f"
