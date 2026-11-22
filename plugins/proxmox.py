@@ -111,4 +111,74 @@ if __name__ == '__main__':
             if uptime is not None:
                 metrics[f'{kind}:{label}:uptime'] = uptime
 
+    # ── Topologie: Wirt -> Gast ──
+    # Identifier sind absichtlich generisch, damit andere Plugins anschliessen
+    # koennen: der Knoten ueber seinen Namen, der Gast ueber den Namen aus der
+    # Proxmox-Konfiguration. Zusaetzlich bekommt jeder Gast eine abstrakte ID,
+    # damit auch ein namenloser oder gestoppter Gast im Graphen bleibt.
+    #
+    # Der Kurzname ist bewusst dabei: die Proxmox-Konfiguration kennt Gaeste
+    # meist ohne Domain ("docker11"), waehrend der Gast selbst sich als FQDN
+    # meldet ("docker11.srv"). Genau ueber den Kurznamen treffen sich beide.
+    topo_nodes = []
+    topo_edges = []
+    try:
+        import socket as _socket
+
+        local_short = _socket.gethostname().split('.')[0].lower()
+        local_fqdn = ''
+        try:
+            local_fqdn = (_socket.getfqdn() or '').lower()
+        except OSError:
+            local_fqdn = ''
+    except Exception:
+        local_short, local_fqdn = '', ''
+
+    for item in nodes:
+        node_name = (item.get('node') or item.get('name') or '').strip()
+        if not node_name:
+            continue
+        node_id = f'host:{node_name.lower()}'
+        ids = [node_id]
+        if local_fqdn and local_short and node_name.lower() == local_short:
+            if local_fqdn != node_id.split(':', 1)[1]:
+                ids.append(f'host:{local_fqdn}')
+        topo_nodes.append({
+            'ids': ids,
+            'kind': 'pve-node',
+            'label': node_name,
+            'attrs': {'status': item.get('status'), 'cluster': item.get('cluster')},
+        })
+
+    for item in vms + lxc:
+        vmid = item.get('vmid')
+        node_name = (item.get('node') or '').strip()
+        guest_name = (item.get('name') or '').strip()
+        guest_type = 'qemu' if item.get('type') == 'qemu' else 'lxc'
+        type_label = 'VM' if guest_type == 'qemu' else 'LXC'
+
+        ids = []
+        if guest_name:
+            ids.append(f'host:{guest_name.lower()}')
+        abstract_id = f'abstract:proxmox:{node_name.lower() or "?"}/{vmid}'
+        ids.append(abstract_id)
+        topo_nodes.append({
+            'ids': ids,
+            'kind': 'pve-guest',
+            'label': guest_name or f'{type_label} {vmid}',
+            'attrs': {'vmid': vmid, 'type': guest_type, 'status': item.get('status'), 'node': node_name},
+        })
+
+        if node_name:
+            topo_edges.append({
+                'src': f'host:{node_name.lower()}',
+                'dst': ids[0],
+                'kind': 'guest',
+                'label': f'{type_label} {vmid}',
+                'attrs': {'vmid': vmid, 'type': guest_type, 'status': item.get('status')},
+            })
+
+    if topo_nodes:
+        metrics['__topology__'] = {'v': 2, 'nodes': topo_nodes, 'edges': topo_edges}
+
     print(json.dumps(metrics))

@@ -576,6 +576,144 @@ def _service_states(client, services, metrics):
             metrics[f"service:{name}:up"] = 1 if running_n > 0 else 0
 
 
+def _mac_of_default_interface() -> str:
+    """MAC of the interface carrying the default route, if it can be read."""
+    iface = ""
+    try:
+        with open("/proc/net/route") as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) > 1 and parts[1] == "00000000":  # default route
+                    iface = parts[0]
+                    break
+    except OSError:
+        return ""
+    if not iface:
+        return ""
+    try:
+        with open(f"/sys/class/net/{iface}/address") as fh:
+            return fh.read().strip().lower()
+    except OSError:
+        return ""
+
+
+def _host_identifiers() -> list:
+    """Generic identifiers of the machine this plugin runs on.
+
+    Reported generously on purpose: the more generic identifiers a plugin
+    contributes, the more of the graph it joins. The short name matters most in
+    practice - a hypervisor knows a guest as "docker11" while the guest calls
+    itself "docker11.srv", and only the shared short form lets both meet.
+    """
+    import socket
+
+    ids = []
+    short = socket.gethostname() or ""
+    if short:
+        ids.append(f"host:{short.lower()}")
+    try:
+        fqdn = socket.getfqdn() or ""
+    except OSError:
+        fqdn = ""
+    if fqdn and fqdn.lower() != short.lower():
+        ids.append(f"host:{fqdn.lower()}")
+
+    primary = ""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            # No packet leaves the machine: connect() on UDP only picks a route.
+            probe.connect(("192.0.2.1", 53))
+            primary = probe.getsockname()[0]
+    except OSError:
+        primary = ""
+    if primary:
+        ids.append(f"ip:{primary}")
+        mac = _mac_of_default_interface()
+        if mac:
+            ids.append(f"mac:{mac}")
+    return ids
+
+
+def _container_ports(container) -> list:
+    """Published host ports of a container, deduplicated and sorted."""
+    ports = set()
+    try:
+        bindings = (container.attrs.get("NetworkSettings", {}) or {}).get("Ports") or {}
+        for entries in bindings.values():
+            for entry in entries or []:
+                host_port = (entry or {}).get("HostPort")
+                if host_port:
+                    ports.add(int(host_port))
+    except (AttributeError, TypeError, ValueError):
+        return []
+    return sorted(ports)
+
+
+def _topology(all_containers, host_ids, host_label) -> dict:
+    """Nodes and edges this host knows: itself, its containers, published ports.
+
+    Swarm task containers are folded into their service - the graph should show
+    "paperless", not "paperless.1.vobc58...". A published port becomes an
+    ``endpoint`` identifier of that node, which is exactly what a reverse proxy
+    in front of it points at, so the two plugins meet on that hop without
+    knowing about each other.
+    """
+    nodes = []
+    edges = []
+    for container in all_containers:
+        name = (container.name or container.short_id).strip()
+        labels = container.labels or {}
+        service_name = labels.get("com.docker.swarm.service.name")
+        label = (service_name or name).strip() or container.short_id
+        ports = _container_ports(container)
+
+        ids = [f"abstract:docker:{host_label}/{label}"]
+        for port in ports:
+            for host_id in host_ids:
+                kind, _, value = host_id.partition(":")
+                if kind in ("host", "ip") and value:
+                    ids.append(f"endpoint:{value}:{port}")
+
+        image = ""
+        try:
+            image = (container.image.tags or [""])[0] or container.attrs.get("Config", {}).get("Image", "")
+        except (AttributeError, TypeError):
+            image = ""
+        if not image:
+            image = container.attrs.get("Config", {}).get("Image", "") or ""
+
+        attrs = {"status": container.status, "ports": ports}
+        if image:
+            attrs["image"] = image
+        if service_name:
+            attrs["swarm_service"] = service_name
+
+        nodes.append({
+            "ids": ids,
+            "kind": "service" if service_name else "container",
+            "label": label,
+            "attrs": attrs,
+        })
+        edges.append({
+            "src": host_ids[0] if host_ids else f"abstract:docker:{host_label}",
+            "dst": ids[0],
+            "kind": "runs",
+            "label": ", ".join(str(p) for p in ports) if ports else "",
+            "attrs": {"ports": ports},
+        })
+
+    return {
+        "v": 2,
+        "nodes": [{
+            "ids": host_ids or [f"abstract:docker:{host_label}"],
+            "kind": "docker-host",
+            "label": host_label,
+            "attrs": {"containers": len(all_containers)},
+        }] + nodes,
+        "edges": edges,
+    }
+
+
 if __name__ == "__main__":
     config = json.load(sys.stdin)
     base_url = config.get("base_url")
@@ -636,5 +774,16 @@ if __name__ == "__main__":
             _resource_stats(running, metrics)
         except Exception:
             pass
+
+    # ── Topologie: dieser Host, seine Container, ihre veroeffentlichten Ports ──
+    if config.get("collect_topology", True):
+        try:
+            host_ids = _host_identifiers()
+            host_label = host_ids[0].split(":", 1)[1] if host_ids else "docker"
+            metrics["__topology__"] = _topology(all_containers, host_ids, host_label)
+        except Exception as e:
+            # Monitoring must survive a broken graph: the metrics above are the
+            # important part, the topology is a bonus.
+            metrics["topology_error"] = str(e)[:200]
 
     print(json.dumps(metrics))

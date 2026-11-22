@@ -380,13 +380,17 @@ def _run_agent_executors(response_data: object) -> None:
             logging.info("Executor '%s' finished", executor_id)
 
 
-def post_metrics(plugin: str, metrics_list: list[dict], timestamp: str):
+def post_metrics(plugin: str, metrics_list: list[dict], timestamp: str, topology: Optional[dict] = None):
     payload = {
         "pluginid": plugin,
         "agentid": args.agentid,
         "metrics": metrics_list,
         "timestamp": timestamp,
     }
+    # Topology travels as its own field: it is a snapshot of the nodes and
+    # edges this plugin currently knows, not a measurement.
+    if topology:
+        payload["topology"] = topology
     try:
         resp = requests.post(
             f"{args.server}/metrics",
@@ -640,6 +644,18 @@ if __name__ == "__main__":
 
             metrics, runtime, err_code = run_plugin(plugin, cfg)
 
+            # A plugin may describe the topology next to its metrics under the
+            # reserved key "__topology__". It is not a metric, so strip it here
+            # and send it as its own payload field (see topology.py in the
+            # server). A plugin that reports ONLY topology is a valid,
+            # successful run, not an empty one.
+            topology = None
+            if isinstance(metrics, dict):
+                topology = metrics.pop("__topology__", None)
+                if topology is not None and not isinstance(topology, dict):
+                    logging.warning("Plugin '%s' returned a non-object __topology__, ignoring it", plugin)
+                    topology = None
+
             # Normalize: plugin returns dict -> list of {key: value}
             if isinstance(metrics, dict):
                 metrics_list = [{k: v} for k, v in metrics.items()]
@@ -651,7 +667,7 @@ if __name__ == "__main__":
             metrics_list.append({"agent:runtime": round(runtime, 3)})
             metrics_list.append({"agent:error": err_code})
 
-            post_metrics(plugin, metrics_list, ts)
+            post_metrics(plugin, metrics_list, ts, topology=topology)
             last_run[plugin] = now
 
         time.sleep(POLL_INTERVAL)
