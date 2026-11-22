@@ -53,12 +53,15 @@ services:
         aliases:
           - pymon-server
     # Kein Port nach aussen: der Server haengt hinter dem Proxy von pymon-web (/api/...).
+    # Healthcheck bewusst als reiner TCP-Test: `/api/health` verlangt einen API-Key und
+    # antwortet ohne Token mit 401 — ein HTTP-Check wuerde den Dienst dauerhaft als
+    # unhealthy markieren und neu starten.
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:5000/api/health', timeout=5)"]
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 5000), 3)"]
       interval: 30s
       timeout: 8s
       retries: 3
-      start_period: 30s
+      start_period: 20s
     deploy:
       replicas: 1
       placement:
