@@ -643,9 +643,16 @@ def collect_metrics():
                 topology_payload = payload.get("topology")
                 if topology_payload:
                     try:
-                        store_topology(
-                            session, agentid_payload, pluginid, topology_payload, received_at
-                        )
+                        # A savepoint. Without it a failing statement poisons the
+                        # surrounding transaction, so the flush below fails and
+                        # every metric of this payload is lost too - the agent
+                        # then looks healthy while its topology silently never
+                        # arrives (and the log only says "error while storing
+                        # metrics", pointing at the wrong place).
+                        with session.begin_nested():
+                            store_topology(
+                                session, agentid_payload, pluginid, topology_payload, received_at
+                            )
                     except Exception as e:
                         logger.error(
                             "Error storing topology from plugin '%s': %s", pluginid, e

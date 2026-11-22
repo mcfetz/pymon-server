@@ -278,11 +278,27 @@ def store_topology(session, agentid: str, pluginid: str, topology, now: datetime
         # the group key uses - otherwise the two would name the same node
         # differently and the row would be recreated on every poll.
         node_id = min(ids, key=_sort_key)
-        seen_nodes.add(node_id)
         row = existing_nodes.get(node_id)
         if row is None:
             row = TopologyNode(agentid=agentid, pluginid=pluginid, node_id=node_id, first_seen=now)
+            # Register it right away: a payload may describe the same node twice
+            # (two tasks of one swarm service fold onto the same name, for
+            # example), and a second insert of that row would violate the unique
+            # key - which used to take the whole metric write with it.
+            existing_nodes[node_id] = row
             session.add(row)
+        if node_id in seen_nodes:
+            # Same node, second description in this payload: they ARE one node.
+            # Keep every identifier and the first non-empty label/kind.
+            merged = set(_row_ids(row)) | set(ids)
+            row.ids = json.dumps(sorted(merged))
+            row.last_seen = now
+            if not row.label:
+                row.label = _clean_text(entry.get("label"))
+            if not row.kind:
+                row.kind = _clean_text(entry.get("kind"))
+            continue
+        seen_nodes.add(node_id)
         row.ids = json.dumps(ids)
         row.kind = _clean_text(entry.get("kind"))
         row.label = _clean_text(entry.get("label"))

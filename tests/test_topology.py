@@ -244,6 +244,64 @@ def test_abstract_nodes_carry_what_nobody_else_can_know():
         session.close()
 
 
+def test_one_payload_may_describe_a_node_twice():
+    """Two tasks of one swarm service fold onto the same name.
+
+    That used to insert the same row twice: the second insert violated the
+    unique key, and because the failure poisoned the surrounding transaction the
+    whole metric write of that agent was rolled back - the agent looked healthy
+    while its topology silently never arrived.
+    """
+    _reset()
+    session = SessionLocal()
+    try:
+        t0 = datetime.now(UTC)
+        payload = {
+            "v": 2,
+            "nodes": [
+                {"ids": ["host:docker12", "ip:192.168.179.22"], "kind": "docker-host", "label": "docker12"},
+                # Two tasks of one published swarm service: same host, same port,
+                # same image - so both descriptions carry the very same
+                # identifiers, and therefore the very same row key.
+                {"ids": ["endpoint:docker12:8080", "abstract:docker:docker12/bgmon"],
+                 "kind": "service", "label": "bgmon"},
+                {"ids": ["endpoint:docker12:8080", "abstract:docker:docker12/bgmon"],
+                 "kind": "service", "label": "bgmon"},
+            ],
+            "edges": [
+                {"src": "host:docker12", "dst": "abstract:docker:docker12/bgmon", "kind": "runs"},
+                {"src": "host:docker12", "dst": "abstract:docker:docker12/bgmon", "kind": "runs"},
+            ],
+        }
+        store_topology(session, AGENT, "docker_host", payload, t0)
+        session.commit()  # used to raise IntegrityError here
+
+        # The decisive number: the duplicate must not become a second row. The
+        # graph alone cannot show it, because load_topology merges rows that
+        # carry the same identifier anyway.
+        from sqlalchemy import text
+
+        rows = session.execute(text("SELECT count(*) FROM topology_nodes")).scalar()
+        assert rows == 2, f"expected 2 node rows (host + service), got {rows}"
+
+        graph = load_topology(session, stale_after_seconds=3600)
+        services = [n for n in graph["nodes"] if n["kind"] == "service"]
+        assert len(services) == 1, graph["nodes"]
+        # Both descriptions survive as identifiers of the one node.
+        assert set(services[0]["ids"]) >= {"endpoint:docker12:8080",
+                                           "abstract:docker:docker12/bgmon"}, services[0]["ids"]
+        assert len(graph["nodes"]) == 2, graph["nodes"]  # the host plus the service
+        assert len(graph["edges"]) == 1, graph["edges"]
+
+        # Repeating the same snapshot updates, it does not insert again.
+        store_topology(session, AGENT, "docker_host", payload, t0 + timedelta(seconds=5))
+        session.commit()
+        graph = load_topology(session, stale_after_seconds=3600)
+        assert len(graph["nodes"]) == 2 and len(graph["edges"]) == 1
+    finally:
+        session.close()
+
+
 def test_snapshot_upserts_and_prunes():
     _reset()
     session = SessionLocal()
