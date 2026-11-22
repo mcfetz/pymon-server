@@ -75,22 +75,34 @@ __schema__ = {
 # server stores it as the plugin's current view of the graph (see topology.py).
 # A plugin that only produces a graph may omit metrics entirely.
 #
-# IDs are chosen by the plugin and must be globally unique and stable across
-# runs: "<namespace>:<kind>:<key>". They are the merge key of the integrated
-# graph, so two plugins reporting the same id describe the same node.
+# A node carries the set of GENERIC identifiers it is known by - never a
+# plugin-private key, because nothing else could ever match it. Report every
+# identifier you can get cheaply (for a host: MAC, IP and name):
+#
+#   mac:aa:bb:cc:dd:ee:ff        lowercased, colon separated
+#   ip:192.168.181.22            IPv4
+#   host:docker12.srv            fully qualified name, lowercased
+#   endpoint:docker12.srv:8123   name or IPv4 plus a port (services, not hosts)
+#
+# Two nodes belong to the same device when their identifier sets overlap, and
+# the server merges transitively - so a switch knows a device by MAC while
+# docker knows it by IP, and the graph still shows one node:
+#
+#   unifi_topology:  mac:aa:bb… + ip:192.168.179.22
+#   docker_host:                  ip:192.168.179.22 + host:docker12.srv
 #
 #   output = {
 #       "example_metric_1": 42.0,
 #       "__topology__": {
-#           "v": 1,
+#           "v": 2,
 #           "nodes": [
-#               {"id": "example:host:web01", "kind": "host",
-#                "label": "web01", "attrs": {"ip": "10.0.0.5"}},
-#               {"id": "example:service:redis", "kind": "service",
-#                "label": "redis"},
+#               {"ids": ["host:web01.lan", "ip:10.0.0.5"], "kind": "host",
+#                "label": "web01", "attrs": {"role": "web"}},
+#               {"ids": ["endpoint:web01.lan:5432"], "kind": "service",
+#                "label": "postgres"},
 #           ],
 #           "edges": [
-#               {"src": "example:host:web01", "dst": "example:service:redis",
+#               {"src": "host:web01.lan", "dst": "endpoint:web01.lan:5432",
 #                "kind": "runs", "attrs": {"since": "2026-11-01"}},
 #           ],
 #       },
@@ -98,13 +110,17 @@ __schema__ = {
 #
 # Rules:
 #   - "nodes" and "edges" are optional; both are lists of objects.
-#   - node: id (required), kind, label, attrs (free-form object)
-#   - edge: src + dst (required, must match node ids), kind, label, attrs
+#   - node: ids (required, list; a single "id" string is accepted too),
+#           kind, label, attrs (free-form object)
+#   - edge: src + dst (required, any identifier a node declares), kind,
+#           label, attrs
 #   - Everything reported in a payload is upserted; elements the plugin does
 #     not report in the same payload are removed from its snapshot. A payload
 #     with neither nodes nor edges changes nothing.
-#   - Entries without an id (node) resp. src/dst (edge) are skipped with a
-#     warning, so one malformed entry cannot break the ingest.
+#   - Entries without a usable identifier (node) resp. src/dst (edge) are
+#     skipped with a warning, so one malformed entry cannot break the ingest.
+#   - An edge may name an endpoint nothing described; it becomes a node of its
+#     own (marked implicit), so no edge ever dangles.
 
 if __name__ == "__main__":
     config = json.load(sys.stdin)

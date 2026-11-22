@@ -6,33 +6,58 @@ on stdout. This module defines the optional extension of that contract:
     {
       "cpu_percent": 12.5,
       "__topology__": {
-        "v": 1,
-        "nodes": [{"id": "unifi:client:aa:bb:cc:dd:ee:ff", "kind": "client",
-                   "label": "macbook", "attrs": {"ip": "192.168.177.83"}}],
-        "edges": [{"src": "unifi:client:aa:bb:cc:dd:ee:ff",
-                   "dst": "unifi:switch:9c:05:d6:a2:1b:2c", "kind": "wired",
-                   "attrs": {"port": 10}}]
+        "v": 2,
+        "nodes": [
+          {"ids": ["mac:aa:bb:cc:dd:ee:ff", "ip:192.168.177.83",
+                   "host:macbook.familie-heise.de"],
+           "kind": "client", "label": "macbook", "attrs": {"ssid": "home"}}
+        ],
+        "edges": [
+          {"src": "mac:aa:bb:cc:dd:ee:ff", "dst": "mac:9c:05:d6:a2:1b:2c",
+           "kind": "wired", "attrs": {"port": 10}}
+        ]
       }
     }
 
 The agent strips ``__topology__`` from the metric dict and sends it as
 ``topology`` in the ``/metrics`` payload; :func:`store_topology` persists it.
-A plugin may report *only* ``__topology__`` and no metrics at all - the graph
-is then the whole product of that plugin.
+A plugin may report *only* ``__topology__`` and no metrics at all.
+
+Identifier model (read this before writing a plugin)
+---------------------------------------------------
+A node does **not** carry one opaque id. It carries the set of generic
+identifiers it is known by - the things *other* plugins can also know:
+
+    mac:aa:bb:cc:dd:ee:ff        hardware address, lowercased, colon separated
+    ip:192.168.181.22            address, IPv4 in its normal form
+    host:docker12.srv            name, always fully qualified, lowercased
+    endpoint:docker12.srv:8123   name or IPv4 literal plus a transport port,
+    endpoint:192.168.181.22:8123 used for services rather than hosts
+
+Two nodes belong to the same device when their identifier sets share at least
+one *identical* identifier. The server merges transitively, so one plugin can
+bridge what another knows in a different form:
+
+    unifi_topology:  mac:aa:bb…:ff   + ip:192.168.179.22
+    docker_host:                       ip:192.168.179.22  + host:docker12.srv
+
+The more generic identifiers a plugin contributes, the more of the graph it
+joins - report every identifier you can get cheaply (for a host: MAC, IP and
+name). Never invent a plugin-private key; nothing else can ever match it. An
+earlier draft used ``unifi:client:<mac>`` style ids, which looked tidy and
+could never merge with what proxmox or docker report.
 
 Storage is a live snapshot per (agentid, pluginid). Everything the plugin
 reports in a payload is upserted with ``last_seen = now``; rows of the same
-plugin that were *not* reported in that payload are deleted, so the tables
-never accumulate stale entries. A payload with neither nodes nor edges is
-treated as "no information" and leaves the snapshot untouched: a plugin that
-briefly reports nothing must not wipe its part of the graph. Rows age visibly
-through ``last_seen``, and the API marks rows older than ``stale_after`` as
-stale so the UI can grey them out instead of pretending they are live.
+plugin that were *not* reported in that payload are deleted. A payload with
+neither nodes nor edges is treated as "no information" and leaves the snapshot
+untouched: a plugin that briefly reports nothing must not wipe its part of the
+graph. Rows age visibly through ``last_seen``, and the API marks rows older
+than ``stale_after`` as stale so the UI can grey them out.
 
-Node ids are chosen by the plugin and must be globally unique and stable across
-runs (``<namespace>:<kind>:<key>``). They are the merge key of the integrated
-graph: two plugins reporting the same id describe the same node, and the API
-merges them into one entry with several sources.
+The returned graph is grouped by identifier, not by source: each group gets a
+deterministic ``id`` (its most stable identifier - MAC before name before
+address), the complete ``ids`` list, and the ``sources`` that contributed.
 """
 import json
 import logging
@@ -43,25 +68,94 @@ from db_models import TopologyEdge, TopologyNode
 logger = logging.getLogger(__name__)
 
 #: Protocol version a plugin announces in ``__topology__.v``.
-TOPOLOGY_VERSION = 1
+TOPOLOGY_VERSION = 2
+
+#: Identifier types a plugin may use. Everything is normalised before it is
+#: compared, so plugins never have to agree on letter case or formatting.
+IDENTIFIER_TYPES = ("mac", "ip", "host", "endpoint")
+
+#: Preference for the group key, most stable first. A MAC survives a rename and
+#: a renumbering, a host name survives a renumbering, an address survives
+#: neither - so a group is named after the best identifier it has.
+ID_PREFERENCE = ("mac", "host", "ip", "endpoint")
 
 #: Upper bounds per plugin and payload. Generous for a homelab, but they keep a
 #: broken plugin from filling the database with a runaway node list.
 MAX_NODES_PER_PLUGIN = 2000
 MAX_EDGES_PER_PLUGIN = 5000
 
+#: Upper bound of identifiers a single node may claim.
+MAX_IDS_PER_NODE = 20
+
 #: Fallback staleness threshold (seconds) used when the caller does not set one.
 DEFAULT_STALE_AFTER_SECONDS = 900
 
 
-def _clean_id(value) -> str | None:
-    """Normalise a plugin-supplied identifier; ``None`` means "skip this entry"."""
-    if value is None:
+def normalize_identifier(raw) -> str | None:
+    """Canonical form of one identifier, or ``None`` if it is unusable.
+
+    Normalising here - and only here - is what lets two plugins agree without
+    coordinating: ``MAC:AA-BB-CC-DD-EE-FF`` and ``mac:aa:bb:cc:dd:ee:ff`` are
+    the same device, and a host name is compared without case or trailing dot.
+    """
+    if raw is None:
         return None
-    text = str(value).strip()
+    text = str(raw).strip()
     if not text:
         return None
-    return text[:200]
+    kind, _, value = text.partition(":")
+    kind = kind.strip().lower()
+    value = value.strip()
+    if not value or kind not in IDENTIFIER_TYPES:
+        return None
+
+    if kind == "mac":
+        cleaned = value.replace("-", ":").replace(".", ":").lower()
+        if len(cleaned.replace(":", "")) not in (12, 16):  # 48-bit and EUI-64
+            return None
+        return f"mac:{cleaned}"
+
+    if kind == "ip":
+        # IPv4 in canonical dotted form; IPv6 is deliberately not guessed at.
+        parts = value.split(".")
+        if len(parts) != 4 or not all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+            return None
+        return "ip:" + ".".join(str(int(p)) for p in parts)
+
+    if kind == "host":
+        return f"host:{value.rstrip('.').lower()}"
+
+    # endpoint:<address>:<port> - address may be a name or an IPv4 literal.
+    address, sep, port = value.rpartition(":")
+    if not sep or not port.isdigit():
+        return None
+    address = address.strip()
+    if not address:
+        return None
+    return f"endpoint:{address.lower()}:{int(port)}"
+
+
+def _normalize_ids(entry: dict) -> list[str]:
+    """Usable identifiers of one node entry, deduplicated and sorted.
+
+    Accepts the ``ids`` list as well as a single ``id`` string, so a plugin
+    author who writes the obvious thing is not punished for it.
+    """
+    raw = entry.get("ids")
+    if raw is None:
+        raw = entry.get("id")
+    if raw is None:
+        return []
+    if not isinstance(raw, (list, tuple, set)):
+        raw = [raw]
+    out: list[str] = []
+    for item in raw:
+        ident = normalize_identifier(item)
+        if ident and ident not in out:
+            out.append(ident)
+        if len(out) >= MAX_IDS_PER_NODE:
+            break
+    return sorted(out)
 
 
 def _clean_text(value) -> str | None:
@@ -82,6 +176,16 @@ def _dump_attrs(value) -> str | None:
         return None
 
 
+def _load_attrs(value) -> dict:
+    if not value:
+        return {}
+    try:
+        loaded = json.loads(value)
+    except (TypeError, ValueError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
 def _as_utc(value: datetime | None) -> datetime | None:
     """Normalise a timestamp read back from the database.
 
@@ -91,16 +195,6 @@ def _as_utc(value: datetime | None) -> datetime | None:
     if value is None:
         return None
     return value if value.tzinfo else value.replace(tzinfo=UTC)
-
-
-def _load_attrs(value) -> dict:
-    if not value:
-        return {}
-    try:
-        loaded = json.loads(value)
-    except (TypeError, ValueError):
-        return {}
-    return loaded if isinstance(loaded, dict) else {}
 
 
 def store_topology(session, agentid: str, pluginid: str, topology, now: datetime | None = None) -> tuple[int, int]:
@@ -119,8 +213,8 @@ def store_topology(session, agentid: str, pluginid: str, topology, now: datetime
 
     version = topology.get("v")
     if version is not None and version != TOPOLOGY_VERSION:
-        # Still stored: a newer agent may already speak v2 while this server is
-        # older. The version is logged so the mismatch is visible.
+        # Still stored: a newer agent may speak a newer version while this
+        # server is older. Logged so the mismatch is visible.
         logger.info("topology: %s/%s reports version %r (server speaks %s)", agentid, pluginid, version, TOPOLOGY_VERSION)
 
     nodes_raw = topology.get("nodes") or []
@@ -158,15 +252,20 @@ def store_topology(session, agentid: str, pluginid: str, topology, now: datetime
         if not isinstance(entry, dict):
             skipped += 1
             continue
-        node_id = _clean_id(entry.get("id"))
-        if not node_id:
+        ids = _normalize_ids(entry)
+        if not ids:
             skipped += 1
             continue
+        # The row key is the most stable identifier of the node, the same rule
+        # the group key uses - otherwise the two would name the same node
+        # differently and the row would be recreated on every poll.
+        node_id = min(ids, key=_sort_key)
         seen_nodes.add(node_id)
         row = existing_nodes.get(node_id)
         if row is None:
             row = TopologyNode(agentid=agentid, pluginid=pluginid, node_id=node_id, first_seen=now)
             session.add(row)
+        row.ids = json.dumps(ids)
         row.kind = _clean_text(entry.get("kind"))
         row.label = _clean_text(entry.get("label"))
         row.attrs = _dump_attrs(entry.get("attrs"))
@@ -176,13 +275,15 @@ def store_topology(session, agentid: str, pluginid: str, topology, now: datetime
         if not isinstance(entry, dict):
             skipped += 1
             continue
-        src = _clean_id(entry.get("src"))
-        dst = _clean_id(entry.get("dst"))
+        src = normalize_identifier(entry.get("src"))
+        dst = normalize_identifier(entry.get("dst"))
         if not src or not dst:
             skipped += 1
             continue
         kind = _clean_text(entry.get("kind")) or ""
         key = (src, dst, kind)
+        if key in seen_edges:
+            continue
         seen_edges.add(key)
         row = existing_edges.get(key)
         if row is None:
@@ -208,6 +309,61 @@ def store_topology(session, agentid: str, pluginid: str, topology, now: datetime
     return len(seen_nodes), len(seen_edges)
 
 
+def _row_ids(row) -> list[str]:
+    """Identifiers of a stored node row, including the row key itself."""
+    try:
+        stored = json.loads(row.ids) if row.ids else []
+    except (TypeError, ValueError):
+        stored = []
+    if not isinstance(stored, list):
+        stored = []
+    ids = [i for i in stored if isinstance(i, str)]
+    if row.node_id not in ids:
+        ids.insert(0, row.node_id)
+    return ids
+
+
+def _sort_key(identifier: str) -> tuple[int, str]:
+    """Ordering that puts the most stable identifier of a group first."""
+    kind = identifier.split(":", 1)[0]
+    return (ID_PREFERENCE.index(kind) if kind in ID_PREFERENCE else len(ID_PREFERENCE), identifier)
+
+
+def _build_groups(node_rows) -> dict[str, str]:
+    """Union identifiers that were reported together on one node.
+
+    Returns ``identifier -> group key``. The group key is the most stable
+    identifier of the group (MAC before name before address), which keeps it
+    deterministic across restarts and payload orders.
+    """
+    parent: dict[str, str] = {}
+
+    def find(item: str) -> str:
+        parent.setdefault(item, item)
+        root = item
+        while parent[root] != root:
+            root = parent[root]
+        while parent[item] != root:
+            parent[item], item = root, parent[item]
+        return root
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra == rb:
+            return
+        # Attach the worse root to the better one, so the group key ends up
+        # being the most stable identifier of the group.
+        if _sort_key(rb) < _sort_key(ra):
+            ra, rb = rb, ra
+        parent[rb] = ra
+
+    for row in node_rows:
+        for ident in _row_ids(row):
+            union(row.node_id, ident)
+
+    return {ident: find(ident) for ident in list(parent)}
+
+
 def load_topology(
     session,
     agentid: str | None = None,
@@ -218,9 +374,10 @@ def load_topology(
 ) -> dict:
     """Return the merged graph as nodes + edges.
 
-    Nodes and edges reported by several plugins under the same id are merged
-    into one entry that lists its sources; ids are the plugin's responsibility,
-    so the merge only ever joins what the plugins agreed on.
+    Nodes are grouped by identifier, so the same device reported by several
+    plugins becomes one node with several sources. Edge endpoints run through
+    the same mapping; an endpoint that nothing described becomes an implicit
+    node rather than a dangling reference.
     """
     now = now or datetime.now(UTC)
     node_query = session.query(TopologyNode)
@@ -231,26 +388,43 @@ def load_topology(
     if pluginid is not None:
         node_query = node_query.filter(TopologyNode.pluginid == pluginid)
         edge_query = edge_query.filter(TopologyEdge.pluginid == pluginid)
-    if kind is not None:
-        node_query = node_query.filter(TopologyNode.kind == kind)
 
+    node_rows = list(node_query)
+    edge_rows = list(edge_query)
+    if kind is not None:
+        node_rows = [row for row in node_rows if row.kind == kind]
+
+    mapping = _build_groups(node_rows)
     nodes: dict[str, dict] = {}
-    for row in node_query:
-        entry = nodes.get(row.node_id)
-        source = f"{row.agentid}/{row.pluginid}"
+
+    def node_entry(group: str, first: dict | None = None) -> dict:
+        entry = nodes.get(group)
         if entry is None:
-            nodes[row.node_id] = {
-                "id": row.node_id,
-                "kind": row.kind,
-                "label": row.label,
-                "attrs": _load_attrs(row.attrs),
-                "sources": [source],
-                "first_seen": row.first_seen,
-                "last_seen": row.last_seen,
+            entry = {
+                "id": group,
+                "ids": [group],
+                "kind": None,
+                "label": None,
+                "attrs": {},
+                "sources": [],
+                "implicit": False,
+                "first_seen": None,
+                "last_seen": None,
             }
-            continue
+            if first:
+                entry.update(first)
+            nodes[group] = entry
+        return entry
+
+    for row in node_rows:
+        group = mapping.get(row.node_id, row.node_id)
+        entry = node_entry(group)
+        source = f"{row.agentid}/{row.pluginid}"
         if source not in entry["sources"]:
             entry["sources"].append(source)
+        for ident in _row_ids(row):
+            if ident not in entry["ids"]:
+                entry["ids"].append(ident)
         # The most recent report wins for the descriptive fields, so a plugin
         # that knows more about the node can take over.
         if row.last_seen and (entry["last_seen"] is None or row.last_seen >= entry["last_seen"]):
@@ -261,33 +435,49 @@ def load_topology(
             entry["last_seen"] = row.last_seen
         if row.first_seen and (entry["first_seen"] is None or row.first_seen < entry["first_seen"]):
             entry["first_seen"] = row.first_seen
+        if len(entry["ids"]) > MAX_IDS_PER_NODE:
+            entry["ids"] = sorted(entry["ids"])[:MAX_IDS_PER_NODE]
 
     edges: dict[tuple[str, str, str], dict] = {}
-    for row in edge_query:
-        key = (row.src, row.dst, row.kind or "")
+    for row in edge_rows:
+        src = mapping.get(row.src, row.src)
+        dst = mapping.get(row.dst, row.dst)
+        if src == dst:
+            # Both ends are the same device after grouping - a report that
+            # cannot be drawn, not a relation.
+            continue
+        kind_value = row.kind or ""
+        key = (src, dst, kind_value)
         source = f"{row.agentid}/{row.pluginid}"
         entry = edges.get(key)
         if entry is None:
             edges[key] = {
-                "src": row.src,
-                "dst": row.dst,
+                "src": src,
+                "dst": dst,
                 "kind": row.kind,
                 "label": row.label,
                 "attrs": _load_attrs(row.attrs),
                 "sources": [source],
+                "implicit": False,
                 "first_seen": row.first_seen,
                 "last_seen": row.last_seen,
             }
-            continue
-        if source not in entry["sources"]:
-            entry["sources"].append(source)
-        if row.last_seen and (entry["last_seen"] is None or row.last_seen >= entry["last_seen"]):
-            entry["label"] = row.label or entry["label"]
-            if row.attrs:
-                entry["attrs"] = {**entry["attrs"], **_load_attrs(row.attrs)}
-            entry["last_seen"] = row.last_seen
-        if row.first_seen and (entry["first_seen"] is None or row.first_seen < entry["first_seen"]):
-            entry["first_seen"] = row.first_seen
+        else:
+            if source not in entry["sources"]:
+                entry["sources"].append(source)
+            if row.last_seen and (entry["last_seen"] is None or row.last_seen >= entry["last_seen"]):
+                entry["label"] = row.label or entry["label"]
+                if row.attrs:
+                    entry["attrs"] = {**entry["attrs"], **_load_attrs(row.attrs)}
+                entry["last_seen"] = row.last_seen
+            if row.first_seen and (entry["first_seen"] is None or row.first_seen < entry["first_seen"]):
+                entry["first_seen"] = row.first_seen
+    # Both endpoints of every edge belong to the graph even when nothing
+    # described them; otherwise the UI would draw an edge into nothing.
+    for (edge_src, edge_dst, _edge_kind) in edges:
+        for endpoint in (edge_src, edge_dst):
+            if endpoint not in nodes:
+                node_entry(endpoint)["implicit"] = True
 
     threshold = now if stale_after_seconds is None else now - timedelta(seconds=float(stale_after_seconds))
     for entry in list(nodes.values()) + list(edges.values()):
@@ -296,6 +486,8 @@ def load_topology(
         entry["first_seen"] = _as_utc(entry["first_seen"])
         entry["last_seen"] = _as_utc(entry["last_seen"])
         entry["stale"] = bool(entry["last_seen"] and entry["last_seen"] < threshold)
+        if "ids" in entry:
+            entry["ids"] = sorted(entry["ids"])
         entry["first_seen"] = entry["first_seen"].isoformat() if entry["first_seen"] else None
         entry["last_seen"] = entry["last_seen"].isoformat() if entry["last_seen"] else None
 

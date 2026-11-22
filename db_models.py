@@ -151,10 +151,13 @@ class MetricLastSeen(Base):
 class TopologyNode(Base):
     """One node of a plugin's view of the infrastructure.
 
-    ``node_id`` is chosen by the plugin and must be globally unique and stable
-    (``<namespace>:<kind>:<key>``); it is the merge key of the integrated graph.
-    The table is a live snapshot per (agentid, pluginid): rows are upserted on
-    every ingest and rows missing from the newest payload are removed.
+    ``node_id`` is the smallest of the node's identifiers (see ``topology.py``)
+    and only serves as the row key of this snapshot. The identifiers themselves
+    live in ``ids`` as a JSON list: they are the merge key of the integrated
+    graph, so a node that another plugin knows by MAC merges with the one this
+    plugin knows by IP. The table is a live snapshot per (agentid, pluginid):
+    rows are upserted on every ingest and rows missing from the newest payload
+    are removed.
     """
 
     __tablename__ = "topology_nodes"
@@ -163,6 +166,7 @@ class TopologyNode(Base):
     agentid = Column(String, nullable=False)
     pluginid = Column(String, nullable=False)
     node_id = Column(String, nullable=False)
+    ids = Column(Text, nullable=True)
     kind = Column(String, nullable=True)
     label = Column(String, nullable=True)
     attrs = Column(Text, nullable=True)
@@ -179,9 +183,12 @@ class TopologyNode(Base):
 class TopologyEdge(Base):
     """One direction of a connection between two nodes.
 
-    Edges are stored as reported: the plugin decides whether it describes a
-    physical link, a wireless association or a logical dependency. ``kind`` is
-    what the UI groups by. Same snapshot semantics as :class:`TopologyNode`.
+    ``src`` and ``dst`` hold identifiers as reported; the API resolves them
+    through the node groups of the same query, so an edge may name a device by
+    MAC while another plugin names it by IP. Edges are stored as reported: the
+    plugin decides whether it describes a physical link, a wireless association
+    or a logical dependency. ``kind`` is what the UI groups by. Same snapshot
+    semantics as :class:`TopologyNode`.
     """
 
     __tablename__ = "topology_edges"
