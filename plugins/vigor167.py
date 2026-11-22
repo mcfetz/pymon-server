@@ -1261,6 +1261,45 @@ def run(config):
         # Keep both names during the migration from vigor130.
         metrics["vigor_dsl_counter_columns"] = parsed["counter_direction"]
         metrics["vigor_dsl_counter_direction"] = parsed["counter_direction"]
+    # ── Topology ──
+    # The Vigor sits in bridge mode: it does not route, it *is* the DSL line. Its
+    # contribution to the graph is therefore the WAN hop - the parent of
+    # everything else - plus its own management address. The line state travels
+    # as the edge label, so a glance at the graph shows whether the uplink is
+    # synced. "abstract:internet" is the deliberate exception to the identifier
+    # rule: no other plugin can know the internet, so a private name is correct
+    # there.
+    def _topo_ids(value):
+        text = str(value or "").strip().lower()
+        if not text:
+            return []
+        if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", text):
+            return [f"ip:{text}"]
+        return [f"host:{text}"]
+
+    _topo = _topo_ids(host)
+    if _topo:
+        line_state = parsed.get("line_state")
+        metrics["__topology__"] = {
+            "v": 2,
+            "nodes": [{
+                "ids": _topo,
+                "kind": "dsl-modem",
+                "label": "Vigor 167",
+                "attrs": {"line_state": line_state, "mode": parsed.get("mode"),
+                          "annex": parsed.get("annex")},
+            }],
+            "edges": [{
+                "src": _topo[0],
+                "dst": "abstract:internet",
+                "kind": "wan",
+                "label": str(line_state or ""),
+                "attrs": {"line_state": line_state, "mode": parsed.get("mode"),
+                          "annex": parsed.get("annex"),
+                          "line_up": metrics.get("vigor_dsl_line_up")},
+            }],
+        }
+
     _save_state(state_file, state)
     print(json.dumps(metrics))
 

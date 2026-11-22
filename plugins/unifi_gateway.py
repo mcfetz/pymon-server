@@ -240,6 +240,94 @@ def _collect(opener, host, site, csrf, timeout, deadline):
     metrics['clients_total'] = len(sta_list)
     metrics['clients_wired'] = sum(1 for c in sta_list if c.get('is_wired', False))
 
+    # ── Topology ──
+    # Everything the graph needs is already in these two answers, so this costs
+    # no extra request. The MAC is the important identifier: it is the one thing
+    # this controller and the docker/proxmox plugins can both know. The clients'
+    # short hostname joins as well - a hypervisor knows a guest as "docker11",
+    # and so does UniFi.
+    topo_nodes = []
+    topo_edges = []
+    topology_max = 600
+
+    def _mac(value):
+        if not isinstance(value, str):
+            return None
+        cleaned = value.strip().lower().replace('-', ':')
+        if cleaned.count(':') == 5 and len(cleaned) == 17:
+            return cleaned
+        return None
+
+    def _ids(mac, ip, hostname):
+        out = []
+        m = _mac(mac)
+        if m:
+            out.append(f'mac:{m}')
+        if isinstance(ip, str) and ip.strip():
+            out.append(f'ip:{ip.strip().lower()}')
+        if isinstance(hostname, str) and hostname.strip():
+            out.append(f'host:{hostname.strip().rstrip(".").lower()}')
+        return out
+
+    for d in device_list[:topology_max]:
+        ids = _ids(d.get('mac'), d.get('ip'), d.get('hostname'))
+        if not ids:
+            continue
+        topo_nodes.append({
+            'ids': ids,
+            'kind': 'unifi-device',
+            'label': d.get('name') or d.get('model') or d.get('mac'),
+            'attrs': {'type': d.get('type'), 'model': d.get('model'), 'state': d.get('state')},
+        })
+        uplink = d.get('uplink') or {}
+        up_mac = _mac(uplink.get('uplink_mac'))
+        if up_mac:
+            port = uplink.get('port_idx')
+            topo_edges.append({
+                'src': f'mac:{up_mac}',
+                'dst': ids[0],
+                'kind': 'uplink',
+                'label': f'Port {port}' if port is not None else '',
+                'attrs': {'port': port, 'speed': uplink.get('speed')},
+            })
+
+    for c in sta_list[:topology_max]:
+        ids = _ids(c.get('mac'), c.get('ip'), c.get('hostname'))
+        if not ids:
+            continue
+        wired = bool(c.get('is_wired'))
+        topo_nodes.append({
+            'ids': ids,
+            'kind': 'client',
+            'label': c.get('hostname') or c.get('name') or c.get('mac'),
+            'attrs': {'wired': wired, 'network': c.get('network'),
+                      'ssid': c.get('essid'), 'uplink_mac': c.get('sw_mac') if wired else c.get('ap_mac')},
+        })
+        if wired:
+            sw_mac = _mac(c.get('sw_mac'))
+            if sw_mac:
+                port = c.get('sw_port')
+                topo_edges.append({
+                    'src': f'mac:{sw_mac}',
+                    'dst': ids[0],
+                    'kind': 'wired',
+                    'label': f'Port {port}' if port is not None else '',
+                    'attrs': {'port': port},
+                })
+        else:
+            ap_mac = _mac(c.get('ap_mac'))
+            if ap_mac:
+                topo_edges.append({
+                    'src': f'mac:{ap_mac}',
+                    'dst': ids[0],
+                    'kind': 'wireless',
+                    'label': c.get('essid') or '',
+                    'attrs': {'ssid': c.get('essid'), 'radio': c.get('radio')},
+                })
+
+    if topo_nodes:
+        metrics['__topology__'] = {'v': 2, 'nodes': topo_nodes, 'edges': topo_edges}
+
     return metrics
 
 
