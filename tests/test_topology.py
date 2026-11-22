@@ -169,6 +169,81 @@ def test_transitive_merge_and_implicit_endpoints():
         session.close()
 
 
+def test_endpoint_aliases_join_by_resolved_address():
+    """The hop a real chain exposes: one service, reached under two names.
+
+    docker publishes a port and knows its host by name and address; Zoraxy was
+    pointed at the same service by address. Both describe the same service, so
+    the endpoints must merge - and neither may merge into the host node, whose
+    relation to the service is exactly the edge worth drawing.
+    """
+    _reset()
+    session = SessionLocal()
+    try:
+        t0 = datetime.now(UTC)
+        store_topology(session, AGENT, "unifi_topology", {
+            "v": 2,
+            "nodes": [{"ids": ["host:docker11.srv", "ip:192.168.181.21"], "kind": "host"}],
+        }, t0)
+        store_topology(session, AGENT, "docker_host", {
+            "v": 2,
+            "nodes": [
+                {"ids": ["host:docker11.srv"], "kind": "host"},
+                {"ids": ["endpoint:192.168.181.21:8123"], "kind": "service", "label": "loopback"},
+            ],
+        }, t0)
+        store_topology(session, AGENT, "zoraxy", {
+            "v": 2,
+            "nodes": [
+                {"ids": ["endpoint:docker11.srv:8123"], "kind": "service"},
+                {"ids": ["host:loopback.familie-heise.de"], "kind": "public-name"},
+            ],
+            "edges": [{"src": "host:loopback.familie-heise.de",
+                       "dst": "endpoint:docker11.srv:8123", "kind": "proxies",
+                       "attrs": {"port": 8123}}],
+        }, t0)
+        session.commit()
+
+        graph = load_topology(session, stale_after_seconds=3600)
+        services = [n for n in graph["nodes"] if n["kind"] == "service"]
+        assert len(services) == 1, graph["nodes"]
+        assert services[0]["ids"] == ["endpoint:192.168.181.21:8123", "endpoint:docker11.srv:8123"]
+
+        hosts = [n for n in graph["nodes"] if n["kind"] == "host"]
+        assert len(hosts) == 1
+        assert hosts[0]["id"] != services[0]["id"], "the service must not merge into its host"
+
+        edge = graph["edges"][0]
+        assert edge["src"] == "host:loopback.familie-heise.de"
+        assert edge["dst"] == services[0]["id"]
+    finally:
+        session.close()
+
+
+def test_abstract_nodes_carry_what_nobody_else_can_know():
+    _reset()
+    session = SessionLocal()
+    try:
+        t0 = datetime.now(UTC)
+        store_topology(session, AGENT, "unifi_gateway", {
+            "v": 2,
+            "nodes": [{"ids": ["abstract:internet"], "kind": "wan", "label": "Internet"}],
+            "edges": [{"src": "endpoint:192.168.181.1:443", "dst": "abstract:internet",
+                       "kind": "routes-to"}],
+        }, t0)
+        session.commit()
+
+        graph = load_topology(session, stale_after_seconds=3600)
+        internet = _node(graph, "abstract:internet")
+        assert internet["kind"] == "wan"
+        assert internet["implicit"] is False
+
+        # An abstract name is compared case-insensitively like everything else.
+        assert normalize_identifier("abstract:INTERNET") == "abstract:internet"
+    finally:
+        session.close()
+
+
 def test_snapshot_upserts_and_prunes():
     _reset()
     session = SessionLocal()

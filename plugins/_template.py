@@ -83,6 +83,9 @@ __schema__ = {
 #   ip:192.168.181.22            IPv4
 #   host:docker12.srv            fully qualified name, lowercased
 #   endpoint:docker12.srv:8123   name or IPv4 plus a port (services, not hosts)
+#   abstract:internet            for what no other plugin can know (the
+#                                internet, a cloud service) - the one place a
+#                                private name is correct; it never merges
 #
 # Two nodes belong to the same device when their identifier sets overlap, and
 # the server merges transitively - so a switch knows a device by MAC while
@@ -90,6 +93,21 @@ __schema__ = {
 #
 #   unifi_topology:  mac:aa:bb… + ip:192.168.179.22
 #   docker_host:                  ip:192.168.179.22 + host:docker12.srv
+#
+# Endpoints get one extra rule: two endpoint ids whose address resolves to the
+# same node and whose port matches are the same service, so a container that
+# publishes 8123 and a reverse proxy pointed at "docker12.srv:8123" meet. They
+# merge with each other, never with the host - the host-to-service relation is
+# an edge (the published port), not an identity.
+#
+# A chain from a hypervisor down to the internet therefore composes out of
+# several plugins without any of them knowing the others:
+#
+#   host:pve1.srv
+#     --[kind=lxc,   attrs={vmid: 107}]-->  host:docker11.srv
+#     --[kind=runs]--------------------->  endpoint:docker11.srv:8123
+#     --[kind=proxies, attrs={port: 8123}]-> host:loopback.familie-heise.de
+#     --[kind=routes-to]---------------->  abstract:internet
 #
 #   output = {
 #       "example_metric_1": 42.0,

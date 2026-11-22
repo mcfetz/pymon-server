@@ -33,6 +33,9 @@ identifiers it is known by - the things *other* plugins can also know:
     host:docker12.srv            name, always fully qualified, lowercased
     endpoint:docker12.srv:8123   name or IPv4 literal plus a transport port,
     endpoint:192.168.181.22:8123 used for services rather than hosts
+    abstract:internet            something no other plugin can know. The one
+                                 place where a private name is correct - and
+                                 the one type that never merges on its own.
 
 Two nodes belong to the same device when their identifier sets share at least
 one *identical* identifier. The server merges transitively, so one plugin can
@@ -40,6 +43,13 @@ bridge what another knows in a different form:
 
     unifi_topology:  mac:aa:bb…:ff   + ip:192.168.179.22
     docker_host:                       ip:192.168.179.22  + host:docker12.srv
+
+Endpoints get one extra rule, because a service is usually named twice - once
+by whoever publishes it, once by whoever fronts it: two ``endpoint`` ids whose
+address parts resolve to the same node and whose ports match are the same
+service. They merge with each other, never with the host they run on: the
+relation between a service and its host is an edge (the published port), not
+an identity.
 
 The more generic identifiers a plugin contributes, the more of the graph it
 joins - report every identifier you can get cheaply (for a host: MAC, IP and
@@ -72,12 +82,15 @@ TOPOLOGY_VERSION = 2
 
 #: Identifier types a plugin may use. Everything is normalised before it is
 #: compared, so plugins never have to agree on letter case or formatting.
-IDENTIFIER_TYPES = ("mac", "ip", "host", "endpoint")
+#: ``abstract`` is the deliberate exception: it names something nobody else can
+#: know (the internet, a cloud service), so a plugin-private key is *correct*
+#: there - it must simply never be used for something another plugin can see.
+IDENTIFIER_TYPES = ("mac", "ip", "host", "endpoint", "abstract")
 
 #: Preference for the group key, most stable first. A MAC survives a rename and
 #: a renumbering, a host name survives a renumbering, an address survives
 #: neither - so a group is named after the best identifier it has.
-ID_PREFERENCE = ("mac", "host", "ip", "endpoint")
+ID_PREFERENCE = ("mac", "host", "ip", "endpoint", "abstract")
 
 #: Upper bounds per plugin and payload. Generous for a homelab, but they keep a
 #: broken plugin from filling the database with a runaway node list.
@@ -124,6 +137,11 @@ def normalize_identifier(raw) -> str | None:
 
     if kind == "host":
         return f"host:{value.rstrip('.').lower()}"
+
+    if kind == "abstract":
+        # A name for something no other plugin can know about. Free-form on
+        # purpose, normalised only enough to compare reliably.
+        return f"abstract:{value.lower()[:120]}"
 
     # endpoint:<address>:<port> - address may be a name or an IPv4 literal.
     address, sep, port = value.rpartition(":")
@@ -360,6 +378,34 @@ def _build_groups(node_rows) -> dict[str, str]:
     for row in node_rows:
         for ident in _row_ids(row):
             union(row.node_id, ident)
+
+    # Endpoint aliases: the same service reached by name and by address. Both
+    # address forms are identifiers of the same host node, so two endpoints
+    # with the same port are the same service - join them. They are *not*
+    # joined to the host: a service on a machine is a different thing in the
+    # graph than the machine, and the edge between them is the interesting part
+    # (typically the published port).
+    endpoints: dict[tuple[str, int], str] = {}
+    address_group: dict[str, str] = {}
+    for ident in list(parent):
+        kind, _, value = ident.partition(":")
+        if kind == "endpoint":
+            address, _, port = value.rpartition(":")
+            if address and port.isdigit():
+                endpoints[(address, int(port))] = ident
+        elif kind in ("ip", "host") and value:
+            address_group.setdefault(value, find(ident))
+
+    seen_endpoints: dict[tuple[str, int], str] = {}
+    for (address, port), ident in endpoints.items():
+        group = address_group.get(address)
+        if group is None:
+            continue
+        key = (group, port)
+        if key in seen_endpoints:
+            union(seen_endpoints[key], ident)
+        else:
+            seen_endpoints[key] = ident
 
     return {ident: find(ident) for ident in list(parent)}
 
