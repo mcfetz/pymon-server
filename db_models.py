@@ -146,3 +146,59 @@ class MetricLastSeen(Base):
     pluginid = Column(String, primary_key=True, nullable=False)
     metric = Column(String, primary_key=True, nullable=False)
     last_received_at = Column(DateTime, nullable=True)
+
+
+class TopologyNode(Base):
+    """One node of a plugin's view of the infrastructure.
+
+    ``node_id`` is chosen by the plugin and must be globally unique and stable
+    (``<namespace>:<kind>:<key>``); it is the merge key of the integrated graph.
+    The table is a live snapshot per (agentid, pluginid): rows are upserted on
+    every ingest and rows missing from the newest payload are removed.
+    """
+
+    __tablename__ = "topology_nodes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    agentid = Column(String, nullable=False)
+    pluginid = Column(String, nullable=False)
+    node_id = Column(String, nullable=False)
+    kind = Column(String, nullable=True)
+    label = Column(String, nullable=True)
+    attrs = Column(Text, nullable=True)
+    first_seen = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
+    last_seen = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
+
+    __table_args__ = (
+        Index("uq_topology_nodes_agent_plugin_node", "agentid", "pluginid", "node_id", unique=True),
+        Index("idx_topology_nodes_node_id", "node_id"),
+        Index("idx_topology_nodes_kind", "kind"),
+    )
+
+
+class TopologyEdge(Base):
+    """One direction of a connection between two nodes.
+
+    Edges are stored as reported: the plugin decides whether it describes a
+    physical link, a wireless association or a logical dependency. ``kind`` is
+    what the UI groups by. Same snapshot semantics as :class:`TopologyNode`.
+    """
+
+    __tablename__ = "topology_edges"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    agentid = Column(String, nullable=False)
+    pluginid = Column(String, nullable=False)
+    src = Column(String, nullable=False)
+    dst = Column(String, nullable=False)
+    kind = Column(String, nullable=True)
+    label = Column(String, nullable=True)
+    attrs = Column(Text, nullable=True)
+    first_seen = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
+    last_seen = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
+
+    __table_args__ = (
+        Index("uq_topology_edges_agent_plugin_src_dst_kind", "agentid", "pluginid", "src", "dst", "kind", unique=True),
+        Index("idx_topology_edges_src", "src"),
+        Index("idx_topology_edges_dst", "dst"),
+    )

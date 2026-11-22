@@ -17,6 +17,7 @@ from core import DB_WRITE_LOCK, SessionLocal, app, logger
 from auth import require_agent_apikey, require_frontend_user
 from audit import record_audit
 from routes.admin import _load_json_config
+from topology import store_topology
 
 
 # Keys that configure server-side post-processing and must never reach the agent.
@@ -634,6 +635,21 @@ def collect_metrics():
                             except Exception as e:
                                 logger.error("Error storing metric '%s' from plugin '%s': value=%r, error=%s", metric_name, pluginid, value, e)
                                 raise
+
+                # Optional topology contribution: the nodes and edges this
+                # plugin knows about (see topology.py). Stored as a snapshot
+                # within the same write lock, and deliberately not fatal - a
+                # broken plugin must not cost every other plugin its metrics.
+                topology_payload = payload.get("topology")
+                if topology_payload:
+                    try:
+                        store_topology(
+                            session, agentid_payload, pluginid, topology_payload, received_at
+                        )
+                    except Exception as e:
+                        logger.error(
+                            "Error storing topology from plugin '%s': %s", pluginid, e
+                        )
 
                 # Flush to get IDs for new metrics, then evaluate rules.
                 session.flush()

@@ -274,6 +274,6 @@ logger.info("DB migration finished")
 @app.after_request
 def disable_api_caching(response):
     """Configuration and monitoring responses must always reflect current state."""
-    if request.path.startswith(("/admin/", "/agents", "/groups", "/plugins", "/metrics", "/alarms")):
+    if request.path.startswith(("/admin/", "/agents", "/groups", "/plugins", "/metrics", "/alarms", "/topology")):
         response.headers["Cache-Control"] = "no-store, max-age=0"
     return response

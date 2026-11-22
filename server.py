@@ -9,7 +9,7 @@ if MIGRATE_SQLITE_TO_PSQL:
 from core import app  # and swagger if you need it elsewhere
 
 # Import route modules so they can register their routes with `app`
-from routes import alarms, metrics, plugins, agents, push, admin, cron, users, audit  # noqa: F401
+from routes import alarms, metrics, plugins, agents, push, admin, cron, users, audit, topology  # noqa: F401
 from routes.auth import login  # noqa: F401
 from no_data_monitor import start_no_data_monitor
 from db_maintenance import start_wal_maintenance
