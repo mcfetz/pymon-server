@@ -1,0 +1,58 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Kein actions/setup-python: dessen CPython bricht auf aelteren CPUs mit
+      # "CPU ISA level is lower than required" ab. Das Job-Image bringt python3 mit.
+      - name: Abhaengigkeiten
+        run: |
+          set -euo pipefail
+          python3 -m venv .venv || {
+            apt-get update -qq && apt-get install -y -qq python3-venv
+            python3 -m venv .venv
+          }
+          .venv/bin/pip install -q --upgrade pip
+          .venv/bin/pip install -q -r requirements.txt
+
+      # Die Tests sind eigenstaendige Skripte (kein pytest): jedes druckt "x/y bestanden"
+      # und endet mit 0 oder 1. Alle 20 Dateien laufen hier durch.
+      - name: Tests
+        run: |
+          set -euo pipefail
+          failed=0
+          for f in tests/test_*.py; do
+            echo "== $f"
+            .venv/bin/python "$f" || failed=1
+          done
+          exit "$failed"
+
+  lint:
+    runs-on: ubuntu-latest
+    # Nur Bericht, kein Gate: `ruff check` hat 16 vorbestehende Fehler und
+    # `ruff format --check` 50 unformatierte Altdateien (Stand 22.11.2026, in AGENTS.md
+    # dokumentiert). Neue und geaenderte Dateien selbst format-clean halten.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ruff
+        run: |
+          python3 -m venv .venv || {
+            apt-get update -qq && apt-get install -y -qq python3-venv
+            python3 -m venv .venv
+          }
+          .venv/bin/pip install -q ruff==0.14.6
+          echo "--- ruff check ---"
+          .venv/bin/ruff check . || true
+          echo "--- ruff format --check ---"
+          .venv/bin/ruff format --check . || true

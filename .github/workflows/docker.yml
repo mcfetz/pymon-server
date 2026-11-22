@@ -1,76 +1,39 @@
-name: Build & Push Docker Image
+name: Build (PR-Check)
+
+# Nur noch ein Bau-Check fuer Pull Requests. Gebaut und deployt wird seit 22.11.2026 in Gitea
+# (.gitea/workflows/docker.yml): Image in die eigene Registry, dann Stack-Update per
+# deploy/deploy.py. Kein ghcr-Push und kein Portainer-Service-Webhook mehr von hier.
+#
+# amd64-only: pymon-server laeuft nur im Swarm auf amd64-Knoten.
 
 on:
-  push:
-    branches:
-      - main
-    tags:
-      - "v*.*.*"
   pull_request:
     branches:
       - main
 
 env:
-  REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   build:
-    name: Build and push
+    name: Build
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Set up QEMU (multi-arch)
-        uses: docker/setup-qemu-action@v4
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Log in to GitHub Container Registry
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata (tags & labels)
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            # Branch push → :main
-            type=ref,event=branch
-            # PR → :pr-<number>
-            type=ref,event=pr
-            # Semver tag v1.2.3 → :1.2.3, :1.2, :1
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            # Always tag latest on main
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push
+      - name: Build (ohne Push)
         uses: docker/build-push-action@v7
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64
+          push: false
+          tags: pymon-server:pr-${{ github.event.number }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      - name: Deploy via Portainer webhook
-        if: github.event_name != 'pull_request'
-        run: |
-          curl -fsS -X POST "${{ secrets.PORTAINER_WEBHOOK_URL }}"
-          echo "Portainer redeploy triggered."
-

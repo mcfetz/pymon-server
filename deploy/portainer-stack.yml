@@ -1,0 +1,78 @@
+# Portainer-Stack fuer pymon-server und seine Postgres.
+#
+# Vorher waren beide von Hand angelegte Swarm-Services, die per Portainer-Service-Webhook aus
+# GitHub aktualisiert wurden. Jetzt baut die Gitea-Pipeline das Image und deploy/deploy.py
+# aktualisiert diesen Stack.
+#
+# Wichtig: die Volumes sind **extern** und liegen node-lokal — pymon-db-data (13 GB Postgres)
+# auf docker12, pymon-server (/data) auf docker13. Die Placement-Constraints halten beide
+# Dienste auf genau diesen Knoten, damit ein Redeploy nicht auf ein leeres Volume zeigt.
+#
+# Das Netzwerk `pymon` existiert bereits und wird von pymon-web mitbenutzt (der Web-Proxy
+# erreicht den Server darueber); deshalb extern deklariert und nicht vom Stack verwaltet.
+#
+# Die Werte hinter ${...} liegen als Umgebungsvariablen im Portainer-Stack.
+version: "3.9"
+
+services:
+  pymon-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pymon-db-data:/var/lib/postgresql/data
+    networks:
+      pymon:
+        aliases:
+          - pymon-db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.labels.app.pymon-db == 1
+      restart_policy:
+        condition: any
+
+  pymon-server:
+    image: git.familie-heise.de/daniel/pymon-server:latest
+    environment:
+      PYMON_DATABASE_URL: ${PYMON_DATABASE_URL}
+      PYMON_CORS_ORIGINS: ${PYMON_CORS_ORIGINS}
+    volumes:
+      - pymon-server:/data
+      - /mnt/glusterfs_docker_share/volumes/pymon-server_data:/data_old
+    networks:
+      pymon:
+        aliases:
+          - pymon-server
+    # Kein Port nach aussen: der Server haengt hinter dem Proxy von pymon-web (/api/...).
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:5000/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 30s
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.labels.app.pymon == 1
+      restart_policy:
+        condition: any
+
+volumes:
+  pymon-db-data:
+    external: true
+  pymon-server:
+    external: true
+
+networks:
+  pymon:
+    external: true
