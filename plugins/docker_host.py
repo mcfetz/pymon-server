@@ -634,6 +634,30 @@ def _host_identifiers() -> list:
     return ids
 
 
+def _swarm_service_ports(client) -> dict:
+    """Published host ports per swarm service, keyed by service id.
+
+    A task in ingress mode does not own its host binding: the routing mesh holds
+    it, so the task's NetworkSettings.Ports is empty while ``docker service ls``
+    shows the port. Only a manager can answer this - on a worker this returns an
+    empty map and the container's own ports are all there is.
+    """
+    result = {}
+    try:
+        for service in client.services.list():
+            ports = set()
+            endpoint = (service.attrs.get("Endpoint") or {}).get("Ports") or []
+            for entry in endpoint or []:
+                published = (entry or {}).get("PublishedPort")
+                if published:
+                    ports.add(int(published))
+            if ports:
+                result[service.id] = sorted(ports)
+    except Exception:
+        return result
+    return result
+
+
 def _container_ports(container) -> list:
     """Published host ports of a container, deduplicated and sorted."""
     ports = set()
@@ -649,7 +673,7 @@ def _container_ports(container) -> list:
     return sorted(ports)
 
 
-def _topology(all_containers, host_ids, host_label) -> dict:
+def _topology(all_containers, host_ids, host_label, service_ports=None) -> dict:
     """Nodes and edges this host knows: itself, its containers, published ports.
 
     Swarm task containers are folded into their service - the graph should show
@@ -666,8 +690,14 @@ def _topology(all_containers, host_ids, host_label) -> dict:
             name = (container.name or container.short_id).strip()
             labels = container.labels or {}
             service_name = labels.get("com.docker.swarm.service.name")
+            service_id = labels.get("com.docker.swarm.service.id")
             label = (service_name or name).strip() or container.short_id
             ports = _container_ports(container)
+            # The service knows the host port of an ingress-published task; the
+            # task itself has no binding. Without this every such service would
+            # look unpublished and the proxy edge could never reach it.
+            if service_id and service_ports and service_id in service_ports:
+                ports = sorted(set(ports) | set(service_ports[service_id]))
 
             ids = [f"abstract:docker:{host_label}/{label}"]
             for port in ports:
@@ -790,7 +820,9 @@ if __name__ == "__main__":
         try:
             host_ids = _host_identifiers()
             host_label = host_ids[0].split(":", 1)[1] if host_ids else "docker"
-            metrics["__topology__"] = _topology(all_containers, host_ids, host_label)
+            metrics["__topology__"] = _topology(
+                all_containers, host_ids, host_label, _swarm_service_ports(client)
+            )
         except Exception as e:
             # Monitoring must survive a broken graph: the metrics above are the
             # important part, the topology is a bonus.
