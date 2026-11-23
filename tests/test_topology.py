@@ -330,6 +330,49 @@ def test_claimed_endpoint_stays_the_service_that_publishes_it():
         session.close()
 
 
+def test_endpoint_alias_meets_the_service_across_spellings():
+    """Same port, two spellings: docker reports the address, the rule the name.
+
+    The docker plugin knows its host by address, a proxy rule points at the port
+    by name. Without resolving the name first the edge falls back to the host and
+    the service hop - the one worth drawing - would be missed.
+    """
+    import topology as topology_module
+
+    _reset()
+    session = SessionLocal()
+    original = topology_module._resolve_address
+    topology_module._resolve_address = (
+        lambda address: "192.168.181.21" if address == "docker11.srv" else None
+    )
+    try:
+        t0 = datetime.now(UTC)
+        store_topology(session, AGENT, "docker_host", {
+            "v": 2,
+            "nodes": [
+                {"ids": ["host:docker11.srv"], "kind": "docker-host"},
+                {"ids": ["abstract:docker:docker11/bgmon", "endpoint:192.168.181.21:5002"],
+                 "kind": "service", "label": "bgmon"},
+            ],
+        }, t0)
+        store_topology(session, AGENT, "zoraxy", {
+            "v": 2,
+            "nodes": [{"ids": ["host:bgmon.familie-heise.de"], "kind": "public-name"}],
+            "edges": [{"src": "host:bgmon.familie-heise.de",
+                       "dst": "endpoint:docker11.srv:5002", "kind": "proxies",
+                       "attrs": {"port": 5002}}],
+        }, t0)
+        session.commit()
+
+        graph = load_topology(session, stale_after_seconds=3600)
+        services = [n for n in graph["nodes"] if "endpoint:192.168.181.21:5002" in n["ids"]]
+        assert len(services) == 1, graph["nodes"]
+        assert graph["edges"][0]["dst"] == services[0]["id"], graph["edges"][0]
+    finally:
+        topology_module._resolve_address = original
+        session.close()
+
+
 def test_unknown_kind_still_beats_no_kind():
     """A kind we do not know yet must still fill the field.
 

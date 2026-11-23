@@ -71,6 +71,8 @@ address), the complete ``ids`` list, and the ``sources`` that contributed.
 """
 import json
 import logging
+import socket
+from functools import lru_cache
 from datetime import UTC, datetime, timedelta
 
 from db_models import TopologyEdge, TopologyNode
@@ -115,6 +117,21 @@ def _is_ipv4(text: str) -> bool:
     """True for a dotted-quad address. Used to pick the ip: namespace."""
     parts = str(text or "").split(".")
     return len(parts) == 4 and all(part.isdigit() and 0 <= int(part) <= 255 for part in parts)
+
+
+@lru_cache(maxsize=256)
+def _resolve_address(address: str) -> str | None:
+    """Resolve a host name to its address, cached.
+
+    Needed because the same published port is reported twice in different
+    spellings: the docker plugin knows its host by address
+    ("endpoint:192.168.181.21:5002"), a proxy rule points at it by name
+    ("endpoint:docker11.srv:5002"). Without the lookup those two never meet.
+    """
+    try:
+        return socket.gethostbyname(address)
+    except OSError:
+        return None
 
 
 def _kind_rank(kind: str | None) -> int:
@@ -525,13 +542,26 @@ def load_topology(
         kind, _, value = ident.partition(":")
         if kind != "endpoint" or not value:
             return ident
-        address = value.rsplit(":", 1)[0] if ":" in value else ""
-        if not address:
+        address, _, port = value.rpartition(":")
+        if not address or not port:
             return ident
-        if f"host:{address}" in ident_to_group:
-            return ident_to_group[f"host:{address}"]
-        if f"ip:{address}" in ident_to_group:
-            return ident_to_group[f"ip:{address}"]
+        # Same port, other spelling: the docker plugin reports the published port
+        # by address, the rule points at it by name. Resolve before giving up on
+        # the service, or the hop worth drawing would be missed.
+        resolved = _resolve_address(address) if not _is_ipv4(address) else None
+        for candidate in (
+            f"endpoint:{resolved}:{port}",
+            f"endpoint:{address}:{port}",
+            f"host:{address}",
+            f"ip:{address}",
+        ):
+            if candidate and candidate in ident_to_group:
+                return ident_to_group[candidate]
+        if resolved:
+            if f"host:{resolved}" in ident_to_group:
+                return ident_to_group[f"host:{resolved}"]
+            if f"ip:{resolved}" in ident_to_group:
+                return ident_to_group[f"ip:{resolved}"]
         return f"ip:{address}" if _is_ipv4(address) else f"host:{address}"
 
     def node_entry(group: str, first: dict | None = None) -> dict:
