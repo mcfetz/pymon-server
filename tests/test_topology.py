@@ -220,6 +220,63 @@ def test_endpoint_aliases_join_by_resolved_address():
         session.close()
 
 
+def test_merged_node_keeps_the_most_descriptive_kind():
+    """The Proxmox host is also a UniFi client and must stay a pve-node.
+
+    The kind used to come from whichever plugin reported last in the cycle, so
+    the node flipped to "client" and landed in the network group instead of the
+    Proxmox group.
+    """
+    _reset()
+    session = SessionLocal()
+    try:
+        t0 = datetime.now(UTC)
+        store_topology(session, AGENT, "proxmox", {
+            "v": 2,
+            "nodes": [{"ids": ["host:pve3", "host:pve3.srv"], "kind": "pve-node", "label": "pve3"}],
+        }, t0)
+        # UniFi reports the same machine a minute later, as a client.
+        store_topology(session, AGENT, "unifi_gateway", {
+            "v": 2,
+            "nodes": [{"ids": ["host:pve3.srv", "ip:192.168.177.30"], "kind": "client",
+                       "label": "pve3.srv*"}],
+        }, t0 + timedelta(minutes=1))
+        session.commit()
+
+        graph = load_topology(session, stale_after_seconds=3600)
+        assert len(graph["nodes"]) == 1, graph["nodes"]
+        node = graph["nodes"][0]
+        assert node["kind"] == "pve-node", node
+        assert sorted(node["sources"]) == [f"{AGENT}/proxmox", f"{AGENT}/unifi_gateway"], node
+        # The label still follows the newest report: that is where Daniel's
+        # asterisk notation lives.
+        assert node["label"] == "pve3.srv*", node
+    finally:
+        session.close()
+
+
+def test_unknown_kind_still_beats_no_kind():
+    """A kind we do not know yet must still fill the field.
+
+    Otherwise it ranks equal to "no kind" and the node ends up with kind None -
+    one comparison that silently does nothing.
+    """
+    _reset()
+    session = SessionLocal()
+    try:
+        t0 = datetime.now(UTC)
+        store_topology(session, AGENT, "unifi_topology", {
+            "v": 2,
+            "nodes": [{"ids": ["host:docker11.srv"], "kind": "host"}],
+        }, t0)
+        session.commit()
+
+        graph = load_topology(session, stale_after_seconds=3600)
+        assert graph["nodes"][0]["kind"] == "host", graph["nodes"]
+    finally:
+        session.close()
+
+
 def test_abstract_nodes_carry_what_nobody_else_can_know():
     _reset()
     session = SessionLocal()

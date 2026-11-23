@@ -92,6 +92,37 @@ IDENTIFIER_TYPES = ("mac", "ip", "host", "endpoint", "abstract")
 #: neither - so a group is named after the best identifier it has.
 ID_PREFERENCE = ("mac", "host", "ip", "endpoint", "abstract")
 
+#: Which kind describes a merged node best - lower is more descriptive.
+#: A node shows up in several plugins' reports (the Proxmox host is also a UniFi
+#: client) and the kind decides how it reads and which group it lands in. Same
+#: idea as ID_PREFERENCE, only for the descriptive field.
+KIND_PREFERENCE = (
+    "pve-node",
+    "docker-host",
+    "reverse-proxy",
+    "dsl-modem",
+    "unifi-device",
+    "service",
+    "container",
+    "pve-guest",
+    "public-name",
+    "wan",
+    "client",
+)
+
+
+def _kind_rank(kind: str | None) -> int:
+    """Rank a node kind: lower is more descriptive.
+
+    An unknown kind still ranks better than no kind at all - a plugin reporting
+    a kind we do not know yet is more informative than a node nobody described.
+    Without that distinction a tie would keep the field empty.
+    """
+    text = (kind or "").strip().lower()
+    if not text:
+        return len(KIND_PREFERENCE) + 1
+    return KIND_PREFERENCE.index(text) if text in KIND_PREFERENCE else len(KIND_PREFERENCE)
+
 #: Upper bounds per plugin and payload. Generous for a homelab, but they keep a
 #: broken plugin from filling the database with a runaway node list.
 MAX_NODES_PER_PLUGIN = 2000
@@ -490,11 +521,15 @@ def load_topology(
         # The most recent report wins for the descriptive fields, so a plugin
         # that knows more about the node can take over.
         if row.last_seen and (entry["last_seen"] is None or row.last_seen >= entry["last_seen"]):
-            entry["kind"] = row.kind or entry["kind"]
             entry["label"] = row.label or entry["label"]
             if row.attrs:
                 entry["attrs"] = {**entry["attrs"], **_load_attrs(row.attrs)}
             entry["last_seen"] = row.last_seen
+        # The kind is deliberately NOT a matter of recency: a Proxmox host is
+        # also a UniFi client, and "client" must not take over just because
+        # UniFi reports later in the cycle. The most descriptive kind wins.
+        if row.kind and _kind_rank(row.kind) < _kind_rank(entry["kind"]):
+            entry["kind"] = _clean_text(row.kind)
         if row.first_seen and (entry["first_seen"] is None or row.first_seen < entry["first_seen"]):
             entry["first_seen"] = row.first_seen
         if len(entry["ids"]) > MAX_IDS_PER_NODE:
