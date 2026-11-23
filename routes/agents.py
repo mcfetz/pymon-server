@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from dateutil import parser as dateutil_parser
 from auth import require_agent_apikey
 from db_models import Metrics, Alarm
-from functions import touch_metric_last_seen
+from functions import list_metric_names, touch_metric_last_seen
 from config import CONF_DIR, PLUGINS_DIR
 import base64
 import hashlib
@@ -250,19 +250,12 @@ def list_agent_plugin_metrics(agentname: str, pluginname: str):
     """
     session = SessionLocal()
     try:
-        # Query distinct metric names for this agent + plugin
-        rows = (
-            session.query(Metrics.metric)
-            .filter(
-                Metrics.agentid == agentname,
-                Metrics.pluginid == pluginname,
-            )
-            .distinct()
-            .all()
+        # Distinct metric names for this agent + plugin, read from the ingest
+        # tracker: the name list must not scan the metrics table (see
+        # functions.list_metric_names).
+        metric_names = list_metric_names(
+            session, agentid=agentname, pluginid=pluginname
         )
-
-        # rows is a list of 1-tuples; extract and sort unique metric names
-        metric_names = sorted({row[0] for row in rows if row[0] is not None})
 
         return jsonify(metric_names), 200
     except Exception as e:

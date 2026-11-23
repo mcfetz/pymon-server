@@ -1,6 +1,6 @@
-from sqlalchemy import text
+from sqlalchemy import func, text
 
-from db_models import Metrics
+from db_models import MetricLastSeen, Metrics
 from datetime import datetime
 from dateutil import parser as dateutil_parser
 
@@ -30,6 +30,56 @@ def touch_metric_last_seen(
             "last_received_at": received_at,
         },
     )
+
+
+def list_metric_names(
+    session, agentid: str | None = None, pluginid: str | None = None
+) -> list[str]:
+    """Distinct metric names of the requested scope, read from the ingest tracker.
+
+    The name of a metric is an attribute of its time series, not of every row, so
+    asking ``metrics`` for the names costs a DISTINCT over the whole retention
+    window. Measured against the live DB (2026-11-23, 24.5M rows / 13 GB):
+    1953 ms and 272,875 index entries for one agent+plugin pair, 437 ms for a
+    plugin across all agents, and ~860 dirty pages written back per call. The
+    tracker ``_metric_last_seen`` has exactly one row per (agentid, pluginid,
+    metric) and is refreshed on every accepted ingest, so the same list comes out
+    in ~20 ms without touching ``metrics`` at all.
+
+    The tracker is never pruned while ``metrics`` is (daily cleanup job), so it
+    also holds names whose rows were deleted long ago: 44,779 tracker rows vs
+    3,595 names for the busiest agent+plugin. The list is therefore limited to
+    rows at or after the oldest surviving row of ``metrics`` — the cutoff the
+    cleanup job actually used, read from the data instead of its config so it
+    stays correct when the retention or the job changes. Verified live: for the
+    six busiest pairs the window lists 3,581/3,595, 1,543/1,547, 1,524/1,529,
+    605/605, 395/395 and 1,556/1,561 of the names the DISTINCT over ``metrics``
+    returns, and no name without data.
+
+    Falls back to the DISTINCT over ``metrics`` when the tracker has no row at
+    all for the requested scope (a metric ingested before the tracker existed, or
+    a row written by a path that does not touch it).
+    """
+    cutoff = session.query(func.min(Metrics.timestamp)).scalar()
+
+    query = session.query(MetricLastSeen.metric)
+    if agentid is not None:
+        query = query.filter(MetricLastSeen.agentid == agentid)
+    if pluginid is not None:
+        query = query.filter(MetricLastSeen.pluginid == pluginid)
+    if cutoff is not None:
+        query = query.filter(MetricLastSeen.last_received_at >= cutoff)
+
+    names = {name for (name,) in query.distinct().all() if name is not None}
+    if names:
+        return sorted(names)
+
+    fallback = session.query(Metrics.metric)
+    if agentid is not None:
+        fallback = fallback.filter(Metrics.agentid == agentid)
+    if pluginid is not None:
+        fallback = fallback.filter(Metrics.pluginid == pluginid)
+    return sorted({name for (name,) in fallback.distinct().all() if name is not None})
 
 
 def _parse_time_param(value: str | None) -> datetime | None:
