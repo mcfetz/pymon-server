@@ -48,13 +48,23 @@ def _latest_metrics_for_rule(session, rule) -> list[dict]:
     for agentid, last_received_at in rows:
         # Alarm.metrics_id must reference a persisted row; every metric has at
         # least one stored value (the first poll is never discarded).
+        #
+        # Resolve the newest row through idx_metrics_agent_plugin_metric_ts
+        # (agentid, pluginid, metric, timestamp) with a backward index scan and
+        # ORDER BY timestamp DESC LIMIT 1 - not with max(id). `id` is not part
+        # of that index, so max(id) degrades into a full backward walk over the
+        # whole 21-day history (24k+ rows) with a per-row heap fetch. That query
+        # ran once per (rule x agent) ~240 times per 30 s while holding
+        # DB_WRITE_LOCK and saturated pymon-db.
         metric_id = (
-            session.query(func.max(Metrics.id))
-            .where(
+            session.query(Metrics.id)
+            .filter(
                 Metrics.agentid == agentid,
                 Metrics.pluginid == rule.pluginid,
                 Metrics.metric == rule.metric,
             )
+            .order_by(Metrics.timestamp.desc())
+            .limit(1)
             .scalar()
         )
         result.append(
@@ -67,19 +77,21 @@ def _latest_metrics_for_rule(session, rule) -> list[dict]:
     return result
 
 
-def evaluate_no_data_rules(
-    session,
-    now: datetime | None = None,
-) -> list[PostCommitAction]:
-    """Evaluate enabled no-data rules and return post-commit actions."""
-    checked_at = now or datetime.now(UTC)
-    actions: list[PostCommitAction] = []
+def _collect_no_data_candidates(session, checked_at: datetime) -> list[dict]:
+    """Read-only pass: find stale (rule, agent) pairs and their latest row.
+
+    Only touches the metrics / _metric_last_seen tables, so callers can run it
+    outside DB_WRITE_LOCK without serializing the ingest write path.
+    """
+    candidates: list[dict] = []
 
     for rule in load_rules():
         if not rule.enabled or rule.condition != "no_data" or rule.scope != "single":
             continue
         if not rule.pluginid or rule.pluginid == "*":
-            logger.warning("rule '%s': no-data not supported for wildcard plugin selector", rule.id)
+            logger.warning(
+                "rule '%s': no-data not supported for wildcard plugin selector", rule.id
+            )
             continue
 
         for latest_metric in _latest_metrics_for_rule(session, rule):
@@ -101,25 +113,59 @@ def evaluate_no_data_rules(
                 logger.warning("rule '%s' has an invalid no-data threshold", rule.id)
                 continue
             if threshold_seconds <= 0:
-                logger.warning("rule '%s' has a non-positive no-data threshold", rule.id)
+                logger.warning(
+                    "rule '%s' has a non-positive no-data threshold", rule.id
+                )
                 continue
 
             elapsed_seconds = max(0.0, (checked_at - received_at).total_seconds())
-            if elapsed_seconds >= threshold_seconds:
-                # No-data alarms stay single-open even if fire=multi is selected.
-                if not has_open_alarm(session, agentid, rule):
-                    _maybe_create_alarm(
-                        session,
-                        agentid,
-                        rule,
-                        rule.metric,
-                        elapsed_seconds,
-                        metric_id,
-                        actions,
-                    )
-            elif rule.auto_close:
-                _ack_open_alarms(session, agentid, rule, rule.metric)
+            candidates.append(
+                {
+                    "rule": rule,
+                    "agentid": agentid,
+                    "metric_id": metric_id,
+                    "elapsed_seconds": elapsed_seconds,
+                    "stale": elapsed_seconds >= threshold_seconds,
+                }
+            )
 
+    return candidates
+
+
+def _apply_no_data_candidates(
+    session,
+    candidates: list[dict],
+    actions: list[PostCommitAction],
+) -> None:
+    """Write pass: raise or auto-close alarms for the collected candidates."""
+    for candidate in candidates:
+        rule = candidate["rule"]
+        agentid = candidate["agentid"]
+        if candidate["stale"]:
+            # No-data alarms stay single-open even if fire=multi is selected.
+            if not has_open_alarm(session, agentid, rule):
+                _maybe_create_alarm(
+                    session,
+                    agentid,
+                    rule,
+                    rule.metric,
+                    candidate["elapsed_seconds"],
+                    candidate["metric_id"],
+                    actions,
+                )
+        elif rule.auto_close:
+            _ack_open_alarms(session, agentid, rule, rule.metric)
+
+
+def evaluate_no_data_rules(
+    session,
+    now: datetime | None = None,
+) -> list[PostCommitAction]:
+    """Evaluate enabled no-data rules and return post-commit actions."""
+    checked_at = now or datetime.now(UTC)
+    actions: list[PostCommitAction] = []
+    candidates = _collect_no_data_candidates(session, checked_at)
+    _apply_no_data_candidates(session, candidates, actions)
     return actions
 
 
@@ -128,8 +174,12 @@ def check_no_data_once() -> None:
     session = SessionLocal()
     actions: list[PostCommitAction] = []
     try:
+        # The read-only scan over metrics/_metric_last_seen runs *without*
+        # DB_WRITE_LOCK: only the alarm writes and the commit are serialized
+        # with the ingest write path, so a slow lookup cannot stall ingestion.
+        candidates = _collect_no_data_candidates(session, datetime.now(UTC))
         with DB_WRITE_LOCK:
-            actions = evaluate_no_data_rules(session)
+            _apply_no_data_candidates(session, candidates, actions)
             session.commit()
     except Exception:
         with DB_WRITE_LOCK:
