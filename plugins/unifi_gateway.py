@@ -259,6 +259,23 @@ def _collect(opener, host, site, csrf, timeout, deadline):
             return cleaned
         return None
 
+    #: MAC prefixes of hypervisor virtual NICs. A guest's traffic leaves through
+    #: its host's cable, so the controller learns the guest's MAC on that physical
+    #: port as well. An edge guest -> switch would put the VM on a cable it does
+    #: not own: the host carries that edge, and the hypervisor reports the
+    #: host/guest relation itself. The node stays - only the cable edge goes.
+    VIRTUAL_MAC_PREFIXES = (
+        'bc:24:11',  # Proxmox VE
+        '52:54:00',  # QEMU / KVM
+        '00:0c:29',  # VMware
+        '00:50:56',  # VMware
+        '08:00:27',  # VirtualBox
+        '00:15:5d',  # Hyper-V
+    )
+
+    def _is_virtual_mac(mac):
+        return any(mac.startswith(prefix) for prefix in VIRTUAL_MAC_PREFIXES)
+
     def _ids(mac, ip, hostname):
         out = []
         m = _mac(mac)
@@ -324,7 +341,9 @@ def _collect(opener, host, site, csrf, timeout, deadline):
         })
         if wired:
             sw_mac = _mac(c.get('sw_mac'))
-            if sw_mac:
+            client_mac = _mac(c.get('mac'))
+            # A virtual NIC's cable belongs to its host, not to the guest.
+            if sw_mac and client_mac and not _is_virtual_mac(client_mac):
                 port = c.get('sw_port')
                 topo_edges.append({
                     'src': f'mac:{sw_mac}',
