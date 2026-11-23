@@ -111,6 +111,12 @@ KIND_PREFERENCE = (
 )
 
 
+def _is_ipv4(text: str) -> bool:
+    """True for a dotted-quad address. Used to pick the ip: namespace."""
+    parts = str(text or "").split(".")
+    return len(parts) == 4 and all(part.isdigit() and 0 <= int(part) <= 255 for part in parts)
+
+
 def _kind_rank(kind: str | None) -> int:
     """Rank a node kind: lower is more descriptive.
 
@@ -490,6 +496,44 @@ def load_topology(
     mapping = _build_groups(node_rows)
     nodes: dict[str, dict] = {}
 
+    # Which group does an identifier belong to? Built once from the node rows so
+    # an edge can find the host of a port nobody described.
+    ident_to_group: dict[str, str] = {}
+    for row in node_rows:
+        group = mapping.get(row.node_id, row.node_id)
+        if not group:
+            continue
+        ident_to_group.setdefault(group, group)
+        if row.node_id:
+            ident_to_group.setdefault(row.node_id, group)
+        for ident in _row_ids(row):
+            if ident:
+                ident_to_group.setdefault(ident, group)
+
+    def _resolve_endpoint(ident: str) -> str:
+        """Fold an unclaimed endpoint onto its host.
+
+        An endpoint ("endpoint:docker11.srv:5002") is a port on a host, not a
+        device. Claims a plugin it - the docker service that publishes the port
+        carries it as an identifier - the edge lands on that service, which is
+        the interesting hop. If nobody claims it (a NAS or printer port), the
+        edge belongs to the host; a node per port would only be noise.
+        """
+        claimed = ident_to_group.get(ident)
+        if claimed is not None:
+            return claimed
+        kind, _, value = ident.partition(":")
+        if kind != "endpoint" or not value:
+            return ident
+        address = value.rsplit(":", 1)[0] if ":" in value else ""
+        if not address:
+            return ident
+        if f"host:{address}" in ident_to_group:
+            return ident_to_group[f"host:{address}"]
+        if f"ip:{address}" in ident_to_group:
+            return ident_to_group[f"ip:{address}"]
+        return f"ip:{address}" if _is_ipv4(address) else f"host:{address}"
+
     def node_entry(group: str, first: dict | None = None) -> dict:
         entry = nodes.get(group)
         if entry is None:
@@ -537,8 +581,10 @@ def load_topology(
 
     edges: dict[tuple[str, str, str], dict] = {}
     for row in edge_rows:
-        src = mapping.get(row.src, row.src)
-        dst = mapping.get(row.dst, row.dst)
+        # Endpoints nobody described belong to their host rather than becoming a
+        # node of their own; a port a docker service publishes stays a service.
+        src = _resolve_endpoint(mapping.get(row.src, row.src))
+        dst = _resolve_endpoint(mapping.get(row.dst, row.dst))
         if src == dst:
             # Both ends are the same device after grouping - a report that
             # cannot be drawn, not a relation.

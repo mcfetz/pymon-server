@@ -255,6 +255,81 @@ def test_merged_node_keeps_the_most_descriptive_kind():
         session.close()
 
 
+def test_unclaimed_endpoint_folds_onto_its_host():
+    """A port is not a device: nobody claims it, so the edge belongs to the host.
+
+    A NAS or printer port used to become a node of its own ("unbekannt"). It is
+    a port on a host that is already in the graph, so the edge goes there.
+    """
+    _reset()
+    session = SessionLocal()
+    try:
+        t0 = datetime.now(UTC)
+        store_topology(session, AGENT, "unifi_gateway", {
+            "v": 2,
+            "nodes": [{"ids": ["host:diskstation.srv", "ip:192.168.177.40"], "kind": "client",
+                       "label": "diskstation"}],
+        }, t0)
+        store_topology(session, AGENT, "zoraxy", {
+            "v": 2,
+            "nodes": [{"ids": ["host:calendar.familie-heise.de"], "kind": "public-name"}],
+            "edges": [{"src": "host:calendar.familie-heise.de",
+                       "dst": "endpoint:diskstation.srv:20003", "kind": "proxies",
+                       "attrs": {"port": 20003}}],
+        }, t0)
+        session.commit()
+
+        graph = load_topology(session, stale_after_seconds=3600)
+        by_id = {n["id"]: n for n in graph["nodes"]}
+        assert "endpoint:diskstation.srv:20003" not in by_id, list(by_id)
+        assert "host:diskstation.srv" in by_id, list(by_id)
+        edge = graph["edges"][0]
+        assert edge["dst"] == "host:diskstation.srv", edge
+        assert edge["attrs"]["port"] == 20003, edge
+    finally:
+        session.close()
+
+
+def test_claimed_endpoint_stays_the_service_that_publishes_it():
+    """A docker service claims the port, so the public name reaches the service.
+
+    This is the hop worth drawing: name -> service -> host. Only when nobody
+    claims the port does the edge fall back to the host.
+    """
+    _reset()
+    session = SessionLocal()
+    try:
+        t0 = datetime.now(UTC)
+        store_topology(session, AGENT, "docker_host", {
+            "v": 2,
+            "nodes": [
+                {"ids": ["host:docker11.srv"], "kind": "docker-host"},
+                {"ids": ["abstract:docker:docker11/bgmon", "endpoint:docker11.srv:5002"],
+                 "kind": "service", "label": "bgmon"},
+            ],
+        }, t0)
+        store_topology(session, AGENT, "zoraxy", {
+            "v": 2,
+            "nodes": [{"ids": ["host:bgmon.familie-heise.de"], "kind": "public-name"}],
+            "edges": [{"src": "host:bgmon.familie-heise.de",
+                       "dst": "endpoint:docker11.srv:5002", "kind": "proxies",
+                       "attrs": {"port": 5002}}],
+        }, t0)
+        session.commit()
+
+        graph = load_topology(session, stale_after_seconds=3600)
+        by_id = {n["id"]: n for n in graph["nodes"]}
+        # Which identifier names the group follows ID_PREFERENCE (endpoint beats
+        # abstract), so find the service by the endpoint it claims.
+        services = [n for n in graph["nodes"] if "endpoint:docker11.srv:5002" in n["ids"]]
+        assert len(services) == 1, list(by_id)
+        assert services[0]["kind"] == "service", services[0]
+        edge = graph["edges"][0]
+        assert edge["dst"] == services[0]["id"], edge
+    finally:
+        session.close()
+
+
 def test_unknown_kind_still_beats_no_kind():
     """A kind we do not know yet must still fill the field.
 

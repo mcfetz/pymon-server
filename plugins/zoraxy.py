@@ -109,14 +109,6 @@ def _endpoint_of(origin):
     return f'{host}:{int(port)}'
 
 
-def _target_id(host_part):
-    """A name is a host identifier, an IPv4 literal is an address identifier."""
-    text = str(host_part or '').strip().lower()
-    if re.fullmatch(r'\d{1,3}(?:\.\d{1,3}){3}', text):
-        return f'ip:{text}'
-    return f'host:{text}'
-
-
 def _collect(opener, base, csrf, timeout, instance):
     metrics = {}
     raw = _get(opener, base + '/api/proxy/list?type=host', timeout)
@@ -182,14 +174,14 @@ def _collect(opener, base, csrf, timeout, instance):
                 continue
             host_part, _, port = target.rpartition(':')
             origins_total += 1
-            # A rule targets a host and a port - not a "service" object. So the
-            # edge ends at the host node, and the port is edge information. The
-            # container that happens to serve that port hangs off the host with
-            # its own runs edge, which keeps the graph truthful: the proxy does
-            # not know about containers at all.
+            # The target is the endpoint (host and port), not the host alone: a
+            # docker service publishing that port carries this identifier, so the
+            # edge lands on the service - the hop that matters. The server folds
+            # it onto the host when nobody claims the port, which keeps the NAS
+            # ports from becoming one node each.
             edges.append({
                 'src': name_id,
-                'dst': _target_id(host_part),
+                'dst': f'endpoint:{target}',
                 'kind': 'proxies',
                 'label': target,
                 'attrs': {'port': int(port), 'tls': origin.get('RequireTLS'),
@@ -208,7 +200,7 @@ def _collect(opener, base, csrf, timeout, instance):
             origins_total += 1
             edges.append({
                 'src': name_id,
-                'dst': _target_id(host_part),
+                'dst': f'endpoint:{target}',
                 'kind': 'proxies',
                 'label': f'{path} -> {target}',
                 'attrs': {'path': path, 'port': int(port)},
