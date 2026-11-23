@@ -273,11 +273,12 @@ def _collect(opener, host, site, csrf, timeout, deadline):
     def _hostname_of(entry):
         """The name to use as host identifier for a device or client.
 
-        UniFi leaves "hostname" empty for clients whose name was assigned
-        statically and marks that name with a trailing asterisk ("pve3.srv*").
-        Without the fallback such a client carries only mac and ip - which is why
-        pve3.srv never met the node proxmox reported. Only hostname-shaped names
-        are used, so a friendly name like "iPhone von Daniel" stays out.
+        A name may carry a trailing asterisk - that is Daniel's own notation for
+        a hostname with a statically assigned address (set in the UniFi admin),
+        so it is a display convention, not part of the name. The identifier has
+        to drop it: proxmox and zoraxy report the plain "pve3.srv", and those two
+        have to meet on the same string. In the label the asterisk stays, because
+        that is where the notation belongs.
         """
         hostname = entry.get('hostname')
         if isinstance(hostname, str) and hostname.strip():
