@@ -111,12 +111,13 @@ def test_service_folding_and_endpoints():
     assert edge["attrs"]["ports"] == [8008]
 
 
-def test_ingress_task_gets_its_ports_from_the_service():
-    """Ein Ingress-Task hat keine eigene Host-Bindung - der Service kennt den Port.
+def test_ingress_task_gets_a_swarm_identity_not_a_host_address():
+    """Ein Ingress-Port gehoert keinem Wirt - er bekommt eine eigene Identitaet.
 
-    Ohne diese Quelle sieht jeder ingress-veroeffentlichte Dienst unveroeffentlicht
-    aus, und die Proxy-Kante kann ihn nie erreichen. Befund aus dem Betrieb: nur
-    3 von 45 Docker-Knoten hatten ueberhaupt Endpunkt-Identifier.
+    Der Task-Wirt waere die falsche Adresse (das Mesh antwortet auf jedem Node) und
+    wuerde mit einer host-mode-Bindung auf demselben Port kollidieren: zwei fremde
+    Dienste verschmelzen dann zu einem Knoten. Befund aus dem Betrieb: paperless'
+    Ingress-8000 und portainers host-mode-8000 landeten beide auf docker11:8000.
     """
     host_ids = ["host:docker11.srv", "ip:192.168.181.21"]
     containers = [
@@ -125,13 +126,32 @@ def test_ingress_task_gets_its_ports_from_the_service():
             "com.docker.swarm.service.id": "svc-bgmon",
         }, {}),          # Ingress-Modus: NetworkSettings.Ports ist leer
     ]
-    topo = docker_host._topology(containers, host_ids, "docker11", {"svc-bgmon": [5002]})
+    topo = docker_host._topology(containers, host_ids, "docker11",
+                                 {"svc-bgmon": {"host": [], "ingress": [5002]}})
 
     service = [n for n in topo["nodes"] if n["kind"] == "service"][0]
     assert service["label"] == "bgmon_bgmon-app", service
-    assert "endpoint:docker11.srv:5002" in service["ids"], service["ids"]
-    assert "endpoint:192.168.181.21:5002" in service["ids"], service["ids"]
-    assert service["attrs"]["ports"] == [5002], service["attrs"]
+    assert "swarm:5002" in service["ids"], service["ids"]
+    assert not [i for i in service["ids"] if i.startswith("endpoint:")], service["ids"]
+    assert service["attrs"]["ingress_ports"] == [5002], service["attrs"]
+
+
+def test_host_mode_port_still_becomes_a_host_address():
+    """Ein host-mode-Port haengt wirklich am Wirt - er bleibt endpoint:host:port."""
+    host_ids = ["host:docker11.srv", "ip:192.168.181.21"]
+    containers = [
+        FakeContainer("portainer.1.xyz", {
+            "com.docker.swarm.service.name": "portainer",
+            "com.docker.swarm.service.id": "svc-portainer",
+        }, {}),
+    ]
+    topo = docker_host._topology(containers, host_ids, "docker11",
+                                 {"svc-portainer": {"host": [8000], "ingress": []}})
+
+    service = [n for n in topo["nodes"] if n["kind"] == "service"][0]
+    assert "endpoint:docker11.srv:8000" in service["ids"], service["ids"]
+    assert "endpoint:192.168.181.21:8000" in service["ids"], service["ids"]
+    assert not [i for i in service["ids"] if i.startswith("swarm:")], service["ids"]
 
 
 def test_own_ports_survive_without_the_service_map():
@@ -171,14 +191,21 @@ class _WorkerSwarm:
         raise RuntimeError("This node is not a swarm manager")
 
 
-def test_swarm_service_ports_are_read_and_failures_are_swallowed():
+def test_swarm_service_ports_split_by_publish_mode():
     ports = docker_host._swarm_service_ports(_FakeSwarm([
         _FakeService("svc-bgmon", [
             {"TargetPort": 5000, "PublishedPort": 5002, "PublishMode": "ingress"},
         ]),
+        _FakeService("svc-portainer", [
+            {"TargetPort": 8000, "PublishedPort": 8000, "PublishMode": "host"},
+            {"TargetPort": 9443, "PublishedPort": 9443, "PublishMode": "host"},
+        ]),
         _FakeService("svc-intern", []),
     ]))
-    assert ports == {"svc-bgmon": [5002]}, ports
+    assert ports == {
+        "svc-bgmon": {"host": [], "ingress": [5002]},
+        "svc-portainer": {"host": [8000, 9443], "ingress": []},
+    }, ports
 
     assert docker_host._swarm_service_ports(_WorkerSwarm()) == {}
 

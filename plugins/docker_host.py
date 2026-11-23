@@ -635,24 +635,41 @@ def _host_identifiers() -> list:
 
 
 def _swarm_service_ports(client) -> dict:
-    """Published host ports per swarm service, keyed by service id.
+    """Published host ports per swarm service, keyed by service id, by mode.
 
-    A task in ingress mode does not own its host binding: the routing mesh holds
-    it, so the task's NetworkSettings.Ports is empty while ``docker service ls``
-    shows the port. Only a manager can answer this - on a worker this returns an
-    empty map and the container's own ports are all there is.
+    Split by publish mode because the two mean different things:
+
+    ``host``    the service binds the port on the node it runs on. That is a
+                property of that host, so it may become an ``endpoint:<host>:<port>``
+                identifier.
+    ``ingress`` the routing mesh holds the port, so it answers on *every* node.
+                The task's host is the wrong address and claiming ``host:port``
+                for it collides with a host-mode binding on the same port - two
+                unrelated services then merge into one node. Those ports get an
+                identity of their own instead (see ``_topology``).
+
+    Only a manager can answer this - on a worker the call raises and the result
+    stays empty, then the container's own ports are all there is.
     """
     result = {}
     try:
         for service in client.services.list():
-            ports = set()
+            host_ports = set()
+            ingress_ports = set()
             endpoint = (service.attrs.get("Endpoint") or {}).get("Ports") or []
             for entry in endpoint or []:
                 published = (entry or {}).get("PublishedPort")
-                if published:
-                    ports.add(int(published))
-            if ports:
-                result[service.id] = sorted(ports)
+                if not published:
+                    continue
+                if (entry or {}).get("PublishMode") == "ingress":
+                    ingress_ports.add(int(published))
+                else:
+                    host_ports.add(int(published))
+            if host_ports or ingress_ports:
+                result[service.id] = {
+                    "host": sorted(host_ports),
+                    "ingress": sorted(ingress_ports),
+                }
     except Exception:
         return result
     return result
@@ -693,11 +710,14 @@ def _topology(all_containers, host_ids, host_label, service_ports=None) -> dict:
             service_id = labels.get("com.docker.swarm.service.id")
             label = (service_name or name).strip() or container.short_id
             ports = _container_ports(container)
+            ingress_ports = []
             # The service knows the host port of an ingress-published task; the
             # task itself has no binding. Without this every such service would
             # look unpublished and the proxy edge could never reach it.
             if service_id and service_ports and service_id in service_ports:
-                ports = sorted(set(ports) | set(service_ports[service_id]))
+                info = service_ports[service_id] or {}
+                ports = sorted(set(ports) | set(info.get("host") or []))
+                ingress_ports = sorted(set(info.get("ingress") or []))
 
             ids = [f"abstract:docker:{host_label}/{label}"]
             for port in ports:
@@ -705,6 +725,12 @@ def _topology(all_containers, host_ids, host_label, service_ports=None) -> dict:
                     kind, _, value = host_id.partition(":")
                     if kind in ("host", "ip") and value:
                         ids.append(f"endpoint:{value}:{port}")
+            # An ingress port belongs to no host: the routing mesh answers on every
+            # node, so the task's host would be the wrong address - and claiming it
+            # would collide with a host-mode binding on the same port. It gets an
+            # identity of its own and the server resolves a proxy edge through it.
+            for port in ingress_ports:
+                ids.append(f"swarm:{port}")
 
             # Never touch container.image: it is a lazy attribute that re-fetches
             # the image from the daemon and raises 404 once the image has been
@@ -717,6 +743,8 @@ def _topology(all_containers, host_ids, host_label, service_ports=None) -> dict:
                 image = ""
 
             attrs = {"status": container.status, "ports": ports}
+            if ingress_ports:
+                attrs["ingress_ports"] = ingress_ports
             if image:
                 attrs["image"] = image
             if service_name:

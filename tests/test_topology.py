@@ -373,6 +373,87 @@ def test_endpoint_alias_meets_the_service_across_spellings():
         session.close()
 
 
+def test_unclaimed_endpoint_meets_the_ingress_service():
+    """Ein Proxy zeigt auf docker11, der Ingress-Dienst laeuft auf docker12.
+
+    Der Ingress-Port gehoert keinem Wirt: das Mesh antwortet auf jedem Node. Ein
+    host:port-Identifier waere die falsche Adresse (und kollidierte mit host-mode),
+    deshalb traegt der Port eine eigene Identitaet - und die Kante findet den Dienst.
+    """
+    _reset()
+    session = SessionLocal()
+    try:
+        t0 = datetime.now(UTC)
+        store_topology(session, AGENT, "docker_host", {
+            "v": 2,
+            "nodes": [
+                {"ids": ["host:docker12.srv"], "kind": "docker-host"},
+                {"ids": ["abstract:docker:docker12/bgmon_bgmon-app", "swarm:5002"],
+                 "kind": "service", "label": "bgmon_bgmon-app"},
+            ],
+        }, t0)
+        store_topology(session, AGENT, "zoraxy", {
+            "v": 2,
+            "nodes": [{"ids": ["host:bgmon.familie-heise.de"], "kind": "public-name"}],
+            "edges": [{"src": "host:bgmon.familie-heise.de",
+                       "dst": "endpoint:docker11.srv:5002", "kind": "proxies",
+                       "attrs": {"port": 5002}}],
+        }, t0)
+        session.commit()
+
+        graph = load_topology(session, stale_after_seconds=3600)
+        services = [n for n in graph["nodes"] if "swarm:5002" in n["ids"]]
+        assert len(services) == 1, graph["nodes"]
+        assert graph["edges"][0]["dst"] == services[0]["id"], graph["edges"][0]
+    finally:
+        session.close()
+
+
+def test_host_mode_binding_wins_the_conflict():
+    """Zwei Dienste auf demselben Port: die exakte Bindung gewinnt, nichts verschmilzt.
+
+    paperless veroeffentlicht 8000 als Ingress, portainer 8000 als host-mode - beide
+    landeten auf docker11:8000 und wurden ein Knoten (Befund aus dem Betrieb). Mit
+    eigener Ingress-Identitaet bleiben es zwei Knoten, und die Proxy-Kante nimmt die
+    exakte host-mode-Bindung.
+    """
+    _reset()
+    session = SessionLocal()
+    try:
+        t0 = datetime.now(UTC)
+        store_topology(session, AGENT, "docker_host", {
+            "v": 2,
+            "nodes": [
+                {"ids": ["host:docker11.srv"], "kind": "docker-host"},
+                {"ids": ["abstract:docker:docker11/paperless", "swarm:8000"],
+                 "kind": "service", "label": "paperless"},
+                {"ids": ["abstract:docker:docker11/portainer",
+                         "endpoint:docker11.srv:8000", "endpoint:192.168.181.21:8000"],
+                 "kind": "service", "label": "portainer"},
+            ],
+        }, t0)
+        store_topology(session, AGENT, "zoraxy", {
+            "v": 2,
+            "nodes": [{"ids": ["host:portainer.familie-heise.de"], "kind": "public-name"}],
+            "edges": [{"src": "host:portainer.familie-heise.de",
+                       "dst": "endpoint:docker11.srv:8000", "kind": "proxies",
+                       "attrs": {"port": 8000}}],
+        }, t0)
+        session.commit()
+
+        graph = load_topology(session, stale_after_seconds=3600)
+        paperless = [n for n in graph["nodes"] if "swarm:8000" in n["ids"]]
+        portainer = [n for n in graph["nodes"]
+                     if "abstract:docker:docker11/portainer" in n["ids"]]
+        assert len(paperless) == 1, graph["nodes"]
+        assert len(portainer) == 1, graph["nodes"]
+        assert paperless[0]["id"] != portainer[0]["id"], \
+            "Ingress und host-mode duerfen nicht verschmelzen"
+        assert graph["edges"][0]["dst"] == portainer[0]["id"], graph["edges"][0]
+    finally:
+        session.close()
+
+
 def test_unknown_kind_still_beats_no_kind():
     """A kind we do not know yet must still fill the field.
 

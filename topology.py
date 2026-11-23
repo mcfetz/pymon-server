@@ -33,6 +33,10 @@ identifiers it is known by - the things *other* plugins can also know:
     host:docker12.srv            name, always fully qualified, lowercased
     endpoint:docker12.srv:8123   name or IPv4 literal plus a transport port,
     endpoint:192.168.181.22:8123 used for services rather than hosts
+    swarm:5002                   an ingress-published port. The routing mesh
+                                 holds it, so it belongs to no host and answers
+                                 on every node - unlike host:port it cannot
+                                 collide with a host-mode binding
     abstract:internet            something no other plugin can know. The one
                                  place where a private name is correct - and
                                  the one type that never merges on its own.
@@ -87,12 +91,12 @@ TOPOLOGY_VERSION = 2
 #: ``abstract`` is the deliberate exception: it names something nobody else can
 #: know (the internet, a cloud service), so a plugin-private key is *correct*
 #: there - it must simply never be used for something another plugin can see.
-IDENTIFIER_TYPES = ("mac", "ip", "host", "endpoint", "abstract")
+IDENTIFIER_TYPES = ("mac", "ip", "host", "endpoint", "swarm", "abstract")
 
 #: Preference for the group key, most stable first. A MAC survives a rename and
 #: a renumbering, a host name survives a renumbering, an address survives
 #: neither - so a group is named after the best identifier it has.
-ID_PREFERENCE = ("mac", "host", "ip", "endpoint", "abstract")
+ID_PREFERENCE = ("mac", "host", "ip", "endpoint", "swarm", "abstract")
 
 #: Which kind describes a merged node best - lower is more descriptive.
 #: A node shows up in several plugins' reports (the Proxmox host is also a UniFi
@@ -196,6 +200,14 @@ def normalize_identifier(raw) -> str | None:
         # A name for something no other plugin can know about. Free-form on
         # purpose, normalised only enough to compare reliably.
         return f"abstract:{value.lower()[:120]}"
+
+    if kind == "swarm":
+        # An ingress-published port: the routing mesh holds it, so it answers on
+        # every node and belongs to no host. The port itself is the identity -
+        # unlike host:port it is unambiguous across the cluster.
+        if not value.isdigit():
+            return None
+        return f"swarm:{int(value)}"
 
     # endpoint:<address>:<port> - address may be a name or an IPv4 literal.
     address, sep, port = value.rpartition(":")
@@ -562,6 +574,13 @@ def load_topology(
                 return ident_to_group[f"host:{resolved}"]
             if f"ip:{resolved}" in ident_to_group:
                 return ident_to_group[f"ip:{resolved}"]
+        # An ingress-published port belongs to no host: the routing mesh answers on
+        # every node, so the port carries an identity of its own. Checked after the
+        # exact host binding above, because a host-mode port really is that host's
+        # and must win the conflict.
+        swarm = ident_to_group.get(f"swarm:{port}")
+        if swarm is not None:
+            return swarm
         return f"ip:{address}" if _is_ipv4(address) else f"host:{address}"
 
     def node_entry(group: str, first: dict | None = None) -> dict:
