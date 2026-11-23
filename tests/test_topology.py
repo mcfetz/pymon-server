@@ -376,6 +376,9 @@ def test_endpoint_alias_meets_the_service_across_spellings():
 def test_unclaimed_endpoint_meets_the_ingress_service():
     """Ein Proxy zeigt auf docker11, der Ingress-Dienst laeuft auf docker12.
 
+    Der richtige Wirt ist auch ein Knoten (wie im Betrieb) - trotzdem muss die Kante
+    den Dienst treffen, nicht den Host.
+
     Der Ingress-Port gehoert keinem Wirt: das Mesh antwortet auf jedem Node. Ein
     host:port-Identifier waere die falsche Adresse (und kollidierte mit host-mode),
     deshalb traegt der Port eine eigene Identitaet - und die Kante findet den Dienst.
@@ -387,6 +390,7 @@ def test_unclaimed_endpoint_meets_the_ingress_service():
         store_topology(session, AGENT, "docker_host", {
             "v": 2,
             "nodes": [
+                {"ids": ["host:docker11.srv"], "kind": "docker-host"},
                 {"ids": ["host:docker12.srv"], "kind": "docker-host"},
                 {"ids": ["abstract:docker:docker12/bgmon_bgmon-app", "swarm:5002"],
                  "kind": "service", "label": "bgmon_bgmon-app"},

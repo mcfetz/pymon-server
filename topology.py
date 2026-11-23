@@ -561,19 +561,14 @@ def load_topology(
         # by address, the rule points at it by name. Resolve before giving up on
         # the service, or the hop worth drawing would be missed.
         resolved = _resolve_address(address) if not _is_ipv4(address) else None
+        # The exact port binding at a host, if one exists: a host-mode service
+        # really owns that address, so it beats the cluster-wide reading.
         for candidate in (
             f"endpoint:{resolved}:{port}",
             f"endpoint:{address}:{port}",
-            f"host:{address}",
-            f"ip:{address}",
         ):
-            if candidate and candidate in ident_to_group:
+            if candidate in ident_to_group:
                 return ident_to_group[candidate]
-        if resolved:
-            if f"host:{resolved}" in ident_to_group:
-                return ident_to_group[f"host:{resolved}"]
-            if f"ip:{resolved}" in ident_to_group:
-                return ident_to_group[f"ip:{resolved}"]
         # An ingress-published port belongs to no host: the routing mesh answers on
         # every node, so the port carries an identity of its own. Checked after the
         # exact host binding above, because a host-mode port really is that host's
@@ -581,6 +576,17 @@ def load_topology(
         swarm = ident_to_group.get(f"swarm:{port}")
         if swarm is not None:
             return swarm
+        # Only now the bare host. It is the last resort, not the second choice: a
+        # host node usually exists, and returning it here would hide the service
+        # the rule actually reaches.
+        for candidate in (f"host:{address}", f"ip:{address}"):
+            if candidate in ident_to_group:
+                return ident_to_group[candidate]
+        if resolved:
+            if f"host:{resolved}" in ident_to_group:
+                return ident_to_group[f"host:{resolved}"]
+            if f"ip:{resolved}" in ident_to_group:
+                return ident_to_group[f"ip:{resolved}"]
         return f"ip:{address}" if _is_ipv4(address) else f"host:{address}"
 
     def node_entry(group: str, first: dict | None = None) -> dict:
