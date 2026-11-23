@@ -69,6 +69,36 @@ def _resources(config):
     return raw, None
 
 
+def _host_ids(host):
+    """Every identifier a host answers to: short name, FQDN, DNS aliases, addresses.
+
+    Proxmox knows its nodes and guests by short name ("pve3"), while UniFi and
+    Zoraxy report the FQDN ("pve3.srv"). Without the alias the same machine ends
+    up as two nodes in the graph, which is exactly what happened: pve1 merged
+    because the plugin runs there, pve2 and pve3 did not.
+
+    Unresolvable names are fine - the short name alone still works.
+    """
+    import socket as _socket
+
+    name = str(host or '').strip().lower()
+    if not name:
+        return []
+    ids = [f'host:{name}']
+    try:
+        primary, aliases, addrs = _socket.gethostbyaddr(_socket.gethostbyname(name))
+    except OSError:
+        return ids
+    for alias in [primary, *(aliases or [])]:
+        alias = str(alias or '').strip().lower()
+        if alias and alias != name and f'host:{alias}' not in ids:
+            ids.append(f'host:{alias}')
+    for addr in addrs or []:
+        if f'ip:{addr}' not in ids:
+            ids.append(f'ip:{addr}')
+    return ids
+
+
 if __name__ == '__main__':
     config = json.load(sys.stdin)
 
@@ -122,27 +152,12 @@ if __name__ == '__main__':
     # meldet ("docker11.srv"). Genau ueber den Kurznamen treffen sich beide.
     topo_nodes = []
     topo_edges = []
-    try:
-        import socket as _socket
-
-        local_short = _socket.gethostname().split('.')[0].lower()
-        local_fqdn = ''
-        try:
-            local_fqdn = (_socket.getfqdn() or '').lower()
-        except OSError:
-            local_fqdn = ''
-    except Exception:
-        local_short, local_fqdn = '', ''
 
     for item in nodes:
         node_name = (item.get('node') or item.get('name') or '').strip()
         if not node_name:
             continue
-        node_id = f'host:{node_name.lower()}'
-        ids = [node_id]
-        if local_fqdn and local_short and node_name.lower() == local_short:
-            if local_fqdn != node_id.split(':', 1)[1]:
-                ids.append(f'host:{local_fqdn}')
+        ids = _host_ids(node_name)
         topo_nodes.append({
             'ids': ids,
             'kind': 'pve-node',
@@ -159,9 +174,10 @@ if __name__ == '__main__':
 
         ids = []
         if guest_name:
-            ids.append(f'host:{guest_name.lower()}')
+            ids = _host_ids(guest_name)
         abstract_id = f'abstract:proxmox:{node_name.lower() or "?"}/{vmid}'
-        ids.append(abstract_id)
+        if abstract_id not in ids:
+            ids.append(abstract_id)
         topo_nodes.append({
             'ids': ids,
             'kind': 'pve-guest',
