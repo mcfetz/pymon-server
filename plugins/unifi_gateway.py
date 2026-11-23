@@ -4,6 +4,7 @@ import base64
 import http.cookiejar
 import json
 import random
+import re
 import sys
 import ssl
 import time
@@ -269,8 +270,25 @@ def _collect(opener, host, site, csrf, timeout, deadline):
             out.append(f'host:{hostname.strip().rstrip(".").lower()}')
         return out
 
+    def _hostname_of(entry):
+        """The name to use as host identifier for a device or client.
+
+        UniFi leaves "hostname" empty for clients whose name was assigned
+        statically and marks that name with a trailing asterisk ("pve3.srv*").
+        Without the fallback such a client carries only mac and ip - which is why
+        pve3.srv never met the node proxmox reported. Only hostname-shaped names
+        are used, so a friendly name like "iPhone von Daniel" stays out.
+        """
+        hostname = entry.get('hostname')
+        if isinstance(hostname, str) and hostname.strip():
+            return hostname
+        name = str(entry.get('name') or '').strip().rstrip('*').strip()
+        if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', name or ''):
+            return name
+        return hostname
+
     for d in device_list[:topology_max]:
-        ids = _ids(d.get('mac'), d.get('ip'), d.get('hostname'))
+        ids = _ids(d.get('mac'), d.get('ip'), _hostname_of(d))
         if not ids:
             continue
         topo_nodes.append({
@@ -292,7 +310,7 @@ def _collect(opener, host, site, csrf, timeout, deadline):
             })
 
     for c in sta_list[:topology_max]:
-        ids = _ids(c.get('mac'), c.get('ip'), c.get('hostname'))
+        ids = _ids(c.get('mac'), c.get('ip'), _hostname_of(c))
         if not ids:
             continue
         wired = bool(c.get('is_wired'))
