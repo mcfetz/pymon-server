@@ -10,6 +10,7 @@ from functions import (
     _parse_time_param,
     dict_value_to_metric,
     get_value_from_row,
+    list_metric_names as metric_names_for_scope,
     touch_metric_last_seen,
 )
 from rules import evaluate_rules_for_payload
@@ -266,17 +267,16 @@ def get_metrics_all():
 @app.route("/metrics/names/<pluginid>", methods=["GET"])
 @require_agent_apikey
 def list_metric_names(pluginid: str):
-    """List distinct stored metric names for a plugin across all agents."""
+    """List distinct stored metric names for a plugin across all agents.
+
+    Read from the ingest tracker instead of a DISTINCT over ``metrics``: the
+    name list must not scan the metrics table (see
+    functions.list_metric_names).
+    """
     session = SessionLocal()
     try:
-        rows = (
-            session.query(Metrics.metric)
-            .filter(Metrics.pluginid == pluginid)
-            .distinct()
-            .order_by(Metrics.metric.asc())
-            .all()
-        )
-        return jsonify([metric for (metric,) in rows if metric is not None]), 200
+        names = metric_names_for_scope(session, pluginid=pluginid)
+        return jsonify(names), 200
     except Exception as e:
         logger.error("Error listing metric names for plugin '%s': %s", pluginid, e)
         return jsonify({"error": "internal error"}), 500
